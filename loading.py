@@ -7,7 +7,7 @@ import torch
 from transformers import GPT2TokenizerFast
 
 from math_tokenize import tokenize_formula
-from constants import Article, Token, TokenType, CollatedBatch
+from constants import Article, TokenType, CollatedBatch
 from utils import device
 
 def load_articles():
@@ -88,10 +88,6 @@ class Dataset(torch.utils.data.Dataset):
                 token_types += [TokenType.TEXT.value] * len(text_token_ids)
                 positions += [""] * len(text_token_ids)
 
-                # TODO: just testing with text for now to see if that works
-                if True:
-                    continue
-
                 # Article will end with a text chunk (even if it's an empty string)
                 if text_chunk_idx == len(text_chunks) - 1:
                     continue
@@ -101,8 +97,8 @@ class Dataset(torch.utils.data.Dataset):
                     continue
 
                 # Add formula start token
-                token_ids.append(Token.SWITCH_CONTEXT.value)
-                token_types.append(TokenType.TEXT.value)
+                token_ids.append(0)
+                token_types.append(TokenType.START_FORMULA.value)
                 positions.append("")
 
                 # Tokenize the formula and add it to the sequence
@@ -112,8 +108,8 @@ class Dataset(torch.utils.data.Dataset):
                 positions += math_positions
 
                 # Add formula end token
-                token_ids.append(Token.SWITCH_CONTEXT.value)
-                token_types.append(TokenType.TEXT.value)
+                token_ids.append(0)
+                token_types.append(TokenType.END_FORMULA.value)
                 positions.append("")
 
             # Split sequence according to max length and add to final data
@@ -128,15 +124,15 @@ class Dataset(torch.utils.data.Dataset):
         return self.data[index]
 
 
-def trim_batch(batch: CollatedBatch, trim_point: int) -> CollatedBatch:
+def trim_batch(batch: CollatedBatch, trim_start: int, trim_end: int) -> CollatedBatch:
     """
-    Return a copy of a trimmed collated batch up to a given point
+    Return a copy of a trimmed collated batch in a given range
     """
     return {
-        "token_ids": batch["token_ids"][:, :trim_point],
-        "token_types": batch["token_types"][:, :trim_point],
-        # "positions": batch["positions"][:, :trim_point],
-        "attention_mask": batch["attention_mask"][:, :trim_point],
+        "token_ids": batch["token_ids"][:, trim_start : trim_end],
+        "token_types": batch["token_types"][:, trim_start : trim_end],
+        # "positions": batch["positions"][:, trim_start : trim_end],
+        "attention_mask": batch["attention_mask"][:, trim_start : trim_end],
     }
 
 

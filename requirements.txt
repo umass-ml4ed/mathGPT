@@ -1,4 +1,4 @@
-torch==1.10.0
+torch==1.11.0
 transformers==4.12.5
 numpy==1.21.2
 bs4==0.0.1

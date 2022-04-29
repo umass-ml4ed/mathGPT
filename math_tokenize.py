@@ -5,19 +5,28 @@ from constants import OPT
 
 # TODO: gather from data or config
 max_depth = 10
-max_width = 2
+max_width = 10
+
+def encode_pos(pos_str: str):
+    # TODO: idea 1 - for each level pos in str, fill in value in int, and then shift by num bits needed for max num children
+    #           issue - number will get huge, embeddings will be very sparse
+    #       idea 2 - store mapping from each possible position str to an int, which will be looked up in embedding matrix
+    #       idea 3 - store multi-hot vector (using binary idea from FORTE) and then model can use projection to generate embedding
+    #       idea 4 - store vector of numbers, and then convert each to a sin/cos representations (width dependent on max_depth, max_width, and embed_size) and concat encodings
+    #       note (for all) - for multiple formulas in a sequence, some positions will repeat. do we need to indicate to model exactly which formula is referenced?
+    return pos_str
 
 def tokenize_formula_rec(formula: OPT, parent_position_str: str, cur_child_num: int, token_ids: List[int], token_types: List[int], positions: List[str]):
     """
     Recursive helper for OPT tokenization, add info for current head and then process children
     """
     token_type, symbol_token = Vocabulary.get_token(formula[0], formula[1])
-    position_str = f"{parent_position_str}{cur_child_num}" # TODO: make sure this can handle more than 10 children
+    position_str = f"{parent_position_str}{cur_child_num}" # TODO: make sure this can handle more than 10 children, use comma separator
 
     # Add token for current
     token_ids.append(symbol_token)
     token_types.append(token_type)
-    positions.append(position_str) # TODO: convert to encoding
+    positions.append(encode_pos(position_str))
 
     # Process children
     if formula[2]:
