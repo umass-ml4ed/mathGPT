@@ -46,19 +46,29 @@ SAMPLE_ARTICLE_1 = {
 
 def test_new_dataset():
     # TODO: second sample
-    dataset = Dataset([SAMPLE_ARTICLE_1], 10)
-    assert dataset.data == [
-        {
-            "token_ids": [464, 27255, 286, 220, 0, 3, 6, 1, 0, 318],
-            "token_types": [0, 0, 0, 0, 0, TokenType.OP, TokenType.VAR, TokenType.NUM, 0, 0],
-            "positions": ["", "", "", "", "", "0", "00", "01", "", ""],
-        },
-        {
-            "token_ids": [220, 0, 3, 1, 6, 0, 13],
-            "token_types": [0, 0, TokenType.OP, TokenType.NUM, TokenType.VAR, 0, 0],
-            "positions": ["", "", "0", "00", "01", "", ""]
-        }
-    ]
+    dataset = Dataset([SAMPLE_ARTICLE_1], 11)
+
+    assert dataset.data[0].token_ids == [464, 27255, 286, 220, 0, Vocabulary.get_token("O", "SUP")[1], Vocabulary.get_token("V", "x")[1], Vocabulary.get_token("N", "2")[1], 0, 0, 318]
+    assert dataset.data[0].token_types == [0, 0, 0, 0, TokenType.START_FORMULA, TokenType.OP, TokenType.VAR, TokenType.NUM, TokenType.END, TokenType.END_FORMULA, 0]
+    assert dataset.data[0].pos_vecs[5][:1] == [0]
+    assert dataset.data[0].pos_levels[5] == 0
+    assert dataset.data[0].pos_vecs[6][:2] == [0, 0]
+    assert dataset.data[0].pos_levels[6] == 1
+    assert dataset.data[0].pos_vecs[7][:2] == [0, 1]
+    assert dataset.data[0].pos_levels[7] == 1
+    assert dataset.data[0].pos_vecs[8][:2] == [0, 2]
+    assert dataset.data[0].pos_levels[8] == 1
+
+    assert dataset.data[1].token_ids == [220, 0, Vocabulary.get_token("U", "times")[1], Vocabulary.get_token("N", "2")[1], Vocabulary.get_token("V", "x")[1], 0, 0, 13]
+    assert dataset.data[1].token_types == [0, TokenType.START_FORMULA, TokenType.OP, TokenType.NUM, TokenType.VAR, TokenType.END, TokenType.END_FORMULA, 0]
+    assert dataset.data[1].pos_vecs[2][:1] == [0]
+    assert dataset.data[1].pos_levels[2] == 0
+    assert dataset.data[1].pos_vecs[3][:2] == [0, 0]
+    assert dataset.data[1].pos_levels[3] == 1
+    assert dataset.data[1].pos_vecs[4][:2] == [0, 1]
+    assert dataset.data[1].pos_levels[4] == 1
+    assert dataset.data[1].pos_vecs[5][:2] == [0, 2]
+    assert dataset.data[1].pos_levels[5] == 1
 
 def test_split_sequence():
     pass # TODO

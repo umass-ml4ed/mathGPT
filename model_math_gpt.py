@@ -21,7 +21,7 @@ NUM_TYPES = len(TokenType)
 ALLOWED_TRANSITIONS: Dict[TokenType, List[TokenType]] = {
     TokenType.TEXT: [TokenType.TEXT, TokenType.START_FORMULA],
     TokenType.START_FORMULA: [TokenType.VAR, TokenType.NUM, TokenType.OP],
-    TokenType.END_FORMULA: [TokenType.TEXT], # TODO: we could maybe get away with no end_formula token, since it's implicit from the tree stack being empty
+    TokenType.END_FORMULA: [TokenType.TEXT],
     # TODO: additional logic - if vars and nums are leaves, and can't gen end_formula if stack is not empty
     TokenType.VAR: [TokenType.END_FORMULA, TokenType.VAR, TokenType.NUM, TokenType.OP],
     TokenType.NUM: [TokenType.END_FORMULA, TokenType.VAR, TokenType.NUM, TokenType.OP],
@@ -178,7 +178,7 @@ class MathGPT(nn.Module):
 
         # TODO: look at numGPT and FORTE papers to verify their token probability calculations
 
-def get_collapsed_predictions(type_to_token_probs: Dict[TokenType, torch.Tensor]) -> Tuple[torch.LongTensor, torch.LongTensor]:
+def get_collapsed_predictions(type_to_token_probs: Dict[TokenType, torch.Tensor]):
     batch_size, max_seq_len = type_to_token_probs[TokenType.TEXT].shape[:2]
     predicted_types = torch.zeros((batch_size, max_seq_len), dtype=torch.long).to(device)
     predicted_tokens = torch.zeros((batch_size, max_seq_len), dtype=torch.long).to(device)

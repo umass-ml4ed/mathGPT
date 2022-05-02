@@ -28,9 +28,9 @@ class Vocabulary:
         symbol_dict.setdefault(symbol, len(symbol_dict))
 
     @classmethod
-    def get_token(cls, str_type: str, symbol: str) -> Tuple[int, int]:
+    def get_token(cls, str_type: str, symbol: str) -> Tuple[TokenType, int]:
         """
-        Get the type int and token for the associated type and symbol strings
+        Get the type and token id for the associated type and symbol strings
         """
         # Load data if not yet loaded
         if not cls._loaded:

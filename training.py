@@ -30,6 +30,7 @@ def evaluate_model(model, validation_loader: torch.utils.data.DataLoader, mode: 
     with torch.no_grad():
         for batch in tqdm(validation_loader):
             loss, _, type_preds, token_preds = model(batch)
+            # TODO: put all this logic into a function, and then write a unit test
             # For predictions and targets, stack types and tokens in last dimension
             type_preds = type_preds[:, :-1].contiguous().view(-1).detach().cpu().numpy()
             token_preds = token_preds[:, :-1].contiguous().view(-1).detach().cpu().numpy()
@@ -63,7 +64,7 @@ def train(model, mode: Mode, model_name: str, train_loader, validation_loader, l
     for epoch in range(epochs):
         start_time = time.time()
         model.train() # Set model to training mode
-        train_loss = 0
+        train_loss = 0.0
         num_batches = 0
         for batch in tqdm(train_loader):
             optimizer.zero_grad()
