@@ -28,6 +28,8 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
         token_type, symbol_token = Vocabulary.get_token(formula[0], formula[1])
 
     # Set position
+    # TODO: to avoid max depth limit, try just concatting to list and then padding in batch
+    #       but think about how this affects generation, might have to rescale vecs on the fly
     pos = parent_pos.copy()
     pos[cur_level] = cur_child_num
 

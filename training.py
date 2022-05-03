@@ -1,16 +1,13 @@
 import time
 import json
-from typing import List
 import torch
 import numpy as np
 from sklearn import metrics
-from transformers import GPT2TokenizerFast
-from mathGPT.constants import CollatedBatch, TokenType
 from tqdm import tqdm
-from mathGPT.vocabulary import Vocabulary
 
 from model_math_gpt import MathGPT
 from loading import load_articles, Dataset, Collator, trim_batch
+from generate import generate, decode_batch
 from utils import TrainOptions, device
 from constants import Mode
 
@@ -122,45 +119,6 @@ def pretrain(model_name: str, options: TrainOptions):
     model = MathGPT().to(device)
     train(model, Mode.PRETRAIN, model_name, train_loader, validation_loader, lr=options.lr, weight_decay=options.weight_decay, epochs=options.epochs, patience=10)
 
-# TODO: move code to another file
-def decode_batch(batch: CollatedBatch, text_tokenizer: GPT2TokenizerFast) -> List[str]:
-    all_decoded_sequences: List[str] = []
-    for seq_idx in range(len(batch["token_ids"])):
-        result = ""
-        is_text = True # Assumption: sequence will always either start with a text token, or start formula token
-        sub_seq_start = sub_seq_end = 0
-        for tok_idx, (token_type, token_id) in enumerate(zip(batch["token_types"][seq_idx], batch["token_ids"][seq_idx])):
-            # At start formula, switch to math context, and decode any prior text tokens
-            if token_type == TokenType.START_FORMULA:
-                is_text = False
-                if sub_seq_start != sub_seq_end:
-                    result += text_tokenizer.decode(batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end])
-                sub_seq_start = sub_seq_end = tok_idx + 1
-                continue
-
-            # At end formula, switch to text context
-            if token_type == TokenType.END_FORMULA:
-                is_text = True
-                # TODO: decode the OPT and add to result
-                sub_seq_start = sub_seq_end = tok_idx + 1
-                continue
-
-            # NOTE: this is temporary until we implement tree decoding
-            if not is_text:
-                result += Vocabulary.get_symbol(int(token_type), int(token_id)) + " "
-
-            sub_seq_end = tok_idx + 1
-
-            # TODO: handle EOS tokens
-
-        # Decode any trailing text tokens at the end
-        if sub_seq_start != sub_seq_end:
-            result += text_tokenizer.decode(batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end])
-
-        all_decoded_sequences.append(result)
-
-    return all_decoded_sequences
-
 
 def test_lm(model_name: str, test_article: str, options: TrainOptions):
     # TODO: maybe load options from config
@@ -175,27 +133,17 @@ def test_lm(model_name: str, test_article: str, options: TrainOptions):
     model = MathGPT().to(device)
     model.load_state_dict(torch.load(f"{model_name}.pt", map_location=device))
 
-    # TODO: detailed decoding code should move elsewhere
     with torch.no_grad():
         trim_point = options.max_seq_len // 2
         for batch in data_loader:
-            batch_size = batch["token_ids"].shape[0]
+            # Generate new sequences given first half of original sequence as input
             gen_batch = trim_batch(batch, 0, trim_point)
-            for _ in range(trim_point, options.max_seq_len):
-                # TODO: extract and pass past_key_values
-                _, _, type_preds, token_preds = model(gen_batch)
-                # TODO: apply temperature
-                # TODO: from transformers import tf_top_k_top_p_filtering
-                gen_batch["token_ids"] = torch.concat([gen_batch["token_ids"], token_preds[:, -1].unsqueeze(1)], dim=-1)
-                gen_batch["token_types"] = torch.concat([gen_batch["token_types"], type_preds[:, -1].unsqueeze(1)], dim=-1)
-                # TODO: math positions
-                gen_batch["attention_mask"] = torch.concat([gen_batch["attention_mask"], torch.ones(batch_size).unsqueeze(1).to(device)], dim=-1)
-                # TODO: can we make faster by removing sequences in the batch that hit EOS? or set attention mask to 0 after EOS?
+            generate(model, gen_batch, options.max_seq_len)
 
+            # Decode the generated sequences and compare to the original
             prompts_decoded = decode_batch(trim_batch(batch, 0, trim_point), dataset.text_tokenizer)
             og_decoded = decode_batch(trim_batch(batch, trim_point, options.max_seq_len), dataset.text_tokenizer)
             preds_decoded = decode_batch(trim_batch(gen_batch, trim_point, options.max_seq_len), dataset.text_tokenizer)
-
             for prompt, og_text, pred_text in zip(prompts_decoded, og_decoded, preds_decoded):
                 print("Prompt:", prompt)
                 print("OG Text:", og_text)

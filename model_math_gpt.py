@@ -2,6 +2,7 @@ from typing import Dict, List, Tuple
 import torch
 from torch import nn
 from transformers import GPT2Model, GPT2LMHeadModel
+from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions as GPTOutput
 
 from vocabulary import Vocabulary
 from constants import CollatedBatch, TokenType
@@ -22,20 +23,21 @@ ALLOWED_TRANSITIONS: Dict[TokenType, List[TokenType]] = {
     TokenType.TEXT: [TokenType.TEXT, TokenType.START_FORMULA],
     TokenType.START_FORMULA: [TokenType.VAR, TokenType.NUM, TokenType.OP],
     TokenType.END_FORMULA: [TokenType.TEXT],
-    # TODO: additional logic - if vars and nums are leaves, and can't gen end_formula if stack is not empty
-    TokenType.VAR: [TokenType.END_FORMULA, TokenType.VAR, TokenType.NUM, TokenType.OP],
-    TokenType.NUM: [TokenType.END_FORMULA, TokenType.VAR, TokenType.NUM, TokenType.OP],
-    TokenType.OP: [TokenType.END_FORMULA, TokenType.VAR, TokenType.NUM, TokenType.OP],
+    TokenType.VAR: [TokenType.VAR, TokenType.NUM, TokenType.OP, TokenType.END],
+    TokenType.NUM: [TokenType.VAR, TokenType.NUM, TokenType.OP, TokenType.END],
+    TokenType.OP: [TokenType.VAR, TokenType.NUM, TokenType.OP, TokenType.END],
+    TokenType.END: [TokenType.VAR, TokenType.NUM, TokenType.OP, TokenType.END],
+    # Note that terminal tokens can only generate END_FORMULA if they are the last in a formula, so these cases are handled manually
 }
 
 def get_inverted_allowed_transitions():
     """
     Get map of type to list of types that can precede it
     """
-    allowed_transitions_inv: Dict[TokenType, List[TokenType]] = {}
+    allowed_transitions_inv: Dict[TokenType, List[TokenType]] = {token_type: [] for token_type in TokenType}
     for token_type, allowed_types in ALLOWED_TRANSITIONS.items():
         for allowed_type in allowed_types:
-            allowed_transitions_inv.setdefault(allowed_type, []).append(token_type)
+            allowed_transitions_inv[allowed_type].append(token_type)
     return allowed_transitions_inv
 
 class MathGPT(nn.Module):
@@ -56,13 +58,14 @@ class MathGPT(nn.Module):
         self.token_embeddings = nn.ModuleDict({
             str(token_type.value): nn.Embedding(Vocabulary.num_tokens_in_type(token_type), EMB_SIZE)
             for token_type in TokenType
-            if token_type not in (TokenType.TEXT, TokenType.START_FORMULA, TokenType.END_FORMULA)
+            if token_type not in (TokenType.TEXT, TokenType.START_FORMULA, TokenType.END_FORMULA, TokenType.END)
         })
         # Use pre-trained text token embeddings
         self.token_embeddings[str(TokenType.TEXT.value)] = self.transformer.wte
-        # Single embedding for formula start/end tokens each
+        # Single embedding each for special single-tokens types
         self.token_embeddings[str(TokenType.START_FORMULA.value)] = nn.Embedding(1, EMB_SIZE)
         self.token_embeddings[str(TokenType.END_FORMULA.value)] = nn.Embedding(1, EMB_SIZE)
+        self.token_embeddings[str(TokenType.END.value)] = nn.Embedding(1, EMB_SIZE)
 
         # TODO: create embeddings/encodings for math positions (try learnable embeddings for each tree position)
 
@@ -70,15 +73,14 @@ class MathGPT(nn.Module):
         self.type_pred_layer = nn.Linear(EMB_SIZE, NUM_TYPES)
 
         # Predictive token layers for generation
-        # TODO: better handling for start/end formula
         self.type_to_token_pred_layer = nn.ModuleDict({
-            str(token_type.value): nn.Linear(EMB_SIZE, 1 if token_type in (TokenType.START_FORMULA, TokenType.END_FORMULA) else Vocabulary.num_tokens_in_type(token_type))
+            str(token_type.value): nn.Linear(EMB_SIZE, Vocabulary.num_tokens_in_type(token_type))
             for token_type in TokenType
-            if token_type not in (TokenType.TEXT,)#, TokenType.START_FORMULA, TokenType.END_FORMULA)
+            if token_type not in (TokenType.TEXT, TokenType.START_FORMULA, TokenType.END_FORMULA, TokenType.END)
         })
         # Use pre-trained predictive head for text tokens
         self.type_to_token_pred_layer[str(TokenType.TEXT.value)] = self.gpt2_lm.lm_head
-        # Formula start/stop types only have a single token each, so no need for predicting them
+        # Special single-tokens types only have a single token each, so no need for predicting them
 
     def get_input_embeddings(self, batch: CollatedBatch) -> torch.Tensor:
         """
@@ -97,11 +99,94 @@ class MathGPT(nn.Module):
 
         return input_embeddings
 
-    def forward(self, batch: CollatedBatch): # TODO: return type
-        # import pdb; pdb.set_trace()
-        batch_size, max_seq_len = batch["token_ids"].shape
+    def get_prediction_masks(self, batch: CollatedBatch):
+        """
+        Get relevant masks for type and token prediction
+        Returns (map of type to mask of tokens that have that type, mask of tokens that must end a formula)
+        """
+        # Map type to indices in batch that match that type
+        type_idxs = {
+            token_type: batch["token_types"] == token_type
+            for token_type in TokenType
+        }
+        # Find idxs that are the last of a formula. Two ways a formula can end:
+        # 1) if it starts with an OP, then with its last child (END token at level == 1)
+        # 2) if it starts with a terminal token, then with that token (level == 0)
+        # We can't just look for END_FORMULA, because we might be generating in which case the END_FORMULA token may not exist yet
+        final_formula_token_idx = type_idxs[TokenType.END] & (batch["pos_levels"] == 1)
+        final_formula_token_idx |= (type_idxs[TokenType.VAR] | type_idxs[TokenType.NUM]) & (batch["pos_levels"] == 0)
+        return type_idxs, final_formula_token_idx
 
-        gpt_output = self.transformer( # TODO: typedef for output
+    def get_type_probs(self, gpt_output: GPTOutput, type_idxs: Dict[TokenType, torch.Tensor], final_formula_token_idx: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate the probability of generating each type for each token in the batch, including masking to constrain to possible transitions
+        """
+        # Get raw prediction values from model output
+        type_preds = self.type_pred_layer(gpt_output.last_hidden_state)
+        # Create mask with allowed (False) and unallowed (True) types for the following token at each index
+        type_mask = torch.full(type_preds.shape, True).to(device)
+        for token_type, allowed_types in ALLOWED_TRANSITIONS.items():
+            for allowed_type in allowed_types:
+                type_mask[:, :, allowed_type][type_idxs[token_type]] = False
+        # Tokens that finish a formula can only generate END_FORMULA
+        just_end_form_token = torch.full((len(TokenType),), True).to(device)
+        just_end_form_token[TokenType.END_FORMULA] = False
+        type_mask[final_formula_token_idx] = just_end_form_token
+        # Get predicted probability of types at each index
+        type_preds[type_mask] = -torch.inf
+        type_probs = nn.Softmax(dim=-1)(type_preds)
+        return type_probs
+
+    def get_token_probs(self, gpt_output: GPTOutput, type_probs: torch.Tensor, type_idxs: Dict[TokenType, torch.Tensor], final_formula_token_idx: torch.Tensor):
+        """
+        For each type, calculate the joint probability of generating that type and the tokens in that type
+        """
+        batch_size, max_seq_len = type_probs.shape[:2]
+        type_to_token_probs: Dict[TokenType, torch.Tensor] = {}
+        for token_type, allowed_types in get_inverted_allowed_transitions().items():
+            # Get all indices that are allowed to transition to the current type
+            if token_type == TokenType.END_FORMULA:
+                token_idxs = final_formula_token_idx
+            else:
+                token_idxs = type_idxs[allowed_types[0]]
+                for allowed_type in allowed_types[1:]:
+                    token_idxs = token_idxs | type_idxs[allowed_type]
+            # Get predicted probability of tokens in the type, i.e. P(token|type)
+            if token_type in (TokenType.START_FORMULA, TokenType.END_FORMULA, TokenType.END):
+                token_probs = torch.ones((batch_size, max_seq_len, 1)).to(device)[token_idxs]
+            else:
+                token_preds = self.type_to_token_pred_layer[str(token_type.value)](gpt_output.last_hidden_state[token_idxs])
+                token_probs = nn.Softmax(dim=-1)(token_preds)
+            # Multiply P(type) * P(token|type) to get P(token, type)
+            type_to_token_probs[token_type] = torch.zeros((batch_size, max_seq_len, token_probs.shape[-1])).to(device)
+            type_to_token_probs[token_type][token_idxs] = token_probs * type_probs[:, :, token_type][token_idxs].unsqueeze(1)
+        return type_to_token_probs
+
+    def get_prediction_loss(self, type_to_token_probs: Dict[TokenType, torch.Tensor], type_idxs: Dict[TokenType, torch.Tensor], batch: CollatedBatch):
+        """
+        Calculate the cross-entropy prediction loss given the token probabilities
+        """
+        # TODO: see if we have to do anything with padding regions
+        # TODO: look at numGPT and FORTE papers to verify their token probability calculations
+        loss = torch.Tensor([0]).to(device)
+        shifted_target_tokens = batch["token_ids"][:, 1:]
+        for token_type in TokenType:
+            # Get indices that have a target of this type
+            shifted_type_idx = type_idxs[token_type][:, 1:]
+            # Skip type if it doesn't exist as a target, going through with calculations results in nan loss
+            if not torch.any(shifted_type_idx):
+                continue
+            # Get token probabilities for this type where the target matches
+            selected_probs = type_to_token_probs[token_type][:, :-1][shifted_type_idx]
+            # Add cross-entropy loss
+            # TODO: seems like we can sometimes get invalid values here, maybe somehow assigning 0 probability to target
+            log_probs = torch.log(selected_probs)
+            loss += nn.NLLLoss()(log_probs, shifted_target_tokens[shifted_type_idx])
+        return loss
+
+    def forward(self, batch: CollatedBatch): # TODO: return type
+        # Run inputs through model
+        gpt_output: GPTOutput = self.transformer(
             # past_key_values=[], # TODO: for speeding up decoding
             use_cache=False, # TODO: set to True for decoding, but otherwise runs out of memory
             output_attentions=False,
@@ -123,60 +208,22 @@ class MathGPT(nn.Module):
             # loss *= text_idxs[:, 1:].view(-1)
             return loss.mean(), logits, torch.argmax(logits_shifted, dim=-1), target_tokens_shifted, attn_mask_shifted
 
-        # Map type to indices in batch that match that type
-        type_idxs = {
-            token_type: batch["token_types"] == token_type
-            for token_type in TokenType
-        }
+        # Get relevant masks
+        type_idxs, final_formula_token_idx = self.get_prediction_masks(batch)
 
         # Calculate P(type) for each possible type
-        # Create mask with allowed (False) and unallowed (True) types for the following token at each index
-        type_mask = torch.full((batch_size, max_seq_len, NUM_TYPES), True).to(device)
-        for token_type, allowed_types in ALLOWED_TRANSITIONS.items():
-            for allowed_type in allowed_types:
-                type_mask[:, :, allowed_type][type_idxs[token_type]] = False
-        # Get predicted probability of types at each index
-        type_preds = self.type_pred_layer(gpt_output.last_hidden_state)
-        type_preds[type_mask] = -torch.inf
-        type_probs = nn.Softmax(dim=-1)(type_preds)
+        type_probs = self.get_type_probs(gpt_output, type_idxs, final_formula_token_idx)
 
         # Calculate P(token, type) for all types/tokens
-        type_to_token_probs: Dict[TokenType, torch.Tensor] = {}
-        for token_type, allowed_types in get_inverted_allowed_transitions().items():
-            # Get all indices that are allowed to transition to the current type
-            token_idxs = type_idxs[allowed_types[0]]
-            for allowed_type in allowed_types[1:]:
-                token_idxs = token_idxs | type_idxs[allowed_type]
-            # Get predicted probability of tokens in the type, i.e. P(token|type)
-            token_preds = self.type_to_token_pred_layer[str(token_type.value)](gpt_output.last_hidden_state[token_idxs])
-            token_probs = nn.Softmax(dim=-1)(token_preds)
-            # Multiply P(type) * P(token|type) to get P(token, type)
-            type_to_token_probs[token_type] = torch.zeros((batch_size, max_seq_len, token_probs.shape[-1])).to(device)
-            type_to_token_probs[token_type][token_idxs] = token_probs * type_probs[:, :, token_type][token_idxs].unsqueeze(1)
+        type_to_token_probs = self.get_token_probs(gpt_output, type_probs, type_idxs, final_formula_token_idx)
 
         # Calculate cross-entropy loss
-        # TODO: see if we have to do anything with padding regions
-        loss = torch.Tensor([0]).to(device)
-        shifted_target_tokens = batch["token_ids"][:, 1:]
-        for token_type in TokenType:
-            # Get indices that have a target of this type
-            shifted_type_idx = type_idxs[token_type][:, 1:]
-            # Skip type if it doesn't exist as a target, going through with calculations results in nan loss
-            if not torch.any(shifted_type_idx):
-                continue
-            # Get token probabilities for this type where the target matches
-            selected_probs = type_to_token_probs[token_type][:, :-1][shifted_type_idx]
-            # Add cross-entropy loss
-            # TODO: seems like we can sometimes get invalid values here, maybe somehow assigning 0 probability to target
-            log_probs = torch.log(selected_probs)
-            loss += nn.NLLLoss()(log_probs, shifted_target_tokens[shifted_type_idx])
+        loss = self.get_prediction_loss(type_to_token_probs, type_idxs, batch)
 
         # Calculate most likely predictions
         predicted_types, predicted_tokens = get_collapsed_predictions(type_to_token_probs)
 
         return loss, type_to_token_probs, predicted_types, predicted_tokens
-
-        # TODO: look at numGPT and FORTE papers to verify their token probability calculations
 
 def get_collapsed_predictions(type_to_token_probs: Dict[TokenType, torch.Tensor]):
     batch_size, max_seq_len = type_to_token_probs[TokenType.TEXT].shape[:2]
