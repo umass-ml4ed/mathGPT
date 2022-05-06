@@ -4,9 +4,9 @@ import torch.nn.functional as F
 from transformers import GPT2TokenizerFast
 
 from vocabulary import Vocabulary
+from math_tokenize import encode_pos
 from utils import device
-from constants import CollatedBatch, TokenType
-
+from constants import CollatedBatch, TokenType, EOS_TOKEN_ID, PADDING_TOKEN_ID
 
 def infer_math_pos(prev_pos_vecs: torch.Tensor, prev_pos_levels: torch.Tensor, prev_token_types: torch.Tensor):
     """
@@ -42,7 +42,6 @@ def infer_math_pos(prev_pos_vecs: torch.Tensor, prev_pos_levels: torch.Tensor, p
 
     return new_pos_vecs, new_pos_levels
 
-
 def generate(model, gen_batch: CollatedBatch, max_seq_len: int):
     """
     Given a model and a seed batch, generate tokens up to the given length
@@ -58,10 +57,11 @@ def generate(model, gen_batch: CollatedBatch, max_seq_len: int):
         gen_batch["token_ids"] = torch.concat([gen_batch["token_ids"], token_preds[:, -1].unsqueeze(1)], dim=1)
         gen_batch["token_types"] = torch.concat([gen_batch["token_types"], type_preds[:, -1].unsqueeze(1)], dim=1)
         new_pos_vecs, new_pos_levels = infer_math_pos(gen_batch["pos_vecs"][:, -1], gen_batch["pos_levels"][:, -1], gen_batch["token_types"][:, -2])
-        gen_batch["pos_vecs"] = torch.concat([gen_batch["pos_vecs"], new_pos_vecs], dim=1)
-        gen_batch["pos_levels"] = torch.concat([gen_batch["pos_levels"], new_pos_levels], dim=1)
+        gen_batch["pos_vecs"] = torch.concat([gen_batch["pos_vecs"], new_pos_vecs.unsqueeze(1)], dim=1)
+        gen_batch["pos_levels"] = torch.concat([gen_batch["pos_levels"], new_pos_levels.unsqueeze(1)], dim=1)
+        new_pos_encodings = torch.LongTensor([encode_pos(pos_vec, pos_level) for pos_vec, pos_level in zip(new_pos_vecs, new_pos_levels)]).to(device)
+        gen_batch["pos_encodings"] = torch.concat([gen_batch["pos_encodings"], new_pos_encodings.unsqueeze(1)], dim=1)
         gen_batch["attention_mask"] = torch.concat([gen_batch["attention_mask"], torch.ones(batch_size).unsqueeze(1).to(device)], dim=1)
-
 
 def decode_batch(batch: CollatedBatch, text_tokenizer: GPT2TokenizerFast) -> List[str]:
     """
@@ -79,6 +79,7 @@ def decode_batch(batch: CollatedBatch, text_tokenizer: GPT2TokenizerFast) -> Lis
                 is_text = False
                 if sub_seq_start != sub_seq_end:
                     result += text_tokenizer.decode(batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end])
+                result += "<START_FORMULA>"
                 sub_seq_start = sub_seq_end = tok_idx + 1
                 continue
 
@@ -86,20 +87,26 @@ def decode_batch(batch: CollatedBatch, text_tokenizer: GPT2TokenizerFast) -> Lis
             if token_type == TokenType.END_FORMULA:
                 is_text = True
                 # TODO: decode the OPT and add to result
+                result += "<END_FORMULA>"
                 sub_seq_start = sub_seq_end = tok_idx + 1
                 continue
 
             # NOTE: this is temporary until we implement tree decoding
             if not is_text:
-                result += Vocabulary.get_symbol(int(token_type), int(token_id)) + " "
+                if token_type != TokenType.END:
+                    result += Vocabulary.get_symbol(int(token_type), int(token_id)) + " "
 
             sub_seq_end = tok_idx + 1
 
-            # TODO: handle EOS tokens
+            # Stop decoding at EOS token
+            if token_type == TokenType.TEXT and token_id == EOS_TOKEN_ID:
+                break
 
         # Decode any trailing text tokens at the end
         if sub_seq_start != sub_seq_end:
-            result += text_tokenizer.decode(batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end])
+            # TODO: probably a more elegant way to handle this
+            if not all(batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end] == PADDING_TOKEN_ID):
+                result += text_tokenizer.decode(batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end])
 
         all_decoded_sequences.append(result)
 

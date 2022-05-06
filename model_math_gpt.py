@@ -1,11 +1,12 @@
-from typing import Dict, List, Tuple
+from typing import Dict, List
 import torch
 from torch import nn
 from transformers import GPT2Model, GPT2LMHeadModel
 from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions as GPTOutput
 
 from vocabulary import Vocabulary
-from constants import CollatedBatch, TokenType
+from math_tokenize import POS_ENCODING_SIZE
+from constants import CollatedBatch, TokenType, PADDING_TOKEN_ID
 from utils import device
 
 # Leverages pre-trained GPT2 from transformers library
@@ -67,7 +68,19 @@ class MathGPT(nn.Module):
         self.token_embeddings[str(TokenType.END_FORMULA.value)] = nn.Embedding(1, EMB_SIZE)
         self.token_embeddings[str(TokenType.END.value)] = nn.Embedding(1, EMB_SIZE)
 
-        # TODO: create embeddings/encodings for math positions (try learnable embeddings for each tree position)
+        # TODO: math position ideas
+        #       idea 1 - for each level pos in str, fill in value in int, and then shift by num bits needed for max num children
+        #           issue - number will get huge, embeddings will be very sparse
+        #       idea 2 - store mapping from each possible position str to an int, which will be looked up in embedding matrix
+        #       idea 3 - store multi-hot vector (using binary idea from FORTE) and then model can use projection to generate embedding
+        #       idea 4 - store vector of numbers, and then convert each to a sin/cos representations (width dependent on max_depth, max_width, and embed_size) and concat encodings
+        #       idea 5 - each level gets its own sin/cos representation (based on child pos), and add the representations of each level together
+        #       idea 6 - train an RNN to generate the embedding, takes child position learnable embeddings as input, goes from top to bottom
+        #       note (for all) - for multiple formulas in a sequence, some positions will repeat. do we need to indicate to model exactly which formula is referenced?
+
+        # Linear projection to convert raw math pos encoding into one that can be added to the input embeddings
+        # Not using bias so that the encoding is 0 for non-math tokens
+        self.math_embedding_projection = nn.Linear(POS_ENCODING_SIZE, EMB_SIZE, bias=False)
 
         # Predictive type layer for generation
         self.type_pred_layer = nn.Linear(EMB_SIZE, NUM_TYPES)
@@ -92,10 +105,11 @@ class MathGPT(nn.Module):
 
         # Add token embeddings for each type
         for token_type in TokenType:
-            type_idxs = batch["token_types"] == token_type
+            type_idxs = (batch["token_types"] == token_type) & (batch["token_ids"] != PADDING_TOKEN_ID)
             input_embeddings[type_idxs] += self.token_embeddings[str(token_type.value)](batch["token_ids"][type_idxs])
 
-        # TODO: add math position embeddings
+        # Add math position encodings
+        input_embeddings += self.math_embedding_projection(batch["pos_encodings"])
 
         return input_embeddings
 
@@ -112,7 +126,7 @@ class MathGPT(nn.Module):
         # Find idxs that are the last of a formula. Two ways a formula can end:
         # 1) if it starts with an OP, then with its last child (END token at level == 1)
         # 2) if it starts with a terminal token, then with that token (level == 0)
-        # We can't just look for END_FORMULA, because we might be generating in which case the END_FORMULA token may not exist yet
+        # Note we can't just look for END_FORMULA, because we might be generating in which case the END_FORMULA token may not exist yet
         final_formula_token_idx = type_idxs[TokenType.END] & (batch["pos_levels"] == 1)
         final_formula_token_idx |= (type_idxs[TokenType.VAR] | type_idxs[TokenType.NUM]) & (batch["pos_levels"] == 0)
         return type_idxs, final_formula_token_idx
@@ -181,7 +195,7 @@ class MathGPT(nn.Module):
             # Add cross-entropy loss
             # TODO: seems like we can sometimes get invalid values here, maybe somehow assigning 0 probability to target
             log_probs = torch.log(selected_probs)
-            loss += nn.NLLLoss()(log_probs, shifted_target_tokens[shifted_type_idx])
+            loss += nn.NLLLoss(ignore_index=PADDING_TOKEN_ID)(log_probs, shifted_target_tokens[shifted_type_idx])
         return loss
 
     def forward(self, batch: CollatedBatch): # TODO: return type
@@ -203,9 +217,6 @@ class MathGPT(nn.Module):
             target_tokens_shifted = batch["token_ids"][:, 1:].contiguous()
             attn_mask_shifted = batch["attention_mask"][:, 1:].contiguous()
             loss = nn.CrossEntropyLoss(reduction="none")(logits_shifted.view(-1, TEXT_VOCAB_SIZE), target_tokens_shifted.view(-1))
-            # loss *= attn_mask_shifted.view(-1) # TODO: this seems necessary, but why doesn't GPT2LMHeadModel do it?
-            # TODO: compare attention masking loss to setting labels to -100 (or other negative value) since CE Loss should not take those into account (apparently)
-            # loss *= text_idxs[:, 1:].view(-1)
             return loss.mean(), logits, torch.argmax(logits_shifted, dim=-1), target_tokens_shifted, attn_mask_shifted
 
         # Get relevant masks

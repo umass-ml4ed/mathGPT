@@ -58,6 +58,7 @@ def test_new_dataset():
     assert dataset.data[0].pos_levels[7] == 1
     assert dataset.data[0].pos_vecs[8][:2] == [0, 2]
     assert dataset.data[0].pos_levels[8] == 1
+    # TODO: pos_encodings
 
     assert dataset.data[1].token_ids == [220, 0, Vocabulary.get_token("U", "times")[1], Vocabulary.get_token("N", "2")[1], Vocabulary.get_token("V", "x")[1], 0, 0, 13]
     assert dataset.data[1].token_types == [0, TokenType.START_FORMULA, TokenType.OP, TokenType.NUM, TokenType.VAR, TokenType.END, TokenType.END_FORMULA, 0]
@@ -69,6 +70,7 @@ def test_new_dataset():
     assert dataset.data[1].pos_levels[4] == 1
     assert dataset.data[1].pos_vecs[5][:2] == [0, 2]
     assert dataset.data[1].pos_levels[5] == 1
+    # TODO: pos_encodings
 
 def test_split_sequence():
     pass # TODO
