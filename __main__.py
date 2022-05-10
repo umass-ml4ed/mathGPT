@@ -30,6 +30,7 @@
 import argparse
 
 from pre_process import process_wikipedia_data
+from analyze_data import analyze_data
 from training import pretrain, test_lm
 from utils import TrainOptions, initialize_seeds, device
 
@@ -44,6 +45,7 @@ def main():
     parser = argparse.ArgumentParser("MathGPT")
     # Modes
     parser.add_argument("--preprocess", action="store_true")
+    parser.add_argument("--analyze_data", action="store_true")
     parser.add_argument("--pretrain", action="store_true")
     parser.add_argument("--test_lm", action="store_true")
     # Config
@@ -56,6 +58,8 @@ def main():
 
     if args.preprocess:
         process_wikipedia_data()
+    if args.analyze_data:
+        analyze_data()
     if args.pretrain:
         pretrain(args.name, TrainOptions(arg_dict))
     if args.test_lm:

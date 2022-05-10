@@ -204,7 +204,7 @@ class MathGPT(nn.Module):
             # past_key_values=[], # TODO: for speeding up decoding
             use_cache=False, # TODO: set to True for decoding, but otherwise runs out of memory
             output_attentions=False,
-            # attention_mask=batch["attention_mask"], # TODO: when do we need this?
+            # attention_mask=batch["attention_mask"], # TODO: this doesn't seem to make a difference with padding, might be performance-related
             inputs_embeds=self.get_input_embeddings(batch),
             return_dict=True
         )

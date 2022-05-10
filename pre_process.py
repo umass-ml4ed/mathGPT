@@ -18,10 +18,8 @@ def tree_to_serializable(sem_symbol: SemanticSymbol) -> OPT:
     Convert SemanticSymbol object into serializable OPT format
     Also add new symbols to the vocab as the tree is processed
     """
-    sym_type, symbol = ("+", "+") if sem_symbol.tag[0] == "+" else (sem_symbol.tag[0], sem_symbol.tag[2:])
-    # TODO: E! and W! have no symbol - investigate
-    # if not symbol:
-    #     print("no symbol!", sem_symbol.tag)
+    # Tag has form <type>!<symbol>
+    sym_type, symbol = sem_symbol.tag[0], sem_symbol.tag[2:]
     Vocabulary.add(sym_type, symbol)
     return (
         sym_type,
@@ -118,8 +116,7 @@ def process_wikipedia_data():
             if article_filename.endswith(".html"):
                 article_filenames.append(article_filename)
 
-
-    max_articles = 1000
+    max_articles = 10000
     print("Processing articles...")
     for article_filename in tqdm(article_filenames[:max_articles]):
         process_article(article_filename)

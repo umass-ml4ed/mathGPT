@@ -1,7 +1,7 @@
 from typing import Dict, Tuple
 import json
 
-from constants import TYPE_STR_TO_INT, TokenType
+from constants import TYPE_STR_TO_INT, TokenType, ANONYMOUS_OPERATOR
 
 VOCAB_FILE_PATH = "ref_data/vocab.json"
 
@@ -10,6 +10,14 @@ BaseVocab = Dict[str, Dict[str, int]]
 Vocab = Dict[TokenType, Dict[str, int]]
 
 VocabInv = Dict[TokenType, Dict[int, str]]
+
+def get_matrix_symbol(symbol: str):
+    """
+    Create special symbol for matrix identifiers.
+    The first character is the type of matrix (ex: L, V, M, etc.) followed by details added by TangentCFT.
+    Discard the details, keep the type, and add a prefix so the type doesn't get confused with other OP symbols during coalescence.
+    """
+    return "matrix-" + symbol[0]
 
 class Vocabulary:
     _base_vocab: BaseVocab = {}
@@ -88,15 +96,23 @@ class Vocabulary:
         # Load base vocab from file
         with open(VOCAB_FILE_PATH) as vocab_file:
             base_vocab: BaseVocab = json.load(vocab_file)
+        # Add special anonymous operator symbol to vocab
+        base_vocab["+"][ANONYMOUS_OPERATOR] = len(base_vocab["+"])
 
         # Compute vocab and inverted vocab by collapsing types and assigning new token IDs
         cls._vocab = {}
         cls._vocab_inv = {}
         for str_type, symbols in base_vocab.items():
+            # E type tokens all converted in post-processing
+            if str_type == "E":
+                continue
             token_type = TYPE_STR_TO_INT[str_type]
             type_dict = cls._vocab.setdefault(token_type, {})
             inv_type_dict = cls._vocab_inv.setdefault(token_type, {})
             for symbol in symbols:
+                # Special processing for matrix symbols
+                if str_type == "M":
+                    symbol = get_matrix_symbol(symbol)
                 # Skip if symbol already seen (from other matching base type) to avoid gaps in the token ID list
                 if symbol in type_dict:
                     continue

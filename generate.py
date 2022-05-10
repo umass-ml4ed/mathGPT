@@ -24,21 +24,23 @@ def infer_math_pos(prev_pos_vecs: torch.Tensor, prev_pos_levels: torch.Tensor, p
     # Increment level; vec doesn't change since higher levels filled with 0 by default
     new_pos_levels[op_idx] += 1
 
-    # A non-END terminal token is always followed by a sibling
-    term_idx = (prev_token_types == TokenType.VAR) | (prev_token_types == TokenType.NUM)
-    # Mask to select current level for applicable sequences
-    term_level_mask = level_mask * term_idx.unsqueeze(1)
+    # A non-END terminal token is always followed by a sibling (or formula ends)
+    term_idx = ((prev_token_types == TokenType.VAR) | (prev_token_types == TokenType.NUM)) & (new_pos_levels != 0)
     # Increment sibling; level doesn't change
+    term_level_mask = level_mask * term_idx.unsqueeze(1)
     new_pos_vecs[term_level_mask] += 1
 
     # An END token always pops up and is followed by parent's sibling (or formula ends)
     end_idx = prev_token_types == TokenType.END
-    # Mask to select current level for applicable sequences
-    end_level_mask = level_mask * end_idx.unsqueeze(1)
     # Set current level to 0 since we're popping up
+    end_level_mask = level_mask * end_idx.unsqueeze(1)
     new_pos_vecs[end_level_mask] = 0
     # Decrement current level
     new_pos_levels[end_idx] -= 1
+    # For tokens that don't end the formula, increase sibling value of new level
+    level_mask = F.one_hot(new_pos_levels, num_classes=new_pos_vecs.shape[1]).type(torch.bool).to(device)
+    end_level_mask = level_mask * (end_idx & new_pos_levels != 0).unsqueeze(1)
+    new_pos_vecs[end_level_mask] += 1
 
     return new_pos_vecs, new_pos_levels
 

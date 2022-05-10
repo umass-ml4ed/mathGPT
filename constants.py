@@ -11,7 +11,24 @@ class TokenType(IntEnum):
     OP = 5
     END = 6
 
-OPT = Tuple[str, str, Optional[List['OPT']]]
+ANONYMOUS_OPERATOR = "anonymous_operator" # Synthetic token symbol for anonymous operator type
+
+TYPE_STR_TO_INT: Dict[str, TokenType] = {
+    "N": TokenType.NUM, # Numbers
+    "U": TokenType.OP, # Unordered ops
+    "O": TokenType.OP, # Ordered ops
+    "F": TokenType.OP, # Functions
+    "M": TokenType.OP, # Matrices/groups
+    "+": TokenType.OP, # Nested apply operators
+    "T": TokenType.OP, # Text, can have children sometimes
+    "W": TokenType.OP, # Empty field, can have children or be terminal
+    "V": TokenType.VAR, # Variables
+    "C": TokenType.VAR, # Constants
+    "-": TokenType.VAR, # "unknown", but generally represents some math symbol
+    # We're not including the "E" type, as all instances should be removed during post-processing
+}
+
+OPT = Tuple[str, str, Optional[List['OPT']]] # Type, token, children
 
 class Formula(TypedDict):
     opt: OPT
@@ -55,27 +72,13 @@ class CollatedBatch(TypedDict):
     pos_encodings: torch.Tensor
     attention_mask: torch.Tensor
 
-TYPE_STR_TO_INT: Dict[str, TokenType] = {
-    "U": TokenType.OP, # Unordered ops
-    "O": TokenType.OP, # Ordered ops
-    "F": TokenType.OP, # Functions
-    "M": TokenType.OP, # Matrices/vectors
-    "+": TokenType.OP, # Nested apply operators
-    "N": TokenType.NUM, # Numbers
-    "V": TokenType.VAR, # Variables
-    "C": TokenType.VAR, # Constants
-    "T": TokenType.VAR, # Text
-    "E": TokenType.OP, # Error # TODO: remove these?
-    "W": TokenType.VAR, # TODO
-    "-": TokenType.VAR, # TODO
-}
-
 class Mode(IntEnum):
     PRETRAIN = 1
 
-MAX_FORMULA_DEPTH = 64 # TODO: check actual max depth seen
-MAX_FORMULA_WIDTH = 32 # TODO: check actual max width seen
+MAX_FORMULA_DEPTH = 32
+MAX_FORMULA_WIDTH = 64
 
-PADDING_TOKEN_ID = -100 # This is the default padding token for transformers and the default ignore_index for NLLLoss
+# The following are the defaults for the transformers tokenizer
+PADDING_TOKEN_ID = -100
 EOS_TOKEN = "<|endoftext|>"
 EOS_TOKEN_ID = 50256

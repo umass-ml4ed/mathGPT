@@ -1,8 +1,9 @@
 from typing import List, Optional, Union
 import math
 import torch
+from mathGPT.constants import ANONYMOUS_OPERATOR
 
-from vocabulary import Vocabulary
+from vocabulary import Vocabulary, get_matrix_symbol
 from constants import OPT, TokenType, Sequence, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH
 
 POS_ENCODING_REGION_NUM_BITS = math.ceil(math.log2(MAX_FORMULA_WIDTH))
@@ -29,16 +30,45 @@ def encode_pos(pos_vec: Union[List[int], torch.Tensor], pos_level: int):
     return encoding
 
 
-def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_level: int, cur_child_num: int, sequence: Sequence):
+def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_level: int, cur_child_num: int, sequence: Sequence) -> bool:
     """
-    Recursive helper for OPT tokenization, add info for current head and then process children
-    If formula is None, interpret as END token
+    Recursive helper for OPT tokenization, add info for current head and then process children.
+    Also do data post-processing.
+    If formula is None, interpret as END token.
+    Returns if the provided node got added to the running list (was not skipped).
     """
-    # Resolve type and token id from symbol
+
+    drop_first_child = False
+
     if not formula:
         token_type, symbol_token = TokenType.END, 0
     else:
-        token_type, symbol_token = Vocabulary.get_token(formula[0], formula[1])
+        # Resolve type and token id from symbol, post-processing rules follow
+        type_str, symbol = formula[:2]
+
+        if type_str == "+":
+            # Convert all "+" symbols to anonymous operator.
+            # TangentCFT will assign the left grandchild, with a sub-type, as the symbol.
+            # We'll assume the model doesn't need this hint and can discover the relation via attention.
+            symbol = ANONYMOUS_OPERATOR
+
+        elif type_str == "E":
+            # An "E" type with no children indicates a padding value inserted by TangentCFT to make matrices rectangular.
+            # For now, drop these, since we aren't enforcing the model to produce rectangular matrices.
+            if not formula[2]:
+                return False
+            # An "E" type with children indicates a cerror tag from the MathML source, which represents a semantic error.
+            # The first child of will be an identifier for the type of error.
+            # Remove this identifier, and convert the E tag to an anonymous operator to keep its children.
+            drop_first_child = True
+            type_str = "+"
+            symbol = ANONYMOUS_OPERATOR
+
+        elif type_str == "M":
+            # Special processing for matrix symbols
+            symbol = get_matrix_symbol(symbol)
+
+        token_type, symbol_token = Vocabulary.get_token(type_str, symbol)
 
     # Set position
     # TODO: to avoid max depth limit, try just concatting to list and then padding in batch
@@ -54,16 +84,21 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
     sequence.pos_encodings.append(encode_pos(pos_vec, cur_level))
 
     if not formula:
-        return
+        return True
 
     # Process children
+    child_idx = 0
     if formula[2]:
-        for child_idx, child in enumerate(formula[2]):
-            tokenize_formula_rec(child, pos_vec, cur_level + 1, child_idx, sequence)
+        children = formula[2][1:] if drop_first_child else formula[2]
+        for child in children:
+            if tokenize_formula_rec(child, pos_vec, cur_level + 1, child_idx, sequence):
+                child_idx += 1
 
     # Append END token as last child for all OP tokens
     if token_type == TokenType.OP:
-        tokenize_formula_rec(None, pos_vec, cur_level + 1, len(formula[2]) if formula[2] else 0, sequence)
+        tokenize_formula_rec(None, pos_vec, cur_level + 1, child_idx, sequence)
+
+    return True
 
 def tokenize_formula(formula: OPT):
     """
