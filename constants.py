@@ -28,6 +28,8 @@ TYPE_STR_TO_INT: Dict[str, TokenType] = {
     # We're not including the "E" type, as all instances should be removed during post-processing
 }
 
+FORMULA_IDENTIFIER = "[_mathGPT_formula_]" # Replace formulas in raw text with this to recover after loading
+
 OPT = Tuple[str, str, Optional[List['OPT']]] # Type, token, children
 
 class Formula(TypedDict):

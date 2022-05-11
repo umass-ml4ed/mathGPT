@@ -1,0 +1,25 @@
+- data investigation
+    - CDF for frequency for tokens of each type, i.e., graph n most frequent tokens vs. % of nodes covered by these
+- data post-processing
+    - tokenizer should directly assign types and tokens for special cases, instead of layer of indirection, adjust vocab code
+    - assign special token for cerror, maybe different token for different cerror cases
+    - keep matrix padding, but assign special token
+    - get rid of "normal-" prefix
+    - var/text/nums
+        - for terminal var/text nodes, insert special token, and then create children with GPT tokenizer
+        - for non-terminal var/text nodes, if assuming function, insert special function token,
+            then assign name child (with GPT token children) as first child, then actual children as subsequent children
+        - for nums, insert special num token, then tokenize each character to build child set
+    - (future) tree rebalancing
+        - for all, make sure we have a fallback for unhandled cases (especially if we need to process syntactically incorrect sequences)
+        - "+" type operators - replace "+" and sub/sup child with left grandchild and rebalance children
+        - "E" type cases - possibly insert function nodes
+- model
+    - var/text/num
+        - for special token, next token must be of corresponding type
+        - for children of special var/text token, predict token from text vocab, and restrict type to text and end
+        - for children of special num token, restrict type to num vocab
+    - (future) enforce syntactic correctness
+        - ensure matrix children are always matrix rows, and that number of children is correct
+- generation
+    - make adjustments for var/text/num sub-trees

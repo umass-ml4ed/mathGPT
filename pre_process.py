@@ -11,7 +11,7 @@ from TangentCFT.TangentS.math_tan.math_extractor import MathExtractor
 from TangentCFT.TangentS.math_tan.semantic_symbol import SemanticSymbol
 
 from vocabulary import Vocabulary
-from constants import Formula, OPT
+from constants import Formula, OPT, FORMULA_IDENTIFIER
 
 def tree_to_serializable(sem_symbol: SemanticSymbol) -> OPT:
     """
@@ -68,12 +68,10 @@ def process_article(article_filename: str):
             "opt": tree_to_serializable(sem_tree),
             "tex": isolate_tex(tree) # TODO: might be easier to extract from pmml, already split into tokens
         }
-        # TODO: check for 'E!' in equation text, indicating error
 
     # Extract text and replace <math> tags with identifiers
     text_content = ""
     searchable_content = content
-    cur_math_idx = 0
     while True:
         # Find the next math tag in the text yet to be searched
         math_tag_loc = MathExtractor.math_pattern.search(searchable_content)
@@ -82,10 +80,8 @@ def process_article(article_filename: str):
             break
 
         # Add content up to math formula and add formula identifier
-        # TODO: use more unique identifier to avoid possible false positives in articles
-        text_content += searchable_content[:math_tag_loc.start()] + f"[{cur_math_idx}]"
+        text_content += searchable_content[:math_tag_loc.start()] + FORMULA_IDENTIFIER
         searchable_content = searchable_content[math_tag_loc.end():]
-        cur_math_idx += 1
 
     # Remove all html tags
     soup = BeautifulSoup(text_content, "lxml")
@@ -116,7 +112,7 @@ def process_wikipedia_data():
             if article_filename.endswith(".html"):
                 article_filenames.append(article_filename)
 
-    max_articles = 10000
+    max_articles = len(article_filenames)
     print("Processing articles...")
     for article_filename in tqdm(article_filenames[:max_articles]):
         process_article(article_filename)

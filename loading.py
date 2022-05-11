@@ -7,7 +7,7 @@ import torch
 from transformers import GPT2TokenizerFast
 
 from math_tokenize import tokenize_formula, EMPTY_POS_VECTOR, EMPTY_POS_ENCODING
-from constants import Article, TokenType, Sequence, CollatedBatch, PADDING_TOKEN_ID, EOS_TOKEN
+from constants import Article, TokenType, Sequence, CollatedBatch, PADDING_TOKEN_ID, EOS_TOKEN, FORMULA_IDENTIFIER
 from utils import device
 
 def load_articles():
@@ -67,9 +67,8 @@ class Dataset(torch.utils.data.Dataset):
 
             # Split article text in between formulas
             article_text = article["text"] + EOS_TOKEN
-            text_chunks = re.split(r"\[\d+\]", article_text) # TODO: commonize regex
+            text_chunks = article_text.split(FORMULA_IDENTIFIER)
             for text_chunk_idx, text_chunk in enumerate(text_chunks):
-                # TODO: see what happens with empty strings
                 # Tokenize the text chunk and add it to the sequence
                 text_token_ids: List[int] = self.text_tokenizer(text_chunk)["input_ids"]
                 sequence.token_ids += text_token_ids
