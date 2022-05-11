@@ -1,5 +1,3 @@
-- data investigation
-    - CDF for frequency for tokens of each type, i.e., graph n most frequent tokens vs. % of nodes covered by these
 - data post-processing
     - tokenizer should directly assign types and tokens for special cases, instead of layer of indirection, adjust vocab code
     - assign special token for cerror, maybe different token for different cerror cases

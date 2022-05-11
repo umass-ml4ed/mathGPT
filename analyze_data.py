@@ -1,6 +1,8 @@
 import os
 import json
 from tqdm import tqdm
+from matplotlib import pyplot as plt
+import numpy as np
 
 from constants import Article, OPT, TYPE_STR_TO_INT
 
@@ -15,6 +17,10 @@ def process_tree(article_name: str, tree_node: OPT, depth: int, err_found: bool,
     stats["max_depth"] = max(stats["max_depth"], depth)
     stats["max_width"] = max(stats["max_width"], num_children)
     token_to_child_range = stats["type_to_token_to_child_range"].setdefault(tree_node[0], {})
+
+    token_to_freq = stats["type_to_token_to_freq"].setdefault(tree_node[0], {})
+    token_to_freq.setdefault(tree_node[1], 0)
+    token_to_freq[tree_node[1]] += 1
 
     if num_children:
         stats["num_ops"] += 1
@@ -102,6 +108,7 @@ def analyze_data():
         "type_str_to_child_range": {},
         "type_to_child_range": {},
         "all_error_types": set(),
+        "type_to_token_to_freq": {},
         "max_depth": 0,
         "max_width": 0,
         "num_formulas": 0,
@@ -137,7 +144,7 @@ def analyze_data():
     #         if child_range[0] != child_range[1]:
     #             print(type_str, token, child_range)
     for type_str, child_range in stats["type_str_to_child_range"].items():
-        print(type_str, child_range)
+        print(type_str, child_range, sum(stats["type_to_token_to_freq"][type_str].values()))
     for token_type, child_range in stats["type_to_child_range"].items():
         print(token_type, child_range)
     print("Error types:")
@@ -148,3 +155,10 @@ def analyze_data():
     print("Num err ops:", stats['num_err_ops'], "case 1:", stats['num_err_case_1'], "case 2:", stats['num_err_case_2'], "case 3:", stats['num_err_case_3'])
     print("Num text tokens:", stats["num_text"], "with children:", stats["num_text_ops"])
     print("Max depth:", stats["max_depth"], "Max width:", stats["max_width"])
+
+    # For relevant types, plot n most frequent types against portion of nodes covered by those types
+    for type_str in ["N", "T", "V", "-", "O", "F"]:
+        frequencies = sorted(stats["type_to_token_to_freq"][type_str].values(), reverse=True)
+        plt.plot(list(range(len(frequencies))), np.cumsum(frequencies) / sum(frequencies))
+        plt.title(f"Frequency CDF for {type_str} type")
+        plt.show()
