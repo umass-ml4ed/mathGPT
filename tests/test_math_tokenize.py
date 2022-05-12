@@ -1,6 +1,6 @@
 from math_tokenize import encode_pos, tokenize_formula, POS_ENCODING_REGION_NUM_BITS
 from vocabulary import Vocabulary
-from constants import MAX_FORMULA_DEPTH, TokenType, ANONYMOUS_OPERATOR
+from constants import MAX_FORMULA_DEPTH, TokenType, SpecialOpToken, SpecialVarToken
 
 def test_encode_pos():
     pos_vec = [0, 1, 5] + ([0] * (MAX_FORMULA_DEPTH - 3))
@@ -18,8 +18,8 @@ def test_tokenize_formula():
     - Coalescing string type to TokenType
     - Inserting END tokens after as the last child of each OP
     - For + type, convert to anonymous operator
-    - For cerror E type, remove first child and convert to anonymous operator
-    - For matrix E type, remove element
+    - For cerror E type, remove first child and convert to special operator
+    - For matrix E type, convert to padding
     - For M type, convert to special symbol
     """
     formula = [
@@ -64,11 +64,11 @@ def test_tokenize_formula():
     ]
 
     expected_tokens = [
-        Vocabulary.get_token("O", ANONYMOUS_OPERATOR)[1],
+        SpecialOpToken.ANON_OP.value,
             Vocabulary.get_token("O", "SUB")[1],
                 Vocabulary.get_token("O", "limit")[1],
                     0,
-                Vocabulary.get_token("O", ANONYMOUS_OPERATOR)[1],
+                SpecialOpToken.CERR_OP.value,
                     Vocabulary.get_token("V", "N")[1],
                     Vocabulary.get_token("F", "normal-\u2192")[1],
                         0,
@@ -78,6 +78,7 @@ def test_tokenize_formula():
             Vocabulary.get_token("M", "matrix-V")[1],
                 Vocabulary.get_token("N", "1")[1],
                 Vocabulary.get_token("N", "2")[1],
+                SpecialVarToken.MAT_PAD.value,
                 0,
             0,
     ]
@@ -96,6 +97,7 @@ def test_tokenize_formula():
             TokenType.OP,
                 TokenType.NUM,
                 TokenType.NUM,
+                TokenType.VAR,
                 TokenType.END,
             TokenType.END,
     ]
@@ -116,9 +118,10 @@ def test_tokenize_formula():
                 [0, 1, 0, 0, 0] + padding,
                 [0, 1, 1, 0, 0] + padding,
                 [0, 1, 2, 0, 0] + padding,
+                [0, 1, 3, 0, 0] + padding,
             [0, 2, 0, 0, 0] + padding,
     ]
-    expected_pos_levels = [0, 1, 2, 3, 2, 3, 3, 4, 3, 3, 2, 1, 2, 2, 2, 1]
+    expected_pos_levels = [0, 1, 2, 3, 2, 3, 3, 4, 3, 3, 2, 1, 2, 2, 2, 2, 1]
 
     tokenized = tokenize_formula(formula)
 

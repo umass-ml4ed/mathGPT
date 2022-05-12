@@ -11,7 +11,17 @@ class TokenType(IntEnum):
     OP = 5
     END = 6
 
-ANONYMOUS_OPERATOR = "anonymous_operator" # Synthetic token symbol for anonymous operator type
+class SpecialOpToken(IntEnum):
+    UNK = 0
+    ANON_OP = 1
+    CERR_OP = 2
+
+class SpecialVarToken(IntEnum):
+    UNK = 0
+    MAT_PAD = 1
+
+class SpecialNumToken(IntEnum):
+    UNK = 0
 
 TYPE_STR_TO_INT: Dict[str, TokenType] = {
     "N": TokenType.NUM, # Numbers
@@ -26,6 +36,14 @@ TYPE_STR_TO_INT: Dict[str, TokenType] = {
     "C": TokenType.VAR, # Constants
     "-": TokenType.VAR, # "unknown", but generally represents some math symbol
     # We're not including the "E" type, as all instances should be removed during post-processing
+}
+
+# For given types, keep n most frequent tokens and discard the rest (convert discarded to UNK during loading)
+TYPE_STR_TO_MAX_NUM_TOKENS: Dict[str, int] = {
+    "N": 2000,
+    "T": 1000,
+    "V": 1000,
+    "F": 5000,
 }
 
 FORMULA_IDENTIFIER = "[_mathGPT_formula_]" # Replace formulas in raw text with this to recover after loading

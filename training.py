@@ -120,7 +120,7 @@ def pretrain(model_name: str, options: TrainOptions):
     train(model, Mode.PRETRAIN, model_name, train_loader, validation_loader, lr=options.lr, weight_decay=options.weight_decay, epochs=options.epochs, patience=10)
 
 def test_lm(model_name: str, test_article: str, options: TrainOptions):
-    # TODO: maybe load options from config
+    # TODO: load options from config
     with open(test_article) as test_article_file:
         article = json.load(test_article_file)
         article["name"] = test_article_file
