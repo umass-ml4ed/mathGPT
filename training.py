@@ -1,9 +1,11 @@
 import time
 import json
 import torch
+from torch.utils.data import DataLoader, Subset
 import numpy as np
 from sklearn import metrics
 from tqdm import tqdm
+from typing import Optional
 
 from model_math_gpt import MathGPT
 from loading import load_articles, Dataset, Collator, trim_batch
@@ -11,15 +13,19 @@ from generate import generate, decode_batch
 from utils import TrainOptions, device
 from constants import Mode
 
-USE_PATIENCE = False
+def save_model(model: MathGPT, model_name: str, options: TrainOptions):
+    torch.save(model.state_dict(), f"{model_name}.pt")
+    with open(f"{model_name}.json", "w") as config_file:
+        json.dump(options.__dict__, config_file, indent=4)
 
-def load_from_config(model_name: str):
-    # TODO: open config file and create TrainOptions
-    # TODO: open .pt file and create corresponding model
-    # TODO: return model and options
-    pass
+def load_model(model_name: str):
+    with open(f"{model_name}.json") as config_file:
+        options = TrainOptions(json.load(config_file))
+    model = MathGPT().to(device)
+    model.load_state_dict(torch.load(f"{model_name}.pt", map_location=device))
+    return model, options
 
-def evaluate_model(model, validation_loader: torch.utils.data.DataLoader, mode: Mode):
+def evaluate_model(model: MathGPT, validation_loader: DataLoader, mode: Mode):
     total_loss = 0.0
     num_batches = 0
     all_predictions = []
@@ -51,30 +57,35 @@ def evaluate_model(model, validation_loader: torch.utils.data.DataLoader, mode: 
         accuracy = sum(match) / len(match)
         return total_loss / num_batches, accuracy
 
-def train(model, mode: Mode, model_name: str, train_loader, validation_loader, lr=1e-4, weight_decay=1e-6, epochs=200, patience=10):
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+def train(model: MathGPT, mode: Mode, model_name: str, train_loader: DataLoader, validation_loader: Optional[DataLoader], options: TrainOptions):
+    optimizer = torch.optim.AdamW(model.parameters(), lr=options.lr, weight_decay=options.weight_decay)
     torch.autograd.set_detect_anomaly(True) # Pause exectuion and get stack trace if something weird happens (ex: NaN grads)
     best_metric = None
     best_stats = None
     cur_stats = None
     best_epoch = 0
-    for epoch in range(epochs):
+
+    print("Training...")
+    for epoch in range(options.epochs):
         start_time = time.time()
         model.train() # Set model to training mode
         train_loss = 0.0
         num_batches = 0
         for batch in tqdm(train_loader):
-            optimizer.zero_grad()
             loss = model(batch)[0]
             loss.backward()
-            optimizer.step()
             train_loss += float(loss.detach().cpu().numpy())
             num_batches += 1
+            if num_batches % options.grad_accum_batches == 0 or num_batches == len(train_loader):
+                optimizer.step()
+                optimizer.zero_grad()
 
         model.eval() # Set model to evaluation mode
         if mode == Mode.PRETRAIN:
-            train_loss, train_acc = evaluate_model(model, train_loader, mode)
-            val_loss, val_acc = evaluate_model(model, validation_loader, mode) if validation_loader else (0, 0, 0, 0)
+            # train_loss, train_acc = evaluate_model(model, train_loader, mode)
+            train_loss = 0
+            train_acc = 0
+            val_loss, val_acc = evaluate_model(model, validation_loader, mode) if validation_loader else (0, 0)
             cur_stats = [epoch, val_loss]
             print(f"Epoch: {epoch + 1}, Train Loss: {train_loss:.3f}, Accuracy: {train_acc:.3f}, "
                   f"Val Loss: {val_loss:.3f}, Accuracy: {val_acc:.3f}, "
@@ -86,55 +97,53 @@ def train(model, mode: Mode, model_name: str, train_loader, validation_loader, l
             best_epoch = epoch
             best_stats = cur_stats
             print("Saving model")
-            # TODO: try saving full config for simpler loading
-            # also consider saving info for checkpointing - epoch, seed, etc. (look up examples)
+            # TODO: consider saving info for checkpointing - epoch, seed, etc. (look up examples)
             # TODO: saving is slow - see if we can just save best model in memory and then save to file later
-            torch.save(model.state_dict(), f"{model_name}.pt")
+            save_model(model, model_name, options)
 
         # Stop training if we haven't improved in a while
-        if USE_PATIENCE and (epoch - best_epoch >= patience):
+        if options.patience and (epoch - best_epoch >= options.patience):
             print("Early stopping")
             break
 
     return best_stats
 
 def pretrain(model_name: str, options: TrainOptions):
-    articles = load_articles()[:100]
+    articles = load_articles()
     dataset = Dataset(articles, options.max_seq_len)
-    train_data = torch.utils.data.Subset(dataset, list(range(0, int(len(dataset) * .8))))
-    val_data = torch.utils.data.Subset(dataset, list(range(int(len(dataset) * .8), len(dataset))))
-    train_loader = torch.utils.data.DataLoader(
+    train_data = Subset(dataset, list(range(0, int(len(dataset) * .9))))
+    val_data = Subset(dataset, list(range(int(len(dataset) * .9), len(dataset))))
+    train_loader = DataLoader(
         train_data,
         collate_fn=Collator(),
         batch_size=options.batch_size,
         shuffle=True,
         drop_last=True
     )
-    validation_loader = torch.utils.data.DataLoader(
+    validation_loader = DataLoader(
         val_data,
         collate_fn=Collator(),
         batch_size=options.batch_size
     ) if val_data is not None else None
 
     model = MathGPT().to(device)
-    train(model, Mode.PRETRAIN, model_name, train_loader, validation_loader, lr=options.lr, weight_decay=options.weight_decay, epochs=options.epochs, patience=10)
+    train(model, Mode.PRETRAIN, model_name, train_loader, validation_loader, options)
 
-def test_lm(model_name: str, test_article: str, options: TrainOptions):
-    # TODO: load options from config
+def test_lm(model_name: str, test_article: str):
+    model, options = load_model(model_name)
+
     with open(test_article) as test_article_file:
         article = json.load(test_article_file)
         article["name"] = test_article_file
     dataset = Dataset([article], options.max_seq_len)
-    data_loader = torch.utils.data.DataLoader(
+    data_loader = DataLoader(
         dataset,
         collate_fn=Collator(),
         batch_size=len(dataset)
     )
-    model = MathGPT().to(device)
-    model.load_state_dict(torch.load(f"{model_name}.pt", map_location=device))
 
     with torch.no_grad():
-        trim_point = options.max_seq_len // 2
+        trim_point = int(options.max_seq_len * .9)
         for batch in data_loader:
             # Generate new sequences given first half of original sequence as input
             gen_batch = trim_batch(batch, 0, trim_point)

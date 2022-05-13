@@ -1,5 +1,5 @@
 import random
-from enum import Enum
+from typing import Optional
 import numpy as np
 import torch
 
@@ -17,8 +17,10 @@ def initialize_seeds(seedNum):
 
 class TrainOptions:
     def __init__(self, options: dict):
-        self.lr: float = options.get("lr", 1e-4)
-        self.weight_decay: bool = options.get("weight_decay", 1e-2)
+        self.lr: float = options.get("lr", 1e-5)
+        self.weight_decay: float = options.get("weight_decay", 1e-2)
         self.epochs: int = options.get("epochs", 100)
+        self.patience: Optional[int] = options.get("patience", None)
         self.batch_size: int = options.get("batch_size", 64)
+        self.grad_accum_batches: int = options.get("grad_accum_batches", 1)
         self.max_seq_len: int = options.get("max_seq_len", 1024)

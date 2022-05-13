@@ -2,7 +2,9 @@ from typing import List
 import torch
 import torch.nn.functional as F
 from transformers import GPT2TokenizerFast
+from tqdm import tqdm
 
+from model_math_gpt import MathGPT
 from vocabulary import Vocabulary
 from math_tokenize import encode_pos
 from utils import device
@@ -44,13 +46,14 @@ def infer_math_pos(prev_pos_vecs: torch.Tensor, prev_pos_levels: torch.Tensor, p
 
     return new_pos_vecs, new_pos_levels
 
-def generate(model, gen_batch: CollatedBatch, max_seq_len: int):
+def generate(model: MathGPT, gen_batch: CollatedBatch, max_seq_len: int):
     """
     Given a model and a seed batch, generate tokens up to the given length
     Seed batch is modified
     """
+    model.eval()
     batch_size, starting_len = gen_batch["token_ids"].shape
-    for _ in range(starting_len, max_seq_len):
+    for _ in tqdm(range(starting_len, max_seq_len)):
         # TODO: can we make faster by removing sequences in the batch that hit EOS? or set attention mask to 0 after EOS?
         # TODO: extract and pass past_key_values
         _, _, type_preds, token_preds = model(gen_batch)

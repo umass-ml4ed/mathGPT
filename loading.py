@@ -1,8 +1,7 @@
 import json
 import os
-import re
 from typing import List
-
+from tqdm import tqdm
 import torch
 from transformers import GPT2TokenizerFast
 
@@ -12,7 +11,8 @@ from utils import device
 
 def load_articles():
     articles: List[Article] = []
-    for article_filename in os.listdir("data"):
+    print("Loading articles...")
+    for article_filename in tqdm(os.listdir("data")):
         with open(os.path.join("data", article_filename)) as article_file:
             article = json.load(article_file)
             article["name"] = article_filename
@@ -43,7 +43,6 @@ def split_sequence(sequence: Sequence, max_seq_len: int) -> List[Sequence]:
     pre_form_text_tok_id = next((tok_idx for tok_idx in range(max_seq_len - 1, -1, -1) if sequence.token_types[tok_idx] == TokenType.TEXT), None)
     if not pre_form_text_tok_id:
         # No text tokens before the split point, so skip this formula and keep processing right after it ends
-        print("Formula too long! Skipping...")
         # To skip this formula, we need to find the end of it and start the next split there
         end_of_form = next((tok_idx for tok_idx in range(max_seq_len, seq_len) if sequence.token_types[tok_idx] == TokenType.TEXT), None)
         if not end_of_form:
@@ -62,7 +61,8 @@ class Dataset(torch.utils.data.Dataset):
         self.data: List[Sequence] = []
         self.text_tokenizer: GPT2TokenizerFast = GPT2TokenizerFast.from_pretrained("gpt2")
 
-        for article in articles:
+        print("Processing data...")
+        for article in tqdm(articles):
             sequence = Sequence(article["name"])
 
             # Split article text in between formulas

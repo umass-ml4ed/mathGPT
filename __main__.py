@@ -44,14 +44,16 @@ def main():
 
     parser = argparse.ArgumentParser("MathGPT")
     # Modes
-    parser.add_argument("--preprocess", action="store_true")
-    parser.add_argument("--analyze_data", action="store_true")
-    parser.add_argument("--pretrain", action="store_true")
-    parser.add_argument("--test_lm", action="store_true")
+    parser.add_argument("--preprocess", action="store_true", help="Process raw Wikipedia data and save to JSON files; generate raw vocab file")
+    parser.add_argument("--analyze_data", action="store_true", help="Produce stats on pre-processed dataset")
+    parser.add_argument("--pretrain", action="store_true", help="Pre-train generative language model")
+    parser.add_argument("--test_lm", action="store_true", help="Run qualitative test on generative language model")
     # Config
-    parser.add_argument("--name")
-    parser.add_argument("--batch_size", type=int)
-    parser.add_argument("--max_seq_len", type=int)
+    parser.add_argument("--name", help="Name of current model/experiment, used for saving/loading model and config")
+    parser.add_argument("--epochs", type=int, help="Maximum number of training epochs")
+    parser.add_argument("--batch_size", type=int, help="Maximum number of sequences per batch")
+    parser.add_argument("--grad_accum_batches", type=int, help="Number of batches to accumulate gradients for")
+    parser.add_argument("--max_seq_len", type=int, help="Maximum length, in tokens, of any sequence")
 
     args = parser.parse_args()
     arg_dict = {arg: val for arg, val in vars(args).items() if val is not None}
@@ -63,7 +65,7 @@ def main():
     if args.pretrain:
         pretrain(args.name, TrainOptions(arg_dict))
     if args.test_lm:
-        test_lm(args.name, "data/Blakers–Massey_theorem.json", TrainOptions(arg_dict))
+        test_lm(args.name, "data/Blakers–Massey_theorem.json")
 
 if __name__ == "__main__":
     main()

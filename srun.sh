@@ -1,1 +1,1 @@
-srun -G 1 -p gpu --mem=8192 --pty /bin/bash
+srun -G 1 -p gpu --mem=64000 --pty /bin/bash
