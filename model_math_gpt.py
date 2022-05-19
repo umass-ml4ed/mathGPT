@@ -1,4 +1,4 @@
-from typing import Dict, List
+from typing import Dict, List, Optional
 import torch
 from torch import nn
 from transformers import GPT2Model, GPT2LMHeadModel
@@ -176,29 +176,37 @@ class MathGPT(nn.Module):
             type_to_token_probs[token_type][token_idxs] = token_probs * type_probs[:, :, token_type][token_idxs].unsqueeze(1)
         return type_to_token_probs
 
-    def get_prediction_loss(self, type_to_token_probs: Dict[TokenType, torch.Tensor], type_idxs: Dict[TokenType, torch.Tensor], batch: CollatedBatch):
+    def get_prediction_loss(self, type_to_token_probs: Dict[TokenType, torch.Tensor], type_idxs: Dict[TokenType, torch.Tensor],
+                            batch: CollatedBatch, labels: Optional[torch.Tensor]):
         """
         Calculate the cross-entropy prediction loss given the token probabilities
         """
-        # TODO: see if we have to do anything with padding regions
         # TODO: look at numGPT and FORTE papers to verify their token probability calculations
-        loss = torch.Tensor([0]).to(device)
-        shifted_target_tokens = batch["token_ids"][:, 1:]
+        losses: List[torch.Tensor] = []
+        shifted_target_tokens = (batch["token_ids"] if labels is None else labels)[:, 1:]
         for token_type in TokenType:
             # Get indices that have a target of this type
             shifted_type_idx = type_idxs[token_type][:, 1:]
+            # Exclude padding regions, including them would add extra length to the vector that we get the mean of
+            shifted_type_idx &= shifted_target_tokens != PADDING_TOKEN_ID
             # Skip type if it doesn't exist as a target, going through with calculations results in nan loss
             if not torch.any(shifted_type_idx):
                 continue
             # Get token probabilities for this type where the target matches
+            # TODO: problematic articles, token_type=Text for all - List_of_Dallas_Mavericks_seasons, (1,5-anhydro-D-fructose_dehydratase or Field_of_fractions), Geometric_dimensioning_and_tolerancing, Photoconductive_atomic_force_microscopy
             selected_probs = type_to_token_probs[token_type][:, :-1][shifted_type_idx]
-            # Add cross-entropy loss
-            # TODO: seems like we can sometimes get invalid values here, maybe somehow assigning 0 probability to target
+            if 0 in selected_probs:
+                with open("debug.txt", "a") as debug_file:
+                    print("0 target prob detected!")
+                    debug_file.write(f"{batch}\n\n{token_type}\n\n{selected_probs}\n\n{type_to_token_probs}\n\n{type_idxs}\n\n")
+                    continue
+            # Add cross-entropy loss, take average at end to weigh each token equally
             log_probs = torch.log(selected_probs)
-            loss += nn.NLLLoss(ignore_index=PADDING_TOKEN_ID)(log_probs, shifted_target_tokens[shifted_type_idx])
-        return loss
+            loss_fn = nn.NLLLoss(reduction="none")
+            losses.append(loss_fn(log_probs, shifted_target_tokens[shifted_type_idx]))
+        return torch.concat(losses, dim=0).mean()
 
-    def forward(self, batch: CollatedBatch): # TODO: return type
+    def forward(self, batch: CollatedBatch, labels: torch.Tensor = None): # TODO: return type
         # Run inputs through model
         gpt_output: GPTOutput = self.transformer(
             # past_key_values=[], # TODO: for speeding up decoding
@@ -229,7 +237,7 @@ class MathGPT(nn.Module):
         type_to_token_probs = self.get_token_probs(gpt_output, type_probs, type_idxs, final_formula_token_idx)
 
         # Calculate cross-entropy loss
-        loss = self.get_prediction_loss(type_to_token_probs, type_idxs, batch)
+        loss = self.get_prediction_loss(type_to_token_probs, type_idxs, batch, labels)
 
         # Calculate most likely predictions
         predicted_types, predicted_tokens = get_collapsed_predictions(type_to_token_probs)

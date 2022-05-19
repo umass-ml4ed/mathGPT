@@ -45,7 +45,7 @@ SAMPLE_ARTICLE_1 = {
 }
 
 def test_new_dataset():
-    # TODO: second sample
+    # TODO: mock json.load
     dataset = Dataset([SAMPLE_ARTICLE_1], 11)
 
     assert dataset.data[0].token_ids == [464, 27255, 286, 220, 0, Vocabulary.get_token("O", "SUP")[1], Vocabulary.get_token("V", "x")[1], Vocabulary.get_token("N", "2")[1], 0, 0, 318]

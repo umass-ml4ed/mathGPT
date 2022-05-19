@@ -1,5 +1,4 @@
 import json
-import os
 from typing import List
 from tqdm import tqdm
 import torch
@@ -8,16 +7,6 @@ from transformers import GPT2TokenizerFast
 from math_tokenize import tokenize_formula, EMPTY_POS_VECTOR, EMPTY_POS_ENCODING
 from constants import Article, TokenType, Sequence, CollatedBatch, PADDING_TOKEN_ID, EOS_TOKEN, FORMULA_IDENTIFIER
 from utils import device
-
-def load_articles():
-    articles: List[Article] = []
-    print("Loading articles...")
-    for article_filename in tqdm(os.listdir("data")):
-        with open(os.path.join("data", article_filename)) as article_file:
-            article = json.load(article_file)
-            article["name"] = article_filename
-            articles.append(article)
-    return articles
 
 
 def split_sequence(sequence: Sequence, max_seq_len: int) -> List[Sequence]:
@@ -57,13 +46,15 @@ def split_sequence(sequence: Sequence, max_seq_len: int) -> List[Sequence]:
 
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, articles: List[Article], max_seq_len: int):
+    def __init__(self, article_filenames: List[str], max_seq_len: int, do_splits: bool = True):
         self.data: List[Sequence] = []
         self.text_tokenizer: GPT2TokenizerFast = GPT2TokenizerFast.from_pretrained("gpt2")
 
         print("Processing data...")
-        for article in tqdm(articles):
-            sequence = Sequence(article["name"])
+        for article_name in tqdm(article_filenames):
+            with open(article_name) as article_file:
+                article: Article = json.load(article_file)
+            sequence = Sequence(article_name)
 
             # Split article text in between formulas
             article_text = article["text"] + EOS_TOKEN
@@ -107,9 +98,11 @@ class Dataset(torch.utils.data.Dataset):
                 sequence.pos_levels.append(0)
                 sequence.pos_encodings.append(EMPTY_POS_ENCODING)
 
-            # Split sequence according to max length and add to final data
-            split_sequences = split_sequence(sequence, max_seq_len)
-            self.data += split_sequences
+            if do_splits:
+                split_sequences = split_sequence(sequence, max_seq_len)
+                self.data += split_sequences
+            else:
+                self.data.append(sequence)
 
     def __len__(self):
         return len(self.data)
@@ -130,6 +123,7 @@ def trim_batch(batch: CollatedBatch, trim_start: int, trim_end: int) -> Collated
         "pos_levels": batch["pos_levels"][:, trim_start : trim_end],
         "pos_encodings": batch["pos_encodings"][:, trim_start : trim_end],
         "attention_mask": batch["attention_mask"][:, trim_start : trim_end],
+        "sequence_lengths": batch["sequence_lengths"], # TODO: do actual calculation, if it matters
     }
 
 
@@ -144,6 +138,7 @@ class Collator:
         pos_level_batches = []
         pos_encoding_batches = []
         attention_mask = []
+        sequence_lengths = []
 
         for sequence in batch:
             token_id_batches.append(torch.LongTensor(sequence.token_ids))
@@ -152,13 +147,16 @@ class Collator:
             pos_level_batches.append(torch.LongTensor(sequence.pos_levels))
             pos_encoding_batches.append(torch.FloatTensor(sequence.pos_encodings))
             attention_mask.append(torch.ones(len(sequence.token_ids)))
+            sequence_lengths.append(len(sequence.token_ids))
 
         return {
             "articles": [sequence.src_article for sequence in batch],
+            # The padding values for token ID and type are critical to correct loss computations in the model
             "token_ids": torch.nn.utils.rnn.pad_sequence(token_id_batches, batch_first=True, padding_value=PADDING_TOKEN_ID).to(device),
-            "token_types": torch.nn.utils.rnn.pad_sequence(token_type_batches, batch_first=True).to(device),
+            "token_types": torch.nn.utils.rnn.pad_sequence(token_type_batches, batch_first=True, padding_value=TokenType.TEXT.value).to(device),
             "pos_vecs": torch.nn.utils.rnn.pad_sequence(pos_vec_batches, batch_first=True).to(device),
             "pos_levels": torch.nn.utils.rnn.pad_sequence(pos_level_batches, batch_first=True).to(device),
             "pos_encodings": torch.nn.utils.rnn.pad_sequence(pos_encoding_batches, batch_first=True).to(device),
             "attention_mask": torch.nn.utils.rnn.pad_sequence(attention_mask, batch_first=True).to(device),
+            "sequence_lengths": sequence_lengths,
         }

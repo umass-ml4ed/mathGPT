@@ -1,17 +1,21 @@
 import time
+import os
 import json
 import torch
 from torch.utils.data import DataLoader, Subset
 import numpy as np
 from sklearn import metrics
 from tqdm import tqdm
-from typing import Optional
+from typing import Optional, List
 
 from model_math_gpt import MathGPT
-from loading import load_articles, Dataset, Collator, trim_batch
+from loading import Dataset, Collator, trim_batch
 from generate import generate, decode_batch
 from utils import TrainOptions, device
-from constants import Mode
+from constants import Mode, PADDING_TOKEN_ID
+
+def get_article_names():
+    return [os.path.join("data", article_filename) for article_filename in os.listdir("data")]
 
 def save_model(model: MathGPT, model_name: str, options: TrainOptions):
     torch.save(model.state_dict(), f"{model_name}.pt")
@@ -98,7 +102,6 @@ def train(model: MathGPT, mode: Mode, model_name: str, train_loader: DataLoader,
             best_stats = cur_stats
             print("Saving model")
             # TODO: consider saving info for checkpointing - epoch, seed, etc. (look up examples)
-            # TODO: saving is slow - see if we can just save best model in memory and then save to file later
             save_model(model, model_name, options)
 
         # Stop training if we haven't improved in a while
@@ -109,7 +112,7 @@ def train(model: MathGPT, mode: Mode, model_name: str, train_loader: DataLoader,
     return best_stats
 
 def pretrain(model_name: str, options: TrainOptions):
-    articles = load_articles()
+    articles = get_article_names()
     dataset = Dataset(articles, options.max_seq_len)
     train_data = Subset(dataset, list(range(0, int(len(dataset) * .9))))
     val_data = Subset(dataset, list(range(int(len(dataset) * .9), len(dataset))))
@@ -129,13 +132,53 @@ def pretrain(model_name: str, options: TrainOptions):
     model = MathGPT().to(device)
     train(model, Mode.PRETRAIN, model_name, train_loader, validation_loader, options)
 
+def evaluate_lm(model_name: str, test_options: dict):
+    model, options = load_model(model_name)
+    options.update(test_options)
+
+    # TODO: definitely need a unit/integration test to cover all the particulars
+    # TODO: get test split from a file
+    # TODO: try excluding test articles that contain UNKs, see how many are left out
+    articles = get_article_names()
+    test_articles = articles[int(len(articles) * .999):]
+    dataset = Dataset(test_articles, options.max_seq_len, do_splits=False)
+    test_loader = DataLoader(
+        dataset,
+        collate_fn=Collator(),
+        batch_size=1, # Only 1 sequence can be processed at a time to recover NLL from the cross-entropy loss (because of padding complications)
+    )
+    # Calculate perplexity - https://huggingface.co/docs/transformers/perplexity
+    # Perplexity = e ^ ((1/n) * nll)
+    print("Calculating perplexity...")
+    with torch.no_grad():
+        nlls: List[torch.Tensor] = []
+        total_sequence_length = 0
+        for batch in tqdm(test_loader):
+            sequence_length = batch["token_ids"].shape[1]
+            total_sequence_length += sequence_length
+            stride = options.stride or options.max_seq_len
+
+            # Get the sum of the NLL for each token in the sequence, using the stride method
+            # Region to left of split point is just for context with no NLL computed, and region to the right contribues to running NLL
+            for split_point in range(0, sequence_length, stride):
+                start_idx = max(split_point + stride - options.max_seq_len, 0)
+                end_idx = min(split_point + stride, sequence_length)
+                target_len = end_idx - split_point # This is equal to stride length except maybe shorter for the last iteration
+                sub_seq_batch = trim_batch(batch, start_idx, end_idx)
+                # Set targets to left of split point to padding so their NLL is not computed
+                labels = torch.clone(sub_seq_batch["token_ids"])
+                labels[:, :-target_len] = PADDING_TOKEN_ID
+                # Run model on batch sub-sequence with altered targets
+                loss = model(sub_seq_batch, labels=labels)[0]
+                # Loss is average NLL over all tokens in the sequence, multiply by number of targets to undo average and retrieve sum
+                nlls.append(loss * target_len)
+        perplexity = torch.exp(torch.sum(torch.stack(nlls)) / total_sequence_length)
+        print("Perplexity", perplexity)
+
 def test_lm(model_name: str, test_article: str):
     model, options = load_model(model_name)
 
-    with open(test_article) as test_article_file:
-        article = json.load(test_article_file)
-        article["name"] = test_article_file
-    dataset = Dataset([article], options.max_seq_len)
+    dataset = Dataset([test_article], options.max_seq_len)
     data_loader = DataLoader(
         dataset,
         collate_fn=Collator(),

@@ -55,7 +55,6 @@ class Formula(TypedDict):
     tex: str
 
 class Article(TypedDict):
-    name: str
     text: str
     formulas: Dict[str, Formula]
 
@@ -91,6 +90,7 @@ class CollatedBatch(TypedDict):
     pos_levels: torch.Tensor
     pos_encodings: torch.Tensor
     attention_mask: torch.Tensor
+    sequence_lengths: List[int]
 
 class Mode(IntEnum):
     PRETRAIN = 1

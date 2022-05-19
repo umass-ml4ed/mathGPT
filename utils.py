@@ -24,3 +24,7 @@ class TrainOptions:
         self.batch_size: int = options.get("batch_size", 64)
         self.grad_accum_batches: int = options.get("grad_accum_batches", 1)
         self.max_seq_len: int = options.get("max_seq_len", 1024)
+        self.stride: Optional[int] = options.get("stride", None)
+
+    def update(self, options: dict):
+        self.__dict__.update(options)
