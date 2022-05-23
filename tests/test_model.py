@@ -1,7 +1,7 @@
 import torch
 
 from math_tokenize import encode_pos, EMPTY_POS_ENCODING
-from model_math_gpt import MathGPT, EMB_SIZE, TEXT_VOCAB_SIZE, get_collapsed_predictions
+from model_math_gpt import MathGPT, EMB_SIZE, TEXT_VOCAB_SIZE
 from vocabulary import Vocabulary
 from constants import TokenType
 
@@ -215,38 +215,6 @@ def test_token_probs():
 
 def test_loss():
     pass # TODO
-
-def test_predictions():
-    return # TODO
-    type_to_token_probs = {
-        TokenType.TEXT: torch.Tensor([
-            [[0.1, 0.2, 0.1], [0.4, 0.2, 0.1]],
-            [[0.0, 0.0, 0.0], [0.5, 0.1, 0.1]]
-        ]),
-        TokenType.START_FORMULA: torch.Tensor([
-            [[0.1], [0.4]],
-            [[0.0], [0.5]]
-        ]),
-        TokenType.END_FORMULA: torch.Tensor([
-            [[0.1], [0.4]],
-            [[0.0], [0.5]]
-        ]),
-        TokenType.OP: torch.Tensor([
-            [[0.1, 0.2, 0.1], [0.4, 0.2, 0.1]],
-            [[0.0, 0.0, 0.0], [0.5, 0.1, 0.1]]
-        ]),
-        TokenType.NUM: torch.Tensor([
-            [[0.1, 0.2, 0.1], [0.4, 0.2, 0.1]],
-            [[0.0, 0.0, 0.0], [0.5, 0.1, 0.1]]
-        ]),
-        TokenType.VAR: torch.Tensor([
-            [[0.1, 0.2, 0.1], [0.4, 0.2, 0.1]],
-            [[0.0, 0.0, 0.0], [0.5, 0.1, 0.1]]
-        ])
-    }
-    type_preds, token_preds = get_collapsed_predictions(type_to_token_probs)
-    assert all(type_preds == [])
-    assert all(token_preds == [])
 
 def test_text_only_decode():
     # TODO: compare our model's decoding to pre-trained gpt2 with LM head and ensure same results.

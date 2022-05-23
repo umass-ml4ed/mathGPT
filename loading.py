@@ -1,5 +1,5 @@
 import json
-from typing import List
+from typing import List, Optional
 from tqdm import tqdm
 import torch
 from transformers import GPT2TokenizerFast
@@ -46,7 +46,7 @@ def split_sequence(sequence: Sequence, max_seq_len: int) -> List[Sequence]:
 
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, article_filenames: List[str], max_seq_len: int, do_splits: bool = True):
+    def __init__(self, article_filenames: List[str], max_seq_len: Optional[int] = None):
         self.data: List[Sequence] = []
         self.text_tokenizer: GPT2TokenizerFast = GPT2TokenizerFast.from_pretrained("gpt2")
 
@@ -98,7 +98,7 @@ class Dataset(torch.utils.data.Dataset):
                 sequence.pos_levels.append(0)
                 sequence.pos_encodings.append(EMPTY_POS_ENCODING)
 
-            if do_splits:
+            if max_seq_len:
                 split_sequences = split_sequence(sequence, max_seq_len)
                 self.data += split_sequences
             else:

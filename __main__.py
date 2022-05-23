@@ -69,7 +69,7 @@ def main():
     if args.evaluate_lm:
         evaluate_lm(args.name, arg_dict)
     if args.test_lm:
-        test_lm(args.name, "data/Blakers–Massey_theorem.json")
+        test_lm(args.name, "data/Grade_(slope).json")
 
 if __name__ == "__main__":
     main()

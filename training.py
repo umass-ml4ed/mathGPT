@@ -10,7 +10,8 @@ from typing import Optional, List
 
 from model_math_gpt import MathGPT
 from loading import Dataset, Collator, trim_batch
-from generate import generate, decode_batch
+from generate import generate, get_most_likely_predictions
+from decode import decode_batch
 from utils import TrainOptions, device
 from constants import Mode, PADDING_TOKEN_ID
 
@@ -36,7 +37,8 @@ def evaluate_model(model: MathGPT, validation_loader: DataLoader, mode: Mode):
     all_labels = []
     with torch.no_grad():
         for batch in tqdm(validation_loader):
-            loss, _, type_preds, token_preds = model(batch)
+            loss, type_to_token_probs = model(batch)
+            type_preds, token_preds = get_most_likely_predictions(type_to_token_probs)
             # TODO: put all this logic into a function, and then write a unit test
             # For predictions and targets, stack types and tokens in last dimension
             type_preds = type_preds[:, :-1].contiguous().view(-1).detach().cpu().numpy()
@@ -140,8 +142,8 @@ def evaluate_lm(model_name: str, test_options: dict):
     # TODO: get test split from a file
     # TODO: try excluding test articles that contain UNKs, see how many are left out
     articles = get_article_names()
-    test_articles = articles[int(len(articles) * .999):]
-    dataset = Dataset(test_articles, options.max_seq_len, do_splits=False)
+    test_articles = articles[int(len(articles) * .9):]
+    dataset = Dataset(test_articles, max_seq_len=None)
     test_loader = DataLoader(
         dataset,
         collate_fn=Collator(),
@@ -186,7 +188,7 @@ def test_lm(model_name: str, test_article: str):
     )
 
     with torch.no_grad():
-        trim_point = int(options.max_seq_len * .9)
+        trim_point = int(options.max_seq_len * .5)
         for batch in data_loader:
             # Generate new sequences given first half of original sequence as input
             gen_batch = trim_batch(batch, 0, trim_point)

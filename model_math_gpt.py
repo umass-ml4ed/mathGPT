@@ -184,6 +184,10 @@ class MathGPT(nn.Module):
         # TODO: look at numGPT and FORTE papers to verify their token probability calculations
         losses: List[torch.Tensor] = []
         shifted_target_tokens = (batch["token_ids"] if labels is None else labels)[:, 1:]
+        if shifted_target_tokens.shape[1] == 0:
+            # If the sequence has a length of 1, there are no targets to predict, so return a loss of 0
+            return torch.tensor(0.0).to(device)
+
         for token_type in TokenType:
             # Get indices that have a target of this type
             shifted_type_idx = type_idxs[token_type][:, 1:]
@@ -193,17 +197,18 @@ class MathGPT(nn.Module):
             if not torch.any(shifted_type_idx):
                 continue
             # Get token probabilities for this type where the target matches
-            # TODO: problematic articles, token_type=Text for all - List_of_Dallas_Mavericks_seasons, (1,5-anhydro-D-fructose_dehydratase or Field_of_fractions), Geometric_dimensioning_and_tolerancing, Photoconductive_atomic_force_microscopy
             selected_probs = type_to_token_probs[token_type][:, :-1][shifted_type_idx]
-            if 0 in selected_probs:
-                with open("debug.txt", "a") as debug_file:
-                    print("0 target prob detected!")
-                    debug_file.write(f"{batch}\n\n{token_type}\n\n{selected_probs}\n\n{type_to_token_probs}\n\n{type_idxs}\n\n")
-                    continue
             # Add cross-entropy loss, take average at end to weigh each token equally
             log_probs = torch.log(selected_probs)
             loss_fn = nn.NLLLoss(reduction="none")
-            losses.append(loss_fn(log_probs, shifted_target_tokens[shifted_type_idx]))
+            loss: torch.Tensor = loss_fn(log_probs, shifted_target_tokens[shifted_type_idx])
+            if any(torch.isnan(l) for l in loss):
+                import pdb; pdb.set_trace()
+                print("nan loss!")
+                loss = loss[~loss.isnan()]
+                with open("debug.txt", "a") as debug_file:
+                    debug_file.write(f"{batch}\n\n{token_type}\n\n{loss.isnan().nonzero()}\n\n{selected_probs}\n\n{type_to_token_probs}\n\n{type_idxs}\n\n")
+            losses.append(loss)
         return torch.concat(losses, dim=0).mean()
 
     def forward(self, batch: CollatedBatch, labels: torch.Tensor = None): # TODO: return type
@@ -239,24 +244,4 @@ class MathGPT(nn.Module):
         # Calculate cross-entropy loss
         loss = self.get_prediction_loss(type_to_token_probs, type_idxs, batch, labels)
 
-        # Calculate most likely predictions
-        predicted_types, predicted_tokens = get_collapsed_predictions(type_to_token_probs)
-
-        return loss, type_to_token_probs, predicted_types, predicted_tokens
-
-def get_collapsed_predictions(type_to_token_probs: Dict[TokenType, torch.Tensor]):
-    batch_size, max_seq_len = type_to_token_probs[TokenType.TEXT].shape[:2]
-    predicted_types = torch.zeros((batch_size, max_seq_len), dtype=torch.long).to(device)
-    predicted_tokens = torch.zeros((batch_size, max_seq_len), dtype=torch.long).to(device)
-    max_token_probs = torch.zeros((batch_size, max_seq_len)).to(device)
-    for token_type in TokenType:
-        # Get most likely token for this type
-        max_values, max_indices = torch.max(type_to_token_probs[token_type], dim=-1)
-        # Find indices where most likely token is higher than previously most likely token
-        new_highest_prob_idx = max_values > max_token_probs
-        # For those indices, set the predicted token and type
-        predicted_tokens[new_highest_prob_idx] = max_indices[new_highest_prob_idx]
-        predicted_types[new_highest_prob_idx] = token_type
-        # Update highest seen probabilities
-        max_token_probs = torch.maximum(max_token_probs, max_values)
-    return predicted_types, predicted_tokens
+        return loss, type_to_token_probs
