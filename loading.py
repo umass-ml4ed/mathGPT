@@ -15,7 +15,6 @@ def split_sequence(sequence: Sequence, max_seq_len: int) -> List[Sequence]:
     Will always split the sequence at text tokens, since splitting within a formula would deprive model of tree context
     Will thus skip all formulas that are longer than the maximum length
     Conflict strategy: if the split point is within a formula, try to place the split point at the beginning of that formula
-    # TODO: alternate strategies: preserve some prior text context, or duplicate some text information to keep some context
     """
     seq_len = len(sequence.token_ids)
 
@@ -123,7 +122,6 @@ def trim_batch(batch: CollatedBatch, trim_start: int, trim_end: int) -> Collated
         "pos_levels": batch["pos_levels"][:, trim_start : trim_end],
         "pos_encodings": batch["pos_encodings"][:, trim_start : trim_end],
         "attention_mask": batch["attention_mask"][:, trim_start : trim_end],
-        "sequence_lengths": batch["sequence_lengths"], # TODO: do actual calculation, if it matters
     }
 
 
@@ -138,7 +136,6 @@ class Collator:
         pos_level_batches = []
         pos_encoding_batches = []
         attention_mask = []
-        sequence_lengths = []
 
         for sequence in batch:
             token_id_batches.append(torch.LongTensor(sequence.token_ids))
@@ -147,7 +144,6 @@ class Collator:
             pos_level_batches.append(torch.LongTensor(sequence.pos_levels))
             pos_encoding_batches.append(torch.FloatTensor(sequence.pos_encodings))
             attention_mask.append(torch.ones(len(sequence.token_ids)))
-            sequence_lengths.append(len(sequence.token_ids))
 
         return {
             "articles": [sequence.src_article for sequence in batch],
@@ -158,5 +154,4 @@ class Collator:
             "pos_levels": torch.nn.utils.rnn.pad_sequence(pos_level_batches, batch_first=True).to(device),
             "pos_encodings": torch.nn.utils.rnn.pad_sequence(pos_encoding_batches, batch_first=True).to(device),
             "attention_mask": torch.nn.utils.rnn.pad_sequence(attention_mask, batch_first=True).to(device),
-            "sequence_lengths": sequence_lengths,
         }

@@ -42,6 +42,8 @@ def process_article(article_filename: str):
     """
     Create a sanitized version of the article with text and formulas separated
     Add all encountered math symbols to the vocab
+    Article is in HTML format, and formulas are in MathML format in <math> tags
+    Use TangentCFT code (https://github.com/BehroozMansouri/TangentCFT) for initial formula conversion
     """
 
     # Get raw text data from the article

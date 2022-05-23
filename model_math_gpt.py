@@ -51,7 +51,7 @@ class MathGPT(nn.Module):
         self.text_token_pred_layer: nn.Linear = self.gpt2_lm.lm_head
 
         # Create type embeddings
-        # TODO: ensure these are sufficiently small to avoid confusing the pre-trained model
+        # TODO: ensure these are sufficiently small (magnitude) to avoid confusing the pre-trained model
         self.type_embeddings = nn.Embedding(NUM_TYPES, EMB_SIZE) # TODO: also try just have text, math, and transition type embeddings
 
         # TODO: not great that we gotta assign str(Type.value)... see if ModuleList fixes this
@@ -67,16 +67,6 @@ class MathGPT(nn.Module):
         self.token_embeddings[str(TokenType.START_FORMULA.value)] = nn.Embedding(1, EMB_SIZE)
         self.token_embeddings[str(TokenType.END_FORMULA.value)] = nn.Embedding(1, EMB_SIZE)
         self.token_embeddings[str(TokenType.END.value)] = nn.Embedding(1, EMB_SIZE)
-
-        # TODO: math position ideas
-        #       idea 1 - for each level pos in str, fill in value in int, and then shift by num bits needed for max num children
-        #           issue - number will get huge, embeddings will be very sparse
-        #       idea 2 - store mapping from each possible position str to an int, which will be looked up in embedding matrix
-        #       idea 3 - store multi-hot vector (using binary idea from FORTE) and then model can use projection to generate embedding
-        #       idea 4 - store vector of numbers, and then convert each to a sin/cos representations (width dependent on max_depth, max_width, and embed_size) and concat encodings
-        #       idea 5 - each level gets its own sin/cos representation (based on child pos), and add the representations of each level together
-        #       idea 6 - train an RNN to generate the embedding, takes child position learnable embeddings as input, goes from top to bottom
-        #       note (for all) - for multiple formulas in a sequence, some positions will repeat. do we need to indicate to model exactly which formula is referenced?
 
         # Linear projection to convert raw math pos encoding into one that can be added to the input embeddings
         # Not using bias so that the encoding is 0 for non-math tokens
@@ -181,7 +171,6 @@ class MathGPT(nn.Module):
         """
         Calculate the cross-entropy prediction loss given the token probabilities
         """
-        # TODO: look at numGPT and FORTE papers to verify their token probability calculations
         losses: List[torch.Tensor] = []
         shifted_target_tokens = (batch["token_ids"] if labels is None else labels)[:, 1:]
         if shifted_target_tokens.shape[1] == 0:
@@ -190,18 +179,18 @@ class MathGPT(nn.Module):
 
         for token_type in TokenType:
             # Get indices that have a target of this type
-            shifted_type_idx = type_idxs[token_type][:, 1:]
+            shifted_target_idx = type_idxs[token_type][:, 1:]
             # Exclude padding regions, including them would add extra length to the vector that we get the mean of
-            shifted_type_idx &= shifted_target_tokens != PADDING_TOKEN_ID
+            shifted_target_idx &= shifted_target_tokens != PADDING_TOKEN_ID
             # Skip type if it doesn't exist as a target, going through with calculations results in nan loss
-            if not torch.any(shifted_type_idx):
+            if not torch.any(shifted_target_idx):
                 continue
             # Get token probabilities for this type where the target matches
-            selected_probs = type_to_token_probs[token_type][:, :-1][shifted_type_idx]
+            selected_probs = type_to_token_probs[token_type][:, :-1][shifted_target_idx]
             # Add cross-entropy loss, take average at end to weigh each token equally
             log_probs = torch.log(selected_probs)
             loss_fn = nn.NLLLoss(reduction="none")
-            loss: torch.Tensor = loss_fn(log_probs, shifted_target_tokens[shifted_type_idx])
+            loss: torch.Tensor = loss_fn(log_probs, shifted_target_tokens[shifted_target_idx])
             if any(torch.isnan(l) for l in loss):
                 import pdb; pdb.set_trace()
                 print("nan loss!")

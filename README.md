@@ -1,8 +1,8 @@
 ## Instructions
 
-Download TangentCFT to directory *above* this one https://github.com/BehroozMansouri/TangentCFT # TODO: note commit hash for version
+Download TangentCFT to directory *above* this one https://github.com/BehroozMansouri/TangentCFT/tree/2b189dff67d6d3b15e323358921bdbca779bfcd9
 
-Install LaTeXML https://math.nist.gov/~BMiller/LaTeXML/get.html # TODO: maybe not necessary
+Install LaTeXML https://math.nist.gov/~BMiller/LaTeXML/get.html
 
 TODO: download dataset https://ntcir-math.nii.ac.jp/data/
 
