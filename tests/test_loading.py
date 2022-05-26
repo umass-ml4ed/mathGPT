@@ -1,6 +1,6 @@
 from unittest.mock import patch, MagicMock
 
-from loading import Dataset
+from loading import PreTrainDataset
 from math_tokenize import encode_pos, EMPTY_POS_VECTOR, EMPTY_POS_ENCODING
 from vocabulary import Vocabulary
 from constants import TokenType, EOS_TOKEN_ID, FORMULA_IDENTIFIER
@@ -51,7 +51,7 @@ def test_new_dataset():
     Vocabulary.load() # Pre-load vocab so unaffected by mock
     load_article_mock = MagicMock(side_effect=[SAMPLE_ARTICLE_1])
     with patch("json.load", load_article_mock):
-        dataset = Dataset(["data/GCD.json"], 11)
+        dataset = PreTrainDataset(["data/GCD.json"], 11)
 
     assert dataset.data[0].token_ids == [
         464, 27255, 286, 220,

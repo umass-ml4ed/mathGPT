@@ -59,33 +59,32 @@ def test_generate():
 
 def test_predictions():
     return # TODO
-    type_to_token_probs = {
-        TokenType.TEXT: torch.Tensor([
-            [[0.1, 0.2, 0.1], [0.4, 0.2, 0.1]],
-            [[0.0, 0.0, 0.0], [0.5, 0.1, 0.1]]
-        ]),
-        TokenType.START_FORMULA: torch.Tensor([
-            [[0.1], [0.4]],
-            [[0.0], [0.5]]
-        ]),
-        TokenType.END_FORMULA: torch.Tensor([
-            [[0.1], [0.4]],
-            [[0.0], [0.5]]
-        ]),
-        TokenType.OP: torch.Tensor([
-            [[0.1, 0.2, 0.1], [0.4, 0.2, 0.1]],
-            [[0.0, 0.0, 0.0], [0.5, 0.1, 0.1]]
-        ]),
-        TokenType.NUM: torch.Tensor([
-            [[0.1, 0.2, 0.1], [0.4, 0.2, 0.1]],
-            [[0.0, 0.0, 0.0], [0.5, 0.1, 0.1]]
-        ]),
-        TokenType.VAR: torch.Tensor([
-            [[0.1, 0.2, 0.1], [0.4, 0.2, 0.1]],
-            [[0.0, 0.0, 0.0], [0.5, 0.1, 0.1]]
-        ])
-    }
-    type_preds, token_preds = get_most_likely_predictions(type_to_token_probs)
-    assert all(type_preds == [])
-    assert all(token_preds == [])
-
+    # type_to_token_probs = {
+    #     TokenType.TEXT: torch.Tensor([
+    #         [[0.1, 0.2, 0.1], [0.4, 0.2, 0.1]],
+    #         [[0.0, 0.0, 0.0], [0.5, 0.1, 0.1]]
+    #     ]),
+    #     TokenType.START_FORMULA: torch.Tensor([
+    #         [[0.1], [0.4]],
+    #         [[0.0], [0.5]]
+    #     ]),
+    #     TokenType.END_FORMULA: torch.Tensor([
+    #         [[0.1], [0.4]],
+    #         [[0.0], [0.5]]
+    #     ]),
+    #     TokenType.OP: torch.Tensor([
+    #         [[0.1, 0.2, 0.1], [0.4, 0.2, 0.1]],
+    #         [[0.0, 0.0, 0.0], [0.5, 0.1, 0.1]]
+    #     ]),
+    #     TokenType.NUM: torch.Tensor([
+    #         [[0.1, 0.2, 0.1], [0.4, 0.2, 0.1]],
+    #         [[0.0, 0.0, 0.0], [0.5, 0.1, 0.1]]
+    #     ]),
+    #     TokenType.VAR: torch.Tensor([
+    #         [[0.1, 0.2, 0.1], [0.4, 0.2, 0.1]],
+    #         [[0.0, 0.0, 0.0], [0.5, 0.1, 0.1]]
+    #     ])
+    # }
+    # type_preds, token_preds = get_most_likely_predictions(type_to_token_probs)
+    # assert all(type_preds == [])
+    # assert all(token_preds == [])

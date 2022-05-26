@@ -16,11 +16,6 @@ def get_tree(token_ids: torch.Tensor, token_types: torch.Tensor) -> DecodeTreeNo
     """
     Convert DFS-order list of token IDs and types to nested tree structure
     """
-    # TODO: handle incomplete formulas
-    if token_types[0] == TokenType.END:
-        # TODO: this happens in Annular_fin and GCD
-        print(token_ids, token_types)
-        return DecodeTreeNode(TokenType.VAR, 0, [])
     root = DecodeTreeNode(int(token_types[0]), int(token_ids[0]), [])
     ancestors: List[DecodeTreeNode] = []
     for token_id, token_type in zip(token_ids[1:], token_types[1:]):
@@ -33,7 +28,8 @@ def get_tree(token_ids: torch.Tensor, token_types: torch.Tensor) -> DecodeTreeNo
             root.children.append(DecodeTreeNode(int(token_type), int(token_id), []))
         elif token_type == TokenType.END and ancestors:
             root = ancestors.pop()
-    return root
+    # Return root of formula, may need to look in ancestors in case we're decoding a partial tree
+    return ancestors[0] if ancestors else root
 
 def tree_to_text(tree_node: DecodeTreeNode) -> str:
     symbol = Vocabulary.get_symbol(tree_node.token_type, tree_node.token_id)
@@ -87,6 +83,8 @@ def decode_formula(token_ids: torch.Tensor, token_types: torch.Tensor):
     if scheme == "tree":
         tree = get_tree(token_ids, token_types)
         return tree_to_text(tree)
+
+    return ""
 
 def decode_batch(batch: CollatedBatch, text_tokenizer: GPT2TokenizerFast) -> List[str]:
     """

@@ -3,17 +3,28 @@ from typing import Optional
 import numpy as np
 import torch
 
+from constants import DownstreamTask
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def initialize_seeds(seedNum):
-    random.seed(seedNum)
-    np.random.seed(seedNum)
+def initialize_seeds(seed_num: int):
+    random.seed(seed_num)
+    np.random.seed(seed_num)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    torch.manual_seed(seedNum)
+    torch.manual_seed(seed_num)
     if torch.cuda.is_available():
-        torch.cuda.manual_seed(seedNum)
-        torch.cuda.manual_seed_all(seedNum)
+        torch.cuda.manual_seed(seed_num)
+        torch.cuda.manual_seed_all(seed_num)
+
+def enum_choices(enum):
+    return [choice.value for choice in enum]
+
+def enum_value_to_member(value, enum):
+    return next((member for member in enum if member.value == value), None)
+
+def is_cls_task(task: Optional[DownstreamTask]):
+    return task in (DownstreamTask.GRADING, DownstreamTask.KC_PRED)
 
 class TrainOptions:
     def __init__(self, options: dict):
@@ -25,6 +36,7 @@ class TrainOptions:
         self.grad_accum_batches: int = options.get("grad_accum_batches", 1)
         self.max_seq_len: int = options.get("max_seq_len", 1024)
         self.stride: Optional[int] = options.get("stride", None)
+        self.num_classes: Optional[int] = options.get("num_classes", None)
 
     def update(self, options: dict):
         self.__dict__.update(options)

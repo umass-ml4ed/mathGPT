@@ -1,4 +1,4 @@
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Union
 import json
 
 from constants import TYPE_STR_TO_INT, TYPE_STR_TO_MAX_NUM_TOKENS, TokenType, SpecialOpToken, SpecialVarToken, SpecialNumToken
@@ -62,7 +62,7 @@ class Vocabulary:
         return token_type, symbol_token
 
     @classmethod
-    def get_symbol(cls, token_type: TokenType, token_id: int) -> str:
+    def get_symbol(cls, token_type: Union[TokenType, int], token_id: int) -> str:
         """
         Get the symbol string associated with the given type and token id
         """
@@ -121,7 +121,7 @@ class Vocabulary:
         # Note: we are sorting the types and symbols to guarantee that token IDs are identical across loads, even if the base vocab file is reordered
         for str_type, symbols in sorted(base_vocab.items()):
             # Skip types that are all converted away in post-processing
-            if str_type == "E" or str_type == "+":
+            if str_type in ("E", "+"):
                 continue
 
             # Create entries for token type

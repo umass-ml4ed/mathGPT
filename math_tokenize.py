@@ -41,7 +41,6 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
 
     # First resolve token type and ID - check for end token, then try post-processing rules, then retrieve from vocab
     token_type = None
-    token_id = None
     if not formula:
         token_type, token_id = TokenType.END, 0
     else:

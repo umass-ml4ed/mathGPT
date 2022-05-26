@@ -1,9 +1,10 @@
 import torch
 
 from math_tokenize import encode_pos, EMPTY_POS_ENCODING
-from model_math_gpt import MathGPT, EMB_SIZE, TEXT_VOCAB_SIZE
+from model_math_gpt import MathGPTLM, EMB_SIZE, TEXT_VOCAB_SIZE
 from vocabulary import Vocabulary
 from constants import TokenType, PADDING_TOKEN_ID
+from utils import TrainOptions
 from test_utils import assert_tensors_equal, assert_tensor_sums_to
 
 class GPTOutputMock:
@@ -37,7 +38,7 @@ def test_get_input_embeddings():
             ]),
         }
 
-        model = MathGPT()
+        model = MathGPTLM(TrainOptions({}))
         input_embeddings = model.get_input_embeddings(batch)
 
         assert input_embeddings.shape == (1, 8, EMB_SIZE)
@@ -99,7 +100,7 @@ def test_masks():
             ])
         }
 
-        model = MathGPT()
+        model = MathGPTLM(TrainOptions({}))
         type_idxs, final_formula_token_idx = model.get_prediction_masks(batch)
 
         expected_type_idxs = {
@@ -159,7 +160,7 @@ def test_type_probs():
             [[1] * EMB_SIZE, [1] * EMB_SIZE, [1] * EMB_SIZE, [1] * EMB_SIZE, [1] * EMB_SIZE, [1] * EMB_SIZE, [1] * EMB_SIZE]
         ]))
 
-        model = MathGPT()
+        model = MathGPTLM(TrainOptions({}))
         type_idxs, final_formula_token_idx = model.get_prediction_masks(batch)
         type_probs = model.get_type_probs(gpt_output_mock, type_idxs, final_formula_token_idx)
 
@@ -199,10 +200,10 @@ def test_token_probs():
             [[1] * EMB_SIZE, [1] * EMB_SIZE, [1] * EMB_SIZE, [1] * EMB_SIZE, [1] * EMB_SIZE, [1] * EMB_SIZE, [1] * EMB_SIZE]
         ]))
 
-        model = MathGPT()
+        model = MathGPTLM(TrainOptions({}))
         type_idxs, final_formula_token_idx = model.get_prediction_masks(batch)
         type_probs = model.get_type_probs(gpt_output_mock, type_idxs, final_formula_token_idx)
-        type_to_token_probs = model.get_token_probs(gpt_output_mock, type_probs, type_idxs, final_formula_token_idx)
+        type_to_token_probs = model.get_token_probs(gpt_output_mock, type_probs)
 
         def assert_probs(idx):
             assert_tensor_sums_to(torch.concat([type_to_token_probs[token_type][0, idx] for token_type in TokenType], dim=-1), 1)
@@ -309,7 +310,7 @@ def test_loss():
         ]),
     }
 
-    model = MathGPT()
+    model = MathGPTLM(TrainOptions({}))
     type_idxs, _ = model.get_prediction_masks(batch)
     loss = model.get_prediction_loss(type_to_token_probs, type_idxs, batch, None)
 

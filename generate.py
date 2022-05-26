@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from model_math_gpt import MathGPT
+from model_math_gpt import MathGPTLM
 from math_tokenize import encode_pos
 from utils import device
 from constants import CollatedBatch, TokenType
@@ -95,7 +95,7 @@ def get_nucleus_sample_predictions(type_to_token_probs: Dict[TokenType, torch.Te
                 break
     return torch.tensor(predicted_types).to(device), torch.concat(predicted_tokens)
 
-def generate(model: MathGPT, gen_batch: CollatedBatch, max_seq_len: int):
+def generate(model: MathGPTLM, gen_batch: CollatedBatch, max_seq_len: int):
     """
     Given a model and a batch, generate tokens up to the given length
     Given batch is modified
