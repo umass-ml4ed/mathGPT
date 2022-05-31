@@ -42,6 +42,12 @@ def evaluate_model(model: MathGPTBase, dataset: Dataset, task: Optional[Downstre
 def train(model: MathGPTBase, model_name: str, train_loader: DataLoader, validation_dataset: Dataset, options: TrainOptions, task: Optional[DownstreamTask] = None):
     optimizer = torch.optim.AdamW(model.parameters(), lr=options.lr, weight_decay=options.weight_decay)
     torch.autograd.set_detect_anomaly(True) # Pause exectuion and get stack trace if something weird happens (ex: NaN grads)
+    # Scaler prevents gradient underflow when using fp16 precision
+    scaler = torch.cuda.amp.grad_scaler.GradScaler() if options.amp else None
+    # Split computations across GPUs if multiple available
+    use_dp = torch.cuda.device_count() > 1
+    model_ddp = torch.nn.parallel.DataParallel(model) if use_dp else None
+
     best_metric = None
     best_stats = None
     cur_stats = None
@@ -54,12 +60,29 @@ def train(model: MathGPTBase, model_name: str, train_loader: DataLoader, validat
         train_loss = 0.0
         num_batches = 0
         for batch in tqdm(train_loader):
-            loss = model(batch)[0]
-            loss.backward()
+            if scaler:
+                with torch.cuda.amp.autocast():
+                    if use_dp:
+                        loss = model_ddp(batch)[0]
+                        loss = loss.mean()
+                    else:
+                        loss = model(batch)[0]
+                scaler.scale(loss).backward()
+            else:
+                if use_dp:
+                    loss = model_ddp(batch)[0]
+                    loss = loss.mean()
+                else:
+                    loss = model(batch)[0]
+                loss.backward()
             train_loss += float(loss.detach().cpu().numpy())
             num_batches += 1
             if num_batches % options.grad_accum_batches == 0 or num_batches == len(train_loader):
-                optimizer.step()
+                if scaler:
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
                 optimizer.zero_grad()
 
         model.eval() # Set model to evaluation mode

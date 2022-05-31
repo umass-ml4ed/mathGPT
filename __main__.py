@@ -7,6 +7,9 @@ from training import pretrain, evaluate_pretrained_lm, test_lm, train_downstream
 from utils import TrainOptions, initialize_seeds, device, enum_choices, enum_value_to_member
 from constants import DownstreamTask
 
+def bool_type(arg):
+    return False if arg == "0" else True
+
 def main():
     if device.type == "cuda":
         if torch.cuda.device_count() > 1:
@@ -36,6 +39,7 @@ def main():
     parser.add_argument("--grad_accum_batches", type=int, help="Number of batches to accumulate gradients for")
     parser.add_argument("--max_seq_len", type=int, help="Maximum length, in tokens, of any sequence")
     parser.add_argument("--stride", type=int, help="Stride for computing perplexity with sliding context window")
+    parser.add_argument("--amp", type=bool_type, help="Use automated mixed precision during training")
 
     args = parser.parse_args()
     arg_dict = {arg: val for arg, val in vars(args).items() if val is not None}
