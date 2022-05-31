@@ -1,6 +1,7 @@
 import argparse
+import torch
 
-from pre_process import process_wikipedia_data
+from pre_process import process_wikipedia_data, process_mathsum_data
 from analyze_data import analyze_data
 from training import pretrain, evaluate_pretrained_lm, test_lm, train_downstream_task, evaluate_downstream_task
 from utils import TrainOptions, initialize_seeds, device, enum_choices, enum_value_to_member
@@ -8,7 +9,10 @@ from constants import DownstreamTask
 
 def main():
     if device.type == "cuda":
-        print("Running on GPU")
+        if torch.cuda.device_count() > 1:
+            print("Running on", torch.cuda.device_count(), "GPUs")
+        else:
+            print("Running on GPU")
     else:
         print("No GPU found")
 
@@ -16,11 +20,12 @@ def main():
 
     parser = argparse.ArgumentParser("MathGPT")
     # Modes
-    parser.add_argument("--preprocess", action="store_true", help="Process raw Wikipedia data and save to JSON files; generate raw vocab file")
+    parser.add_argument("--preprocess_wiki", action="store_true", help="Process raw Wikipedia data and save to JSON files; generate raw vocab file")
+    parser.add_argument("--preprocess_mathsum", action="store_true", help="Process raw MathSum data and save to JSON files")
     parser.add_argument("--analyze_data", action="store_true", help="Produce stats on pre-processed dataset")
     parser.add_argument("--pretrain", action="store_true", help="Pre-train LM")
     parser.add_argument("--evaluate_lm", action="store_true", help="Evaluate LM performance on test set")
-    parser.add_argument("--test_lm", action="store_true", help="Run qualitative test on LM")
+    parser.add_argument("--test_lm", help="Run language generation using given article")
     parser.add_argument("--train_downstream", help="Train downstream task model", choices=enum_choices(DownstreamTask))
     parser.add_argument("--evaluate_downstream", help="Evaluate downstream task model performance on test set", choices=enum_choices(DownstreamTask))
     # Config
@@ -35,8 +40,10 @@ def main():
     args = parser.parse_args()
     arg_dict = {arg: val for arg, val in vars(args).items() if val is not None}
 
-    if args.preprocess:
+    if args.preprocess_wiki:
         process_wikipedia_data()
+    if args.preprocess_mathsum:
+        process_mathsum_data()
     if args.analyze_data:
         analyze_data()
     if args.pretrain:
@@ -44,7 +51,7 @@ def main():
     if args.evaluate_lm:
         evaluate_pretrained_lm(args.name, arg_dict)
     if args.test_lm:
-        test_lm(args.name, "data/Annular_fin.json")
+        test_lm(args.name, args.test_lm, arg_dict)
     if args.train_downstream:
         train_downstream_task(args.name, args.pretrained_name, enum_value_to_member(args.train_downstream, DownstreamTask), TrainOptions(arg_dict))
     if args.evaluate_downstream:

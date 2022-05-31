@@ -51,7 +51,7 @@ def test_new_dataset():
     Vocabulary.load() # Pre-load vocab so unaffected by mock
     load_article_mock = MagicMock(side_effect=[SAMPLE_ARTICLE_1])
     with patch("json.load", load_article_mock):
-        dataset = PreTrainDataset(["data/GCD.json"], 11)
+        dataset = PreTrainDataset(["data/wikipedia/GCD.json"], 11)
 
     assert dataset.data[0].token_ids == [
         464, 27255, 286, 220,

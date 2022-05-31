@@ -7,15 +7,15 @@ from torch.utils.data import Dataset, DataLoader, Subset
 from tqdm import tqdm
 
 from model_math_gpt import MathGPTBase, MathGPTLM, MathGPTClassifier
-from loading import PreTrainDataset, GenTaskDataset, ClassifyTaskDataset, Collator, trim_batch
+from loading import PreTrainDataset, GenTaskDataset, ClassifyTaskDataset, Collator
 from evaluate import evaluate_lm, evaluate_cls_task, evaluate_gen_task
 from generate import generate
 from decode import decode_batch
 from utils import TrainOptions, device, is_cls_task
-from constants import DownstreamTask, DOWNSTREAM_TASK_TO_NUM_CLASSES
+from constants import DownstreamTask, DOWNSTREAM_TASK_TO_NUM_CLASSES, WIKI_DATA
 
 def get_article_names():
-    return [os.path.join("data", article_filename) for article_filename in os.listdir("data")]
+    return [os.path.join(WIKI_DATA, article_filename) for article_filename in os.listdir(WIKI_DATA)]
 
 def save_model(model: MathGPTBase, model_name: str, options: TrainOptions):
     torch.save(model.state_dict(), f"{model_name}.pt")
@@ -109,32 +109,29 @@ def evaluate_pretrained_lm(model_name: str, test_options: dict):
     loss, results = evaluate_lm(model, dataset, options)
     print(f"Loss: {loss:.3f}, {results}")
 
-def test_lm(model_name: str, test_article: str):
+def test_lm(model_name: str, test_article: str, test_options: dict):
     model, options = load_model(model_name)
+    options.update(test_options)
 
-    dataset = PreTrainDataset([test_article], options.max_seq_len)
+    dataset = PreTrainDataset([test_article], options.max_seq_len // 2)
     data_loader = DataLoader(
         dataset,
         collate_fn=Collator(),
-        batch_size=len(dataset)
+        batch_size=1
     )
 
     with torch.no_grad():
-        trim_point = int(options.max_seq_len * .5)
-        for batch in data_loader:
-            # Generate new sequences given first half of original sequence as input
-            gen_batch = trim_batch(batch, 0, trim_point)
-            generate(model, gen_batch, options.max_seq_len)
+        data_loader_it = iter(data_loader)
+        gen_batch = next(data_loader_it)
+        prompt_text = decode_batch(gen_batch, dataset.text_tokenizer)[0]
+        generate(model, gen_batch, options.max_seq_len)
+        pred_text = decode_batch(gen_batch, dataset.text_tokenizer)[0]
+        followup_batch = next(data_loader_it)
+        og_text = decode_batch(followup_batch, dataset.text_tokenizer)[0]
 
-            # Decode the generated sequences and compare to the original
-            prompts_decoded = decode_batch(trim_batch(batch, 0, trim_point), dataset.text_tokenizer)
-            og_decoded = decode_batch(trim_batch(batch, trim_point, options.max_seq_len), dataset.text_tokenizer)
-            preds_decoded = decode_batch(trim_batch(gen_batch, trim_point, options.max_seq_len), dataset.text_tokenizer)
-            for prompt, og_text, pred_text in zip(prompts_decoded, og_decoded, preds_decoded):
-                print("Prompt:", prompt)
-                print("OG Text:", og_text)
-                print("Prediction:", pred_text)
-                print("")
+        print("Prompt:", prompt_text)
+        print("OG Text:", og_text)
+        print("Prediction:", pred_text)
 
 def train_downstream_task(model_name: str, pretrained_name: str, task: DownstreamTask, options: TrainOptions):
     # TODO: get data files for the given task

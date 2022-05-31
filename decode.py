@@ -95,6 +95,7 @@ def decode_batch(batch: CollatedBatch, text_tokenizer: GPT2TokenizerFast) -> Lis
     for seq_idx in range(len(batch["token_ids"])):
         result = ""
         sub_seq_start = sub_seq_end = 0
+        is_text = True
         for tok_idx, (token_type, token_id) in enumerate(zip(batch["token_types"][seq_idx], batch["token_ids"][seq_idx])):
             # At start formula, switch to math context, and decode any prior text tokens
             if token_type == TokenType.START_FORMULA:
@@ -102,6 +103,7 @@ def decode_batch(batch: CollatedBatch, text_tokenizer: GPT2TokenizerFast) -> Lis
                     result += text_tokenizer.decode(batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end])
                 result += "$"
                 sub_seq_start = sub_seq_end = tok_idx + 1
+                is_text = False
                 continue
 
             # At end formula, switch to text context
@@ -110,6 +112,7 @@ def decode_batch(batch: CollatedBatch, text_tokenizer: GPT2TokenizerFast) -> Lis
                     result += decode_formula(batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end], batch["token_types"][seq_idx][sub_seq_start : sub_seq_end])
                 result += "$"
                 sub_seq_start = sub_seq_end = tok_idx + 1
+                is_text = True
                 continue
 
             sub_seq_end = tok_idx + 1
@@ -118,13 +121,15 @@ def decode_batch(batch: CollatedBatch, text_tokenizer: GPT2TokenizerFast) -> Lis
             if token_type == TokenType.TEXT and token_id == EOS_TOKEN_ID:
                 break
 
-        # Decode any trailing text tokens at the end
+        # Decode any trailing tokens at the end
         if sub_seq_start != sub_seq_end:
             if not all(batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end] == PADDING_TOKEN_ID): # TODO: probably a more elegant way to handle this
-                # import pdb; pdb.set_trace()
-                text_tokens = batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end]
-                text_tokens = text_tokens[text_tokens != PADDING_TOKEN_ID] # TODO: why would we have padding that is not preceded by EOS?
-                result += text_tokenizer.decode(text_tokens)
+                token_ids = batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end]
+                non_padding_idx = token_ids != PADDING_TOKEN_ID # TODO: why would we have padding that is not preceded by EOS?
+                if is_text:
+                    result += text_tokenizer.decode(token_ids[non_padding_idx])
+                else:
+                    result += decode_formula(token_ids[non_padding_idx], batch["token_types"][seq_idx][sub_seq_start : sub_seq_end][non_padding_idx])
 
         all_decoded_sequences.append(result)
 

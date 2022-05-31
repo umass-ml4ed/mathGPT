@@ -4,7 +4,7 @@ from tqdm import tqdm
 from matplotlib import pyplot as plt
 import numpy as np
 
-from constants import Article, OPT, TYPE_STR_TO_INT
+from constants import Article, OPT, TYPE_STR_TO_INT, WIKI_DATA
 
 START_PARENS = ("normal-(", "normal-[", "normal-{")
 END_PARENS = ("normal-)", "normal-]", "normal-}")
@@ -126,8 +126,8 @@ def analyze_data():
     }
 
     # Gather data from each processed article
-    for article_name in tqdm(os.listdir("data")):
-        article_filepath = os.path.join("data", article_name)
+    for article_name in tqdm(os.listdir(WIKI_DATA)):
+        article_filepath = os.path.join(WIKI_DATA, article_name)
         with open(article_filepath) as article_file:
             article: Article = json.load(article_file)
         for formula in article["formulas"].values():

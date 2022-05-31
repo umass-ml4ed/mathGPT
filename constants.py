@@ -135,3 +135,9 @@ EOS_TOKEN = "<|endoftext|>"
 EOS_TOKEN_ID = 50256
 SEP_TOKEN = "[SEP]"
 CLS_TOKEN = "[CLS]"
+
+# File paths
+DATA = "data"
+WIKI_DATA = "data/wikipedia"
+EXEQ_DATA = "data/EXEQ-300k"
+OFEQ_DATA = "data/OFEQ-10k"

@@ -189,16 +189,21 @@ class MathGPTLM(MathGPTBase):
                 continue
             # Get token probabilities for this type where the target matches
             selected_probs = type_to_token_probs[token_type][:, :-1][shifted_target_idx]
+            if 0 in selected_probs:
+                # import pdb; pdb.set_trace()
+                print(f"found 0! type: {token_type}, num: {(selected_probs == 0).sum()}")
+            # Clamp to avoid probability of 0 in unlucky cases (will break autograd)
+            selected_probs = selected_probs.clamp(min=1e-15)
             # Add cross-entropy loss, take average at end to weigh each token equally
             log_probs = torch.log(selected_probs)
             loss_fn = nn.NLLLoss(reduction="none")
             loss: torch.Tensor = loss_fn(log_probs, shifted_target_tokens[shifted_target_idx])
-            if any(torch.isnan(l) for l in loss):
+            if any(torch.isinf(l) for l in loss):
                 # import pdb; pdb.set_trace()
-                print("nan loss!")
-                loss = loss[~loss.isnan()]
+                print("inf loss!")
                 with open("debug.txt", "a") as debug_file:
-                    debug_file.write(f"{batch}\n\n{token_type}\n\n{loss.isnan().nonzero()}\n\n{selected_probs}\n\n{type_to_token_probs}\n\n{type_idxs}\n\n")
+                    debug_file.write(f"{batch}\n\n{token_type}\n\n{loss.isinf().nonzero()}\n\n{selected_probs}\n\n{type_to_token_probs}\n\n{type_idxs}\n\n")
+                loss = loss[~loss.isinf()]
             losses.append(loss)
         return torch.concat(losses, dim=0).mean()
 

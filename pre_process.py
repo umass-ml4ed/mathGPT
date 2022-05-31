@@ -1,9 +1,9 @@
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 import os
 import re
 import json
+from subprocess import Popen, PIPE
 from tqdm import tqdm
-
 from bs4 import BeautifulSoup
 
 from TangentCFT.TangentS.math_tan.math_document import MathDocument
@@ -11,7 +11,7 @@ from TangentCFT.TangentS.math_tan.math_extractor import MathExtractor
 from TangentCFT.TangentS.math_tan.semantic_symbol import SemanticSymbol
 
 from vocabulary import Vocabulary
-from constants import Formula, OPT, FORMULA_IDENTIFIER
+from constants import Formula, OPT, FORMULA_IDENTIFIER, GenTaskSample, Article, DATA, WIKI_DATA
 
 def tree_to_serializable(sem_symbol: SemanticSymbol) -> OPT:
     """
@@ -38,17 +38,10 @@ def isolate_tex(math_tag: str) -> str:
         return ""
     return application_tex.text.strip()
 
-def process_article(article_filename: str):
+def get_formulas(content: str):
     """
-    Create a sanitized version of the article with text and formulas separated
-    Add all encountered math symbols to the vocab
-    Article is in HTML format, and formulas are in MathML format in <math> tags
-    Use TangentCFT code (https://github.com/BehroozMansouri/TangentCFT) for initial formula conversion
+    Given text content, return dictionary with all processed formulas
     """
-
-    # Get raw text data from the article
-    _, content = MathDocument.read_doc_file(article_filename)
-
     # Extract all math tags from the article
     formulas: Dict[int, Formula] = {}
     trees = MathExtractor.math_tokens(content)
@@ -70,6 +63,21 @@ def process_article(article_filename: str):
             "opt": tree_to_serializable(sem_tree),
             "tex": isolate_tex(tree) # TODO: might be easier to extract from pmml, already split into tokens
         }
+    return formulas
+
+def process_article(article_filename: str) -> Article:
+    """
+    Create a sanitized version of the article with text and formulas separated
+    Add all encountered math symbols to the vocab
+    Article is in HTML format, and formulas are in MathML format in <math> tags
+    Use TangentCFT code (https://github.com/BehroozMansouri/TangentCFT) for initial formula conversion
+    """
+
+    # Get raw text data from the article
+    _, content = MathDocument.read_doc_file(article_filename)
+
+    # Get all formulas in the article
+    formulas = get_formulas(content)
 
     # Extract text and replace <math> tags with identifiers
     text_content = ""
@@ -90,20 +98,17 @@ def process_article(article_filename: str):
     text_content = soup.get_text()
     text_content = re.sub(r"\s+", " ", text_content)
 
-    # Dump content to file
-    out_filename = os.path.basename(article_filename).replace(".html", ".json")
-    with open(f"data/{out_filename}", "w") as out_file:
-        json.dump({
-            "text": text_content,
-            "formulas": formulas
-        }, out_file, indent=2)
+    return {
+        "text": text_content,
+        "formulas": formulas
+    }
 
 def process_wikipedia_data():
     """
     Process all data files in the wikipedia dataset
     """
     print("Gathering articles...")
-    article_filenames = []
+    article_filenames: List[str] = []
     root_dir = "../NTCIR12_MathIR_WikiCorpus_v2.1.0/MathTagArticles"
     for article_group in os.listdir(root_dir):
         article_group_dir = os.path.join(root_dir, article_group, "Articles")
@@ -117,7 +122,67 @@ def process_wikipedia_data():
     max_articles = len(article_filenames)
     print("Processing articles...")
     for article_filename in tqdm(article_filenames[:max_articles]):
-        process_article(article_filename)
+        article_data = process_article(article_filename)
+        out_filename = os.path.basename(article_filename).replace(".html", ".json")
+        with open(os.path.join(WIKI_DATA, out_filename), "w") as out_file:
+            json.dump(article_data, out_file, indent=2)
 
     # Dump vocab to file
     Vocabulary.dump()
+
+def process_raw_text(src_text: str) -> Article:
+    """
+    Extract text and processed formulas from raw text
+    """
+    # Separate text and formulas, insert separator tokens
+    just_text = ""
+    formula_text = ""
+    searchable_text = src_text
+    form_start = searchable_text.find("<m>")
+    while form_start >= 0:
+        form_end = searchable_text.find("</m>")
+        formula_text += f"${searchable_text[form_start + 3 : form_end]}$ "
+        just_text += searchable_text[:form_start] + FORMULA_IDENTIFIER
+        searchable_text = searchable_text[form_end + 4:]
+        form_start = searchable_text.find("<m>")
+    just_text += searchable_text or " "
+
+    # Convert formulas to MathML using LaTeXML
+    temp_filename = "temp.tex"
+    math_output_filename = "test.html"
+    with open(temp_filename, "w") as temp_file:
+        temp_file.write(formula_text)
+    Popen(["latexmlc", "--dest", math_output_filename, "--pmml", "--cmml", "--mathtex", temp_filename], stdout=PIPE, stderr=PIPE)
+    _, content = MathDocument.read_doc_file(math_output_filename)
+    formulas = get_formulas(content)
+
+    return {
+        "text": just_text,
+        "formulas": formulas
+    }
+
+def process_mathsum_data():
+    """
+    Process all data files in the MathSum datasets
+    """
+    root_dir = "../MathSum"
+    for dataset in ("EXEQ-300k", "OFEQ-10k"):
+        print("Processing", dataset)
+        for split in ("train", "val", "test"):
+            print("Processing", split, "split")
+            post_filename = os.path.join(root_dir, dataset, f"post.{split}")
+            title_filename = os.path.join(root_dir, dataset, f"title.{split}")
+            out_filename = os.path.join(DATA, dataset, f"{split}.json")
+            samples: List[GenTaskSample] = []
+            with open(post_filename) as post_file:
+                with open(title_filename) as title_file:
+                    all_posts = post_file.readlines()[:100]
+                    all_titles = title_file.readlines()[:100]
+                    for post, title in tqdm(list(zip(all_posts, all_titles))):
+                        samples.append({
+                            "prompt": process_raw_text(post),
+                            "label": process_raw_text(title)
+                        })
+
+            with open(out_filename, "w") as out_file:
+                json.dump(samples, out_file, indent=2)
