@@ -93,8 +93,8 @@ class Vocabulary:
         """
         Dump vocab to file
         """
-        with open(VOCAB_FILE_PATH, "w") as out_file:
-            json.dump(cls._base_vocab, out_file, indent=2)
+        with open(VOCAB_FILE_PATH, "w", encoding="utf-8") as out_file:
+            json.dump(cls._base_vocab, out_file, indent=2, ensure_ascii=False)
 
     @classmethod
     def load(cls):
@@ -114,7 +114,7 @@ class Vocabulary:
         }
 
         # Load base vocab from file
-        with open(VOCAB_FILE_PATH) as vocab_file:
+        with open(VOCAB_FILE_PATH, encoding="utf-8") as vocab_file:
             base_vocab: BaseVocab = json.load(vocab_file)
 
         # Compute vocab and inverted vocab by collapsing types and assigning new token IDs from base vocab

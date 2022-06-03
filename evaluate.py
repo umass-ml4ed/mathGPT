@@ -1,4 +1,4 @@
-from typing import List, Callable, Tuple
+from typing import List, Callable, Tuple, Optional
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -6,8 +6,9 @@ from tqdm import tqdm
 from sklearn import metrics
 
 from loading import Collator, trim_batch
+from mathGPT.constants import DownstreamTask
 from model_math_gpt import MathGPTBase, MathGPTLM, MathGPTClassifier
-from generate import get_most_likely_predictions
+from generate import get_most_likely_predictions, generate
 from utils import TrainOptions
 from constants import PADDING_TOKEN_ID, CollatedBatch
 
@@ -49,12 +50,13 @@ def evaluate_lm(model: MathGPTLM, dataset: Dataset, options: TrainOptions):
                 # Loss is average NLL over all tokens in the sequence, multiply by number of targets to undo average and retrieve sum
                 nlls.append(loss * target_len)
         perplexity = torch.exp(torch.sum(torch.stack(nlls)) / total_sequence_length)
+    # TODO: see why loss is different here vs. evaluate_lm_accuracy
     return total_loss / num_batches, f"Perplexity: {perplexity:.3f}"
 
-def process_model_output(model: MathGPTBase, dataset: Dataset, options: TrainOptions, output_accumulator: Callable[[Tuple, CollatedBatch], None]):
+def process_model_output(model: MathGPTBase, dataset: Dataset, task: Optional[DownstreamTask], options: TrainOptions, output_accumulator: Callable[[Tuple, CollatedBatch], None]):
     data_loader = DataLoader(
         dataset,
-        collate_fn=Collator(),
+        collate_fn=Collator(task),
         batch_size=options.batch_size
     )
     total_loss = 0.0
@@ -68,7 +70,7 @@ def process_model_output(model: MathGPTBase, dataset: Dataset, options: TrainOpt
             output_accumulator(model_output, batch)
     return total_loss / num_batches
 
-def evaluate_lm_accuracy(model: MathGPTLM, dataset: Dataset, options: TrainOptions):
+def evaluate_lm_accuracy(model: MathGPTLM, dataset: Dataset, task: Optional[DownstreamTask], options: TrainOptions):
     """
     Calculate per-token prediction accuracy
     """
@@ -82,13 +84,14 @@ def evaluate_lm_accuracy(model: MathGPTLM, dataset: Dataset, options: TrainOptio
         token_preds = token_preds[:, :-1].contiguous().view(-1).detach().cpu().numpy()
         predictions = np.stack([type_preds, token_preds], axis=-1)
         type_targets = batch["token_types"][:, 1:].contiguous().view(-1).detach().cpu().numpy()
-        token_targets = batch["token_ids"][:, 1:].contiguous().view(-1).detach().cpu().numpy()
+        labels = batch["gen_labels"] if batch["gen_labels"] is not None else batch["token_ids"]
+        token_targets = labels[:, 1:].contiguous().view(-1).detach().cpu().numpy()
         targets = np.stack([type_targets, token_targets], axis=-1)
-        mask = batch["attention_mask"][:, 1:].contiguous().view(-1).detach().cpu().numpy() == 1
+        mask = token_targets != PADDING_TOKEN_ID
         all_predictions.append(predictions[mask])
         all_labels.append(targets[mask])
 
-    loss = process_model_output(model, dataset, options, accumulate_predictions)
+    loss = process_model_output(model, dataset, task, options, accumulate_predictions)
 
     all_preds_np = np.concatenate(all_predictions, axis=0)
     all_labels_np = np.concatenate(all_labels, axis=0)
@@ -98,34 +101,32 @@ def evaluate_lm_accuracy(model: MathGPTLM, dataset: Dataset, options: TrainOptio
     accuracy = sum(match) / len(match)
     return loss, f"Accuracy: {accuracy:.3f}"
 
-def evaluate_gen_task(model: MathGPTLM, dataset: Dataset, options: TrainOptions):
+def evaluate_gen_task(model: MathGPTLM, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
     # TODO: unit test
-    all_predictions: List[np.ndarray] = []
-    all_labels: List[np.ndarray] = []
-    def accumulate_predictions(model_output, batch: CollatedBatch):
-        # TODO: this doesn't actually seem like the right way to evaluate
-        #       we should probably generate a full prediction blind (using nucleus sampling or beam search) and then compare that to the label
-        #       what's the proper way to do that? how to fine-tune hyperparameters fairly?
-        type_preds, token_preds = get_most_likely_predictions(model_output[1])
-        # For predictions and targets, stack types and tokens in last dimension
-        type_preds = type_preds[:, :-1].contiguous().view(-1).detach().cpu().numpy()
-        token_preds = token_preds[:, :-1].contiguous().view(-1).detach().cpu().numpy()
-        predictions = np.stack([type_preds, token_preds], axis=-1)
-        type_targets = batch["token_types"][:, 1:].contiguous().view(-1).detach().cpu().numpy()
-        token_targets = batch["gen_labels"][:, 1:].contiguous().view(-1).detach().cpu().numpy()
-        targets = np.stack([type_targets, token_targets], axis=-1)
-        mask = token_targets != PADDING_TOKEN_ID # Remove padding as well as region over prompt
-        all_predictions.append(predictions[mask])
-        all_labels.append(targets[mask])
-
-    loss = process_model_output(model, dataset, options, accumulate_predictions)
+    data_loader = DataLoader(
+        dataset,
+        collate_fn=Collator(task),
+        batch_size=1 # Only process one sequence at a time since prompts may have different lengths
+    )
+    all_labels: List[CollatedBatch] = []
+    all_predictions: List[CollatedBatch] = []
+    with torch.no_grad():
+        for batch in data_loader:
+            split_point = batch["prompt_lengths"][0]
+            gen_batch = trim_batch(batch, 0, split_point)
+            generate(model, gen_batch, options.max_seq_len)
+            all_predictions.append(trim_batch(gen_batch, split_point, options.max_seq_len))
+            all_labels.append(trim_batch(batch, split_point, options.max_seq_len))
 
     # TODO: evaluate other metrics (BLEU, TED, etc.)
-    num_exact_match = sum(1 for pred, label in zip(all_predictions, all_labels) if (pred.shape == label.shape and all(pred == label)))
+    num_exact_match = sum(
+        1 for pred, label in zip(all_predictions, all_labels)
+        if pred["token_ids"].shape == label["token_ids"].shape and all(pred["token_ids"] == label["token_ids"]) and all(pred["token_types"] == label["token_types"])
+    )
     accuracy = num_exact_match / len(all_labels)
-    return loss, f"Accuracy: {accuracy:.3f}"
+    return 0, f"Exact Match Accuracy: {accuracy:.3f}"
 
-def evaluate_cls_task(model: MathGPTClassifier, dataset: Dataset, options: TrainOptions):
+def evaluate_cls_task(model: MathGPTClassifier, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
     # TODO: unit test
     all_predictions = []
     all_labels = []
@@ -134,7 +135,7 @@ def evaluate_cls_task(model: MathGPTClassifier, dataset: Dataset, options: Train
         all_predictions.append(predictions.detach().cpu().numpy())
         all_labels.append(batch["cls_labels"].detach().cpu().numpy())
 
-    loss = process_model_output(model, dataset, options, accumulate_predictions)
+    loss = process_model_output(model, dataset, task, options, accumulate_predictions)
 
     all_preds_np = np.concatenate(all_predictions, axis=0)
     all_labels_np = np.concatenate(all_labels, axis=0)

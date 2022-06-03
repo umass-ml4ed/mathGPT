@@ -3,7 +3,7 @@ import torch
 
 from pre_process import process_wikipedia_data, process_mathsum_data
 from analyze_data import analyze_data
-from training import pretrain, evaluate_pretrained_lm, test_lm, train_downstream_task, evaluate_downstream_task
+from training import pretrain, evaluate_pretrained_lm, test_lm, train_downstream_task, evaluate_downstream_task, test_gen_task
 from utils import TrainOptions, initialize_seeds, device, enum_choices, enum_value_to_member
 from constants import DownstreamTask
 
@@ -31,6 +31,7 @@ def main():
     parser.add_argument("--test_lm", help="Run language generation using given article")
     parser.add_argument("--train_downstream", help="Train downstream task model", choices=enum_choices(DownstreamTask))
     parser.add_argument("--evaluate_downstream", help="Evaluate downstream task model performance on test set", choices=enum_choices(DownstreamTask))
+    parser.add_argument("--test_downstream", help="See downstream model output on test samples", choices=enum_choices(DownstreamTask))
     # Config
     parser.add_argument("--name", help="Name of current model/experiment, used for saving/loading model and config")
     parser.add_argument("--pretrained_name", help="Name of pre-trained LM for initializing downstream task model")
@@ -59,7 +60,9 @@ def main():
     if args.train_downstream:
         train_downstream_task(args.name, args.pretrained_name, enum_value_to_member(args.train_downstream, DownstreamTask), TrainOptions(arg_dict))
     if args.evaluate_downstream:
-        evaluate_downstream_task(args.name, enum_value_to_member(args.train_downstream, DownstreamTask))
+        evaluate_downstream_task(args.name, enum_value_to_member(args.evaluate_downstream, DownstreamTask))
+    if args.test_downstream:
+        test_gen_task(args.name, enum_value_to_member(args.test_downstream, DownstreamTask))
 
 if __name__ == "__main__":
     main()

@@ -45,6 +45,7 @@ def split_sequence(sequence: Sequence, max_seq_len: int) -> List[Sequence]:
 def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_tokenizer: GPT2TokenizerFast):
     sequence = Sequence(name)
     text_chunks = text.split(FORMULA_IDENTIFIER)
+    num_missing_formulas = 0
     for text_chunk_idx, text_chunk in enumerate(text_chunks):
         # Tokenize the text chunk and add it to the sequence
         text_token_ids: List[int] = text_tokenizer(text_chunk)["input_ids"]
@@ -60,6 +61,7 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_t
 
         # Skip formula if it wasn't captured
         if str(text_chunk_idx) not in formulas:
+            num_missing_formulas += 1
             continue
 
         # Add formula start token
@@ -84,7 +86,7 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_t
         sequence.pos_levels.append(0)
         sequence.pos_encodings.append(EMPTY_POS_ENCODING)
 
-    return sequence
+    return sequence, num_missing_formulas
 
 class PreTrainDataset(torch.utils.data.Dataset):
     def __init__(self, article_filenames: List[str], max_seq_len: Optional[int] = None):
@@ -92,18 +94,21 @@ class PreTrainDataset(torch.utils.data.Dataset):
         self.text_tokenizer: GPT2TokenizerFast = GPT2TokenizerFast.from_pretrained("gpt2")
 
         print("Processing data...")
+        num_missing_formulas = 0
         for article_name in tqdm(article_filenames):
-            with open(article_name) as article_file:
+            with open(article_name, encoding="utf-8") as article_file:
                 article: Article = json.load(article_file)
 
             article_text = article["text"] + EOS_TOKEN
-            sequence = tokenize_sequence(article_name, article_text, article["formulas"], self.text_tokenizer)
+            sequence, cur_missing_formulas = tokenize_sequence(article_name, article_text, article["formulas"], self.text_tokenizer)
+            num_missing_formulas += cur_missing_formulas
 
             if max_seq_len:
                 split_sequences = split_sequence(sequence, max_seq_len)
                 self.data += split_sequences
             else:
                 self.data.append(sequence)
+        print("Missing", num_missing_formulas, "formulas")
 
     def __len__(self):
         return len(self.data)
@@ -112,28 +117,30 @@ class PreTrainDataset(torch.utils.data.Dataset):
         return self.data[index]
 
 class GenTaskDataset(torch.utils.data.Dataset):
-    def __init__(self, sequence_filenames: List[str], max_seq_len: int):
+    def __init__(self, samples: List[GenTaskSample], max_seq_len: int):
         self.data: List[Sequence] = []
         self.text_tokenizer: GPT2TokenizerFast = GPT2TokenizerFast.from_pretrained("gpt2")
 
         print("Processing data...")
-        for sequence_name in tqdm(sequence_filenames):
-            with open(sequence_name) as sequence_file:
-                raw_sequence: GenTaskSample = json.load(sequence_file)
-
-            prompt_text = raw_sequence["prompt"]["text"] + SEP_TOKEN
-            prompt_sequence: Sequence = tokenize_sequence(sequence_name, prompt_text, raw_sequence["prompt"]["formulas"], self.text_tokenizer)
-            label_text = raw_sequence["label"]["text"] + EOS_TOKEN
-            label_sequence: Sequence = tokenize_sequence(sequence_name, label_text, raw_sequence["label"]["formulas"], self.text_tokenizer)
-            sequence: Sequence = prompt_sequence + label_sequence
-            # Assign to skip loss calculation on prompt and only calculate loss on label part of the sequence
-            sequence.label = [PADDING_TOKEN_ID] * len(prompt_sequence) + label_sequence.token_ids
+        num_missing_formulas = 0
+        skipped_sequences = 0
+        for sample in tqdm(samples):
+            prompt_text = sample["prompt"]["text"] + SEP_TOKEN
+            prompt_sequence, cur_missing_formulas = tokenize_sequence("", prompt_text, sample["prompt"]["formulas"], self.text_tokenizer)
+            num_missing_formulas += cur_missing_formulas
+            label_text = sample["label"]["text"] + EOS_TOKEN
+            label_sequence, cur_missing_formulas = tokenize_sequence("", label_text, sample["label"]["formulas"], self.text_tokenizer)
+            num_missing_formulas += cur_missing_formulas
+            sequence = prompt_sequence + label_sequence
+            sequence.label = len(prompt_sequence)
 
             if len(sequence) > max_seq_len:
-                print("Sequence too long, skipping...")
+                skipped_sequences += 1
                 continue
 
             self.data.append(sequence)
+        print("Missing", num_missing_formulas, "formulas")
+        print("Skipped", skipped_sequences, "long sequences")
 
     def __len__(self):
         return len(self.data)
@@ -142,24 +149,26 @@ class GenTaskDataset(torch.utils.data.Dataset):
         return self.data[index]
 
 class ClassifyTaskDataset(torch.utils.data.Dataset):
-    def __init__(self, sequence_filenames: List[str], max_seq_len: int):
+    def __init__(self, samples: List[ClassifyTaskSample], max_seq_len: int):
         self.data: List[Sequence] = []
         self.text_tokenizer: GPT2TokenizerFast = GPT2TokenizerFast.from_pretrained("gpt2")
 
         print("Processing data...")
-        for sequence_name in tqdm(sequence_filenames):
-            with open(sequence_name) as sequence_file:
-                raw_sequence: ClassifyTaskSample = json.load(sequence_file)
-
-            text = raw_sequence["text"] + CLS_TOKEN
-            sequence: Sequence = tokenize_sequence(sequence_name, text, raw_sequence["formulas"], self.text_tokenizer)
-            sequence.label = raw_sequence["label"]
+        num_missing_formulas = 0
+        skipped_sequences = 0
+        for sample in tqdm(samples):
+            text = sample["text"] + CLS_TOKEN
+            sequence, cur_missing_formulas = tokenize_sequence("", text, sample["formulas"], self.text_tokenizer)
+            num_missing_formulas += cur_missing_formulas
+            sequence.label = sample["label"]
 
             if len(sequence) > max_seq_len:
-                print("Sequence too long, skipping...")
+                skipped_sequences += 1
                 continue
 
             self.data.append(sequence)
+        print("Missing", num_missing_formulas, "formulas")
+        print("Skipped", skipped_sequences, "long sequences")
 
     def __len__(self):
         return len(self.data)
@@ -180,15 +189,16 @@ def trim_batch(batch: CollatedBatch, trim_start: int, trim_end: int) -> Collated
         "pos_encodings": batch["pos_encodings"][:, trim_start : trim_end],
         "attention_mask": batch["attention_mask"][:, trim_start : trim_end],
         "sequence_lengths": torch.tensor([min(trim_end - trim_start, max(seq_len - trim_start, 0)) for seq_len in batch["sequence_lengths"]]),
-        "gen_labels": batch["gen_labels"][:, trim_start : trim_end] if batch["gen_labels"] else None,
+        "prompt_lengths": batch["prompt_lengths"],
+        "gen_labels": batch["gen_labels"][:, trim_start : trim_end] if batch["gen_labels"] is not None else None,
         "cls_labels": batch["cls_labels"],
     }
 
 class Collator:
-    def __init__(self):
-        pass
+    def __init__(self, task: Optional[DownstreamTask] = None):
+        self.task = task
 
-    def __call__(self, batch: List[Sequence], task: Optional[DownstreamTask] = None) -> CollatedBatch:
+    def __call__(self, batch: List[Sequence]) -> CollatedBatch:
         token_id_batches = []
         token_type_batches = []
         pos_vec_batches = []
@@ -196,6 +206,7 @@ class Collator:
         pos_encoding_batches = []
         attention_mask = []
         sequence_lengths = []
+        prompt_lengths = []
         gen_label_batches = []
         cls_labels = []
 
@@ -208,11 +219,14 @@ class Collator:
             pos_encoding_batches.append(torch.FloatTensor(sequence.pos_encodings))
             attention_mask.append(torch.ones(len(sequence.token_ids)))
             sequence_lengths.append(len(sequence))
-            if task:
-                if is_cls_task(task):
+            if self.task:
+                if is_cls_task(self.task):
                     cls_labels.append(sequence.label)
                 else:
-                    gen_label_batches.append(torch.LongTensor(sequence.label))
+                    prompt_lengths.append(sequence.label)
+                    gen_label = torch.clone(token_ids)
+                    gen_label[:sequence.label] = PADDING_TOKEN_ID
+                    gen_label_batches.append(gen_label)
 
         return {
             "sources": [sequence.name for sequence in batch],
@@ -224,6 +238,7 @@ class Collator:
             "pos_encodings": torch.nn.utils.rnn.pad_sequence(pos_encoding_batches, batch_first=True).to(device),
             "attention_mask": torch.nn.utils.rnn.pad_sequence(attention_mask, batch_first=True).to(device),
             "sequence_lengths": torch.tensor(sequence_lengths), # Must be on CPU
+            "prompt_lengths": torch.tensor(prompt_lengths) if prompt_lengths else None, # Must be on CPU
             "gen_labels": torch.nn.utils.rnn.pad_sequence(gen_label_batches, batch_first=True, padding_value=PADDING_TOKEN_ID).to(device) if gen_label_batches else None,
             "cls_labels": torch.tensor(cls_labels).to(device) if cls_labels else None,
         }

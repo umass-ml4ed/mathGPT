@@ -6,7 +6,7 @@ from tqdm import tqdm
 from model_math_gpt import MathGPTLM
 from math_tokenize import encode_pos
 from utils import device
-from constants import CollatedBatch, TokenType
+from constants import CollatedBatch, TokenType, EOS_TOKEN_ID
 
 def infer_math_pos(prev_pos_vecs: torch.Tensor, prev_pos_levels: torch.Tensor, prev_token_types: torch.Tensor):
     """
@@ -125,3 +125,6 @@ def generate(model: MathGPTLM, gen_batch: CollatedBatch, max_seq_len: int):
         gen_batch["pos_levels"] = torch.concat([gen_batch["pos_levels"], new_pos_levels.unsqueeze(1)], dim=1)
         gen_batch["pos_encodings"] = torch.concat([gen_batch["pos_encodings"], new_pos_encodings.unsqueeze(1)], dim=1)
         gen_batch["attention_mask"] = torch.concat([gen_batch["attention_mask"], new_attention_mask.unsqueeze(1)], dim=1)
+
+        if batch_size == 1 and gen_batch["token_ids"][0, -1] == EOS_TOKEN_ID:
+            break

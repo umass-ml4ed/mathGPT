@@ -111,6 +111,7 @@ class CollatedBatch(TypedDict):
     pos_encodings: torch.Tensor
     attention_mask: torch.Tensor
     sequence_lengths: torch.Tensor
+    prompt_lengths: torch.Tensor
     gen_labels: Optional[torch.Tensor]
     cls_labels: Optional[torch.Tensor]
 

@@ -128,7 +128,7 @@ def analyze_data():
     # Gather data from each processed article
     for article_name in tqdm(os.listdir(WIKI_DATA)):
         article_filepath = os.path.join(WIKI_DATA, article_name)
-        with open(article_filepath) as article_file:
+        with open(article_filepath, encoding="utf-8") as article_file:
             article: Article = json.load(article_file)
         for formula in article["formulas"].values():
             stats["num_formulas"] += 1

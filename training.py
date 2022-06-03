@@ -7,23 +7,23 @@ from torch.utils.data import Dataset, DataLoader, Subset
 from tqdm import tqdm
 
 from model_math_gpt import MathGPTBase, MathGPTLM, MathGPTClassifier
-from loading import PreTrainDataset, GenTaskDataset, ClassifyTaskDataset, Collator
-from evaluate import evaluate_lm, evaluate_cls_task, evaluate_gen_task
+from loading import PreTrainDataset, GenTaskDataset, ClassifyTaskDataset, Collator, trim_batch
+from evaluate import evaluate_lm, evaluate_lm_accuracy, evaluate_cls_task, evaluate_gen_task
 from generate import generate
 from decode import decode_batch
 from utils import TrainOptions, device, is_cls_task
-from constants import DownstreamTask, DOWNSTREAM_TASK_TO_NUM_CLASSES, WIKI_DATA
+from constants import DownstreamTask, DOWNSTREAM_TASK_TO_NUM_CLASSES, WIKI_DATA, OFEQ_DATA
 
 def get_article_names():
     return [os.path.join(WIKI_DATA, article_filename) for article_filename in os.listdir(WIKI_DATA)]
 
 def save_model(model: MathGPTBase, model_name: str, options: TrainOptions):
     torch.save(model.state_dict(), f"{model_name}.pt")
-    with open(f"{model_name}.json", "w") as config_file:
+    with open(f"{model_name}.json", "w", encoding="utf-8") as config_file:
         json.dump(options.__dict__, config_file, indent=4)
 
 def load_model(model_name: str, task: Optional[DownstreamTask] = None):
-    with open(f"{model_name}.json") as config_file:
+    with open(f"{model_name}.json", encoding="utf-8") as config_file:
         options = TrainOptions(json.load(config_file))
     if is_cls_task(task):
         model = MathGPTClassifier(options).to(device)
@@ -36,8 +36,8 @@ def evaluate_model(model: MathGPTBase, dataset: Dataset, task: Optional[Downstre
     if not task:
         return evaluate_lm(model, dataset, options)
     if is_cls_task(task):
-        return evaluate_cls_task(model, dataset, options)
-    return evaluate_gen_task(model, dataset, options)
+        return evaluate_cls_task(model, dataset, task, options)
+    return evaluate_lm_accuracy(model, dataset, task, options)
 
 def train(model: MathGPTBase, model_name: str, train_loader: DataLoader, validation_dataset: Dataset, options: TrainOptions, task: Optional[DownstreamTask] = None):
     optimizer = torch.optim.AdamW(model.parameters(), lr=options.lr, weight_decay=options.weight_decay)
@@ -45,7 +45,9 @@ def train(model: MathGPTBase, model_name: str, train_loader: DataLoader, validat
     # Scaler prevents gradient underflow when using fp16 precision
     scaler = torch.cuda.amp.grad_scaler.GradScaler() if options.amp else None
     # Split computations across GPUs if multiple available
-    use_dp = torch.cuda.device_count() > 1
+    # use_dp = torch.cuda.device_count() > 1
+    use_dp = False
+    # TODO: how does this split tensors in the batch? investigate...
     model_ddp = torch.nn.parallel.DataParallel(model) if use_dp else None
 
     best_metric = None
@@ -136,46 +138,69 @@ def test_lm(model_name: str, test_article: str, test_options: dict):
     model, options = load_model(model_name)
     options.update(test_options)
 
-    dataset = PreTrainDataset([test_article], options.max_seq_len // 2)
-    data_loader = DataLoader(
-        dataset,
-        collate_fn=Collator(),
-        batch_size=1
-    )
+    wiki = False
+    if wiki:
+        dataset = PreTrainDataset([test_article], options.max_seq_len // 2)
+        data_loader = DataLoader(
+            dataset,
+            collate_fn=Collator(),
+            batch_size=1
+        )
+        with torch.no_grad():
+            data_loader_it = iter(data_loader)
+            gen_batch = next(data_loader_it)
+            gen_batch_len = len(gen_batch["token_ids"])
+            prompt_text = decode_batch(gen_batch, dataset.text_tokenizer)[0]
+            generate(model, gen_batch, options.max_seq_len)
+            pred_text = decode_batch(trim_batch(gen_batch, gen_batch_len, options.max_seq_len), dataset.text_tokenizer)[0]
+            followup_batch = next(data_loader_it)
+            og_text = decode_batch(followup_batch, dataset.text_tokenizer)[0]
 
-    with torch.no_grad():
-        data_loader_it = iter(data_loader)
-        gen_batch = next(data_loader_it)
-        prompt_text = decode_batch(gen_batch, dataset.text_tokenizer)[0]
-        generate(model, gen_batch, options.max_seq_len)
-        pred_text = decode_batch(gen_batch, dataset.text_tokenizer)[0]
-        followup_batch = next(data_loader_it)
-        og_text = decode_batch(followup_batch, dataset.text_tokenizer)[0]
+            print("Prompt:", prompt_text)
+            print("OG Text:", og_text)
+            print("Prediction:", pred_text)
+            print("")
+    else:
+        dataset = PreTrainDataset([test_article], options.max_seq_len)
+        data_loader = DataLoader(
+            dataset,
+            collate_fn=Collator(),
+            batch_size=1
+        )
+        with torch.no_grad():
+            for batch in data_loader:
+                gen_batch = trim_batch(batch, 0, batch["token_ids"].shape[1] - 1)
+                prompt_text = decode_batch(gen_batch, dataset.text_tokenizer)[0]
+                generate(model, gen_batch, options.max_seq_len)
+                pred_text = decode_batch(gen_batch, dataset.text_tokenizer)[0]
 
-        print("Prompt:", prompt_text)
-        print("OG Text:", og_text)
-        print("Prediction:", pred_text)
+                print("Prompt:", prompt_text)
+                print("Prediction:", pred_text)
+                print("")
 
 def train_downstream_task(model_name: str, pretrained_name: str, task: DownstreamTask, options: TrainOptions):
-    # TODO: get data files for the given task
     if is_cls_task(task):
+        # TODO: get data files for the given task
         options.num_classes = DOWNSTREAM_TASK_TO_NUM_CLASSES.get(task)
         dataset = ClassifyTaskDataset([], options.max_seq_len)
-        model = MathGPTClassifier(options)
+        model = MathGPTClassifier(options).to(device)
     else:
-        dataset = GenTaskDataset([], options.max_seq_len)
-        model = MathGPTLM(options)
+        with open(os.path.join(OFEQ_DATA, "train.json"), encoding="utf-8") as headlines_file:
+            train_headlines = json.load(headlines_file)
+        with open(os.path.join(OFEQ_DATA, "val.json"), encoding="utf-8") as headlines_file:
+            val_headlines = json.load(headlines_file)
+        train_data = GenTaskDataset(train_headlines, options.max_seq_len)
+        val_data = GenTaskDataset(val_headlines, options.max_seq_len)
+        model = MathGPTLM(options).to(device)
     model.load_pretrained(pretrained_name)
-    train_data = Subset(dataset, list(range(0, int(len(dataset) * .9))))
-    val_data = Subset(dataset, list(range(int(len(dataset) * .9), len(dataset))))
     train_loader = DataLoader(
         train_data,
-        collate_fn=Collator(),
+        collate_fn=Collator(task),
         batch_size=options.batch_size,
         shuffle=True,
         drop_last=False
     )
-    train(model, model_name, train_loader, val_data, options)
+    train(model, model_name, train_loader, val_data, options, task)
 
 def evaluate_downstream_task(model_name: str, task: DownstreamTask):
     model, options = load_model(model_name, task)
@@ -183,7 +208,39 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask):
     # TODO: get data files for the given task
     if is_cls_task(task):
         dataset = ClassifyTaskDataset([], options.max_seq_len)
+        evaluate_cls_task(model, dataset, task, options)
     else:
-        dataset = GenTaskDataset([], options.max_seq_len)
+        with open(os.path.join(OFEQ_DATA, "test.json"), encoding="utf-8") as headlines_file:
+            headlines = json.load(headlines_file)
+        dataset = GenTaskDataset(headlines, options.max_seq_len)
+        _, results = evaluate_gen_task(model, dataset, task, options)
+        print(results)
 
-    evaluate_model(model, dataset, task, options)
+def test_gen_task(model_name: str, task: DownstreamTask):
+    model, options = load_model(model_name, task)
+
+    with open(os.path.join(OFEQ_DATA, "test.json"), encoding="utf-8") as headlines_file:
+        headlines = json.load(headlines_file)
+    dataset = GenTaskDataset(headlines, options.max_seq_len)
+    data_loader = DataLoader(
+        dataset,
+        collate_fn=Collator(task),
+        batch_size=1 # Only process one sequence at a time since prompts may have different lengths
+    )
+    with torch.no_grad():
+        samples_to_try = 5
+        for batch_idx, batch in enumerate(data_loader):
+            split_point = batch["prompt_lengths"][0]
+            gen_batch = trim_batch(batch, 0, split_point)
+            prompt_text = decode_batch(gen_batch, dataset.text_tokenizer)[0]
+            generate(model, gen_batch, options.max_seq_len)
+            pred_text = decode_batch(trim_batch(gen_batch, split_point, options.max_seq_len), dataset.text_tokenizer)[0]
+            og_text = decode_batch(trim_batch(batch, split_point, options.max_seq_len), dataset.text_tokenizer)[0]
+
+            print("Prompt:", prompt_text)
+            print("OG Text:", og_text)
+            print("Prediction:", pred_text)
+            print("")
+
+            if batch_idx == samples_to_try - 1:
+                break
