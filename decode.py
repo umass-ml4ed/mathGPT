@@ -1,4 +1,5 @@
 from typing import List
+import re
 from dataclasses import dataclass
 import torch
 from transformers import GPT2TokenizerFast
@@ -45,27 +46,49 @@ def tree_to_text(tree_node: DecodeTreeNode) -> str:
         symbol = "\\times"
     if symbol == "partialdiff":
         symbol = "\\partial"
+    if symbol == "product":
+        symbol = "\\prod"
+    if symbol == "conditional":
+        symbol = "|"
+    if symbol == "in":
+        symbol = "\\in"
+    if symbol == "leq":
+        symbol = "\\leq"
+    if symbol == "geq":
+        symbol = "\\geq"
 
     if not tree_node.children:
         return symbol
 
     if symbol == "SpecialOpToken.ANON_OP": # TODO: better check for this
         left = tree_to_text(tree_node.children[0])
-        return left + "{" + "".join(tree_to_text(child) for child in tree_node.children[1:]) + "}"
+        return left + " { " + "".join(tree_to_text(child) for child in tree_node.children[1:]) + " } "
 
+    if symbol == "abs":
+        return " | " + "".join(tree_to_text(child) for child in tree_node.children) + " | "
+
+    if symbol.startswith("interval("):
+        return (" ( " if symbol[9] == "O" else " [ ") +\
+            " , ".join(tree_to_text(child) for child in tree_node.children) +\
+            (" ) " if symbol[11] == "O" else " ] ")
+
+    if symbol == "differential-d":
+        return " \\,d " + "".join(tree_to_text(child) for child in tree_node.children)
+
+    if len(tree_node.children) >= 2:
+        if symbol in ("\\times", "<", ">", "\\leq", "\\geq"):
+            return f" {symbol} ".join(tree_to_text(child) for child in tree_node.children)
     if len(tree_node.children) == 2:
         left = tree_to_text(tree_node.children[0])
         right = tree_to_text(tree_node.children[1])
         if symbol == "SUB":
-            return f"{left}_{{{right}}}"
+            return f" {left} _ {{ {right} }} "
         if symbol == "SUP":
-            return f"{left}^{{{right}}}"
+            return f" {left} ^ {{ {right} }} "
         if symbol == "divide":
-            return f"\\frac{{{left}}}{{{right}}}"
-        if symbol == "interval(O-O)":
-            return f"({left},{right})"
-        return f"{left} {symbol} {right}"
-    return symbol + "{" + "".join(tree_to_text(child) for child in tree_node.children) + "}"
+            return f" \\frac {{ {left} }} {{ {right} }}"
+        return f" {left} {symbol} {right} "
+    return f" {symbol} " + "".join(tree_to_text(child) for child in tree_node.children)
 
 def decode_formula(token_ids: torch.Tensor, token_types: torch.Tensor):
     """
@@ -101,7 +124,7 @@ def decode_batch(batch: CollatedBatch, text_tokenizer: GPT2TokenizerFast) -> Lis
             if token_type == TokenType.START_FORMULA:
                 if sub_seq_start != sub_seq_end:
                     result += text_tokenizer.decode(batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end])
-                result += "$"
+                result += " $ "
                 sub_seq_start = sub_seq_end = tok_idx + 1
                 is_text = False
                 continue
@@ -110,16 +133,16 @@ def decode_batch(batch: CollatedBatch, text_tokenizer: GPT2TokenizerFast) -> Lis
             if token_type == TokenType.END_FORMULA:
                 if sub_seq_start != sub_seq_end:
                     result += decode_formula(batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end], batch["token_types"][seq_idx][sub_seq_start : sub_seq_end])
-                result += "$"
+                result += " $ "
                 sub_seq_start = sub_seq_end = tok_idx + 1
                 is_text = True
                 continue
 
-            sub_seq_end = tok_idx + 1
-
-            # Stop decoding at EOS token
+            # Stop decoding at EOS token (do this before incrementing end idx to not print EOS token string)
             if token_type == TokenType.TEXT and token_id == EOS_TOKEN_ID:
                 break
+
+            sub_seq_end = tok_idx + 1
 
         # Decode any trailing tokens at the end
         if sub_seq_start != sub_seq_end:
@@ -131,6 +154,7 @@ def decode_batch(batch: CollatedBatch, text_tokenizer: GPT2TokenizerFast) -> Lis
                 else:
                     result += decode_formula(token_ids[non_padding_idx], batch["token_types"][seq_idx][sub_seq_start : sub_seq_end][non_padding_idx])
 
+        result = re.sub(r" +", " ", result)
         all_decoded_sequences.append(result)
 
     return all_decoded_sequences

@@ -32,6 +32,7 @@ ALLOWED_TRANSITIONS: Dict[TokenType, List[TokenType]] = {
 class MathGPTBase(nn.Module):
     def __init__(self, options: TrainOptions):
         super().__init__()
+        self.options = options
 
         # Extract pre-trained GPT2 transformer and text prediction head
         self.gpt2_lm: GPT2LMHeadModel = GPT2LMHeadModel.from_pretrained("gpt2")
@@ -72,7 +73,11 @@ class MathGPTBase(nn.Module):
         At each time step per sequence, add the type, token, and math position embeddings
         """
         # Start with type embeddings
-        input_embeddings = self.type_embeddings(batch["token_types"])
+        if self.options.use_type_embs:
+            input_embeddings = self.type_embeddings(batch["token_types"])
+        else:
+            batch_size, max_seq_len = batch["token_ids"].shape
+            input_embeddings = torch.zeros((batch_size, max_seq_len, EMB_SIZE)).to(device)
 
         # Add token embeddings for each type
         for token_type in TokenType:

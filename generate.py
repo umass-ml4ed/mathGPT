@@ -2,6 +2,7 @@ from typing import Dict, List
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
+from mathGPT.utils import TrainOptions
 
 from model_math_gpt import MathGPTLM
 from math_tokenize import encode_pos
@@ -61,9 +62,8 @@ def get_most_likely_predictions(type_to_token_probs: Dict[TokenType, torch.Tenso
         max_token_probs = torch.maximum(max_token_probs, max_values)
     return predicted_types, predicted_tokens
 
-def get_nucleus_sample_predictions(type_to_token_probs: Dict[TokenType, torch.Tensor]):
+def get_nucleus_sample_predictions(type_to_token_probs: Dict[TokenType, torch.Tensor], options: TrainOptions):
     # TODO: apply temperature
-    # TODO: from transformers import tf_top_k_top_p_filtering
 
     # Convert dictionary to single tensor with concatenated token probabilites across types
     type_to_start_idx = [0] * len(TokenType)
@@ -81,7 +81,7 @@ def get_nucleus_sample_predictions(type_to_token_probs: Dict[TokenType, torch.Te
         # Use top-p sampling to get the next token for each batch
         sorted_probs, sorted_indices = torch.sort(token_probs[batch_idx], descending=True)
         cdf = torch.cumsum(sorted_probs, dim=-1)
-        idx_filter_mask = cdf > .95 # TODO: param for p
+        idx_filter_mask = cdf > options.ns_p
         idx_filter_mask[0] = False # If the most likely token is more likely than p, we still want to keep it
         filtered_indices = sorted_indices[idx_filter_mask]
         token_probs[batch_idx, filtered_indices] = 0
@@ -95,14 +95,14 @@ def get_nucleus_sample_predictions(type_to_token_probs: Dict[TokenType, torch.Te
                 break
     return torch.tensor(predicted_types).to(device), torch.concat(predicted_tokens)
 
-def generate(model: MathGPTLM, gen_batch: CollatedBatch, max_seq_len: int):
+def generate(model: MathGPTLM, gen_batch: CollatedBatch, options: TrainOptions):
     """
     Given a model and a batch, generate tokens up to the given length
     Given batch is modified
     """
     model.eval()
     batch_size, starting_len = gen_batch["token_ids"].shape
-    for _ in tqdm(range(starting_len, max_seq_len)):
+    for _ in tqdm(range(starting_len, options.max_seq_len)):
         # TODO: can we make faster by removing sequences in the batch that hit EOS? or set attention mask to 0 after EOS?
         # TODO: extract and pass past_key_values
         _, type_to_token_probs = model(gen_batch)
@@ -113,7 +113,7 @@ def generate(model: MathGPTLM, gen_batch: CollatedBatch, max_seq_len: int):
             type_preds = type_preds[:, -1]
             token_preds = token_preds[:, -1]
         if scheme == "nucleus":
-            type_preds, token_preds = get_nucleus_sample_predictions(type_to_token_probs)
+            type_preds, token_preds = get_nucleus_sample_predictions(type_to_token_probs, options)
 
         new_pos_vecs, new_pos_levels = infer_math_pos(gen_batch["pos_vecs"][:, -1], gen_batch["pos_levels"][:, -1], gen_batch["token_types"][:, -1])
         new_pos_encodings = torch.LongTensor([encode_pos(pos_vec, pos_level) for pos_vec, pos_level in zip(new_pos_vecs, new_pos_levels)]).to(device)

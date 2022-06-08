@@ -4,7 +4,9 @@ Download TangentCFT to directory *above* this one https://github.com/BehroozMans
 
 Install LaTeXML https://math.nist.gov/~BMiller/LaTeXML/get.html
 
-TODO: download dataset https://ntcir-math.nii.ac.jp/data/
+Install nlg-eval https://github.com/Maluuba/nlg-eval
+
+Download dataset https://ntcir-math.nii.ac.jp/data/ # TODO: just wiki or both?
 
 Add TangentCFT to path
 ```

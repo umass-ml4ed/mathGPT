@@ -88,12 +88,21 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_t
 
     return sequence, num_missing_formulas
 
-class PreTrainDataset(torch.utils.data.Dataset):
-    def __init__(self, article_filenames: List[str], max_seq_len: Optional[int] = None):
+class Dataset(torch.utils.data.Dataset):
+    def __init__(self):
         self.data: List[Sequence] = []
         self.text_tokenizer: GPT2TokenizerFast = GPT2TokenizerFast.from_pretrained("gpt2")
-
         print("Processing data...")
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        return self.data[index]
+
+class PreTrainDataset(Dataset):
+    def __init__(self, article_filenames: List[str], max_seq_len: Optional[int] = None):
+        super().__init__()
         num_missing_formulas = 0
         for article_name in tqdm(article_filenames):
             with open(article_name, encoding="utf-8") as article_file:
@@ -110,18 +119,25 @@ class PreTrainDataset(torch.utils.data.Dataset):
                 self.data.append(sequence)
         print("Missing", num_missing_formulas, "formulas")
 
-    def __len__(self):
-        return len(self.data)
+class PreTrainDatasetPreloaded(Dataset):
+    def __init__(self, articles: List[Article], max_seq_len: Optional[int] = None):
+        super().__init__()
+        num_missing_formulas = 0
+        for article in tqdm(articles):
+            article_text = article["text"]
+            sequence, cur_missing_formulas = tokenize_sequence("", article_text, article["formulas"], self.text_tokenizer)
+            num_missing_formulas += cur_missing_formulas
 
-    def __getitem__(self, index):
-        return self.data[index]
+            if max_seq_len:
+                split_sequences = split_sequence(sequence, max_seq_len)
+                self.data += split_sequences
+            else:
+                self.data.append(sequence)
+        print("Missing", num_missing_formulas, "formulas")
 
-class GenTaskDataset(torch.utils.data.Dataset):
+class GenTaskDataset(Dataset):
     def __init__(self, samples: List[GenTaskSample], max_seq_len: int):
-        self.data: List[Sequence] = []
-        self.text_tokenizer: GPT2TokenizerFast = GPT2TokenizerFast.from_pretrained("gpt2")
-
-        print("Processing data...")
+        super().__init__()
         num_missing_formulas = 0
         skipped_sequences = 0
         for sample in tqdm(samples):
@@ -142,18 +158,9 @@ class GenTaskDataset(torch.utils.data.Dataset):
         print("Missing", num_missing_formulas, "formulas")
         print("Skipped", skipped_sequences, "long sequences")
 
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, index):
-        return self.data[index]
-
-class ClassifyTaskDataset(torch.utils.data.Dataset):
+class ClassifyTaskDataset(Dataset):
     def __init__(self, samples: List[ClassifyTaskSample], max_seq_len: int):
-        self.data: List[Sequence] = []
-        self.text_tokenizer: GPT2TokenizerFast = GPT2TokenizerFast.from_pretrained("gpt2")
-
-        print("Processing data...")
+        super().__init__()
         num_missing_formulas = 0
         skipped_sequences = 0
         for sample in tqdm(samples):
@@ -169,12 +176,6 @@ class ClassifyTaskDataset(torch.utils.data.Dataset):
             self.data.append(sequence)
         print("Missing", num_missing_formulas, "formulas")
         print("Skipped", skipped_sequences, "long sequences")
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, index):
-        return self.data[index]
 
 def trim_batch(batch: CollatedBatch, trim_start: int, trim_end: int) -> CollatedBatch:
     """

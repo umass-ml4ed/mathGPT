@@ -1,14 +1,18 @@
-from typing import List, Callable, Tuple, Optional
+from typing import List, Callable, Tuple, Optional, Dict
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 from sklearn import metrics
+# from nltk.translate.bleu_score import corpus_bleu
+from nlgeval import compute_metrics
+# from rouge_score import rouge_scorer, scoring
 
-from loading import Collator, trim_batch
+from loading import Dataset, Collator, trim_batch
 from mathGPT.constants import DownstreamTask
 from model_math_gpt import MathGPTBase, MathGPTLM, MathGPTClassifier
 from generate import get_most_likely_predictions, generate
+from decode import decode_batch
 from utils import TrainOptions
 from constants import PADDING_TOKEN_ID, CollatedBatch
 
@@ -114,17 +118,35 @@ def evaluate_gen_task(model: MathGPTLM, dataset: Dataset, task: DownstreamTask, 
         for batch in data_loader:
             split_point = batch["prompt_lengths"][0]
             gen_batch = trim_batch(batch, 0, split_point)
-            generate(model, gen_batch, options.max_seq_len)
+            generate(model, gen_batch, options)
             all_predictions.append(trim_batch(gen_batch, split_point, options.max_seq_len))
             all_labels.append(trim_batch(batch, split_point, options.max_seq_len))
 
-    # TODO: evaluate other metrics (BLEU, TED, etc.)
     num_exact_match = sum(
         1 for pred, label in zip(all_predictions, all_labels)
-        if pred["token_ids"].shape == label["token_ids"].shape and all(pred["token_ids"] == label["token_ids"]) and all(pred["token_types"] == label["token_types"])
+        if pred["token_ids"].shape == label["token_ids"].shape and torch.all(pred["token_ids"] == label["token_ids"]) and torch.all(pred["token_types"] == label["token_types"])
     )
     accuracy = num_exact_match / len(all_labels)
-    return 0, f"Exact Match Accuracy: {accuracy:.3f}"
+    import pdb; pdb.set_trace()
+    pred_text_batch = [decode_batch(pred, dataset.text_tokenizer)[0].replace("\n", " ") for pred in all_predictions]
+    label_text_batch = [decode_batch(label, dataset.text_tokenizer)[0].replace("\n", " ") for label in all_labels]
+    pred_filename = "preds.txt"
+    label_filename = "labels.txt"
+    with open(pred_filename, "w", encoding="utf-8") as pred_file:
+        pred_file.write("\n".join(pred_text_batch))
+    with open(label_filename, "w", encoding="utf-8") as label_file:
+        label_file.write("\n".join(label_text_batch))
+    metrics = compute_metrics(hypothesis=pred_filename, references=[label_filename], no_skipthoughts=True, no_glove=True)
+    # bleu = corpus_bleu([[label_text.split()] for label_text in label_text_batch], [pred_text.split() for pred_text in pred_text_batch])
+    # rouge_types = ["rouge1", "rouge2", "rougeL"]
+    # scorer = rouge_scorer.RougeScorer(rouge_types, use_stemmer=True)
+    # rouge_scores: Dict[str, scoring.Score] = [scorer.score(label_text, pred_text) for label_text, pred_text in zip(label_text_batch, pred_text_batch)]
+    # rouge_avg = {
+    #     rouge_type: np.mean([score[rouge_type].fmeasure for score in rouge_scores])
+    #     for rouge_type in rouge_types
+    # }
+    # return 0, f"Exact Match Accuracy: {accuracy:.3f}, BLEU-4: {metrics['Bleu_4']:.3f}, ROUGE-1: {rouge_avg['rouge1']:.3f}, ROUGE-2: {rouge_avg['rouge2']:.3f}, ROUGE-L: {rouge_avg['rougeL']:.3f}, METEOR: {metrics['METEOR']:.3f}"
+    return 0, f"Exact Match Accuracy: {accuracy:.3f}, BLEU-4: {metrics['Bleu_4']:.3f}, ROUGE-L: {metrics['ROUGE_L']:.3f}, METEOR: {metrics['METEOR']:.3f}"
 
 def evaluate_cls_task(model: MathGPTClassifier, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
     # TODO: unit test

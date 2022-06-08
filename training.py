@@ -1,13 +1,15 @@
 import time
 import os
 import json
-from typing import Optional
+from typing import Optional, List
+from requests import options
 import torch
 from torch.utils.data import Dataset, DataLoader, Subset
 from tqdm import tqdm
+from mathGPT.constants import Article
 
 from model_math_gpt import MathGPTBase, MathGPTLM, MathGPTClassifier
-from loading import PreTrainDataset, GenTaskDataset, ClassifyTaskDataset, Collator, trim_batch
+from loading import PreTrainDataset, PreTrainDatasetPreloaded, GenTaskDataset, ClassifyTaskDataset, Collator, trim_batch
 from evaluate import evaluate_lm, evaluate_lm_accuracy, evaluate_cls_task, evaluate_gen_task
 from generate import generate
 from decode import decode_batch
@@ -45,10 +47,8 @@ def train(model: MathGPTBase, model_name: str, train_loader: DataLoader, validat
     # Scaler prevents gradient underflow when using fp16 precision
     scaler = torch.cuda.amp.grad_scaler.GradScaler() if options.amp else None
     # Split computations across GPUs if multiple available
-    # use_dp = torch.cuda.device_count() > 1
-    use_dp = False
-    # TODO: how does this split tensors in the batch? investigate...
-    model_ddp = torch.nn.parallel.DataParallel(model) if use_dp else None
+    use_dp = torch.cuda.device_count() > 1
+    model_dp = torch.nn.parallel.DataParallel(model) if use_dp else None
 
     best_metric = None
     best_stats = None
@@ -65,14 +65,14 @@ def train(model: MathGPTBase, model_name: str, train_loader: DataLoader, validat
             if scaler:
                 with torch.cuda.amp.autocast():
                     if use_dp:
-                        loss = model_ddp(batch)[0]
+                        loss = model_dp(batch)[0]
                         loss = loss.mean()
                     else:
                         loss = model(batch)[0]
                 scaler.scale(loss).backward()
             else:
                 if use_dp:
-                    loss = model_ddp(batch)[0]
+                    loss = model_dp(batch)[0]
                     loss = loss.mean()
                 else:
                     loss = model(batch)[0]
@@ -107,7 +107,13 @@ def train(model: MathGPTBase, model_name: str, train_loader: DataLoader, validat
 
     return best_stats
 
-def pretrain(model_name: str, options: TrainOptions):
+def pretrain(model_name: str, pretrained_name: str, options_dict: dict):
+    if pretrained_name:
+        model, options = load_model(pretrained_name)
+        options.update(options_dict)
+    else:
+        model = MathGPTLM(options).to(device)
+        options = TrainOptions(options_dict)
     articles = get_article_names()
     dataset = PreTrainDataset(articles, options.max_seq_len)
     train_data = Subset(dataset, list(range(0, int(len(dataset) * .9))))
@@ -119,7 +125,6 @@ def pretrain(model_name: str, options: TrainOptions):
         shuffle=True,
         drop_last=True
     )
-    model = MathGPTLM(options).to(device)
     train(model, model_name, train_loader, val_data, options)
 
 def evaluate_pretrained_lm(model_name: str, test_options: dict):
@@ -151,7 +156,7 @@ def test_lm(model_name: str, test_article: str, test_options: dict):
             gen_batch = next(data_loader_it)
             gen_batch_len = len(gen_batch["token_ids"])
             prompt_text = decode_batch(gen_batch, dataset.text_tokenizer)[0]
-            generate(model, gen_batch, options.max_seq_len)
+            generate(model, gen_batch, options)
             pred_text = decode_batch(trim_batch(gen_batch, gen_batch_len, options.max_seq_len), dataset.text_tokenizer)[0]
             followup_batch = next(data_loader_it)
             og_text = decode_batch(followup_batch, dataset.text_tokenizer)[0]
@@ -161,7 +166,9 @@ def test_lm(model_name: str, test_article: str, test_options: dict):
             print("Prediction:", pred_text)
             print("")
     else:
-        dataset = PreTrainDataset([test_article], options.max_seq_len)
+        with open("data/probes.json", encoding="utf-8") as probes_file:
+            probes: List[Article] = json.load(probes_file)
+        dataset = PreTrainDatasetPreloaded(probes, options.max_seq_len)
         data_loader = DataLoader(
             dataset,
             collate_fn=Collator(),
@@ -169,10 +176,9 @@ def test_lm(model_name: str, test_article: str, test_options: dict):
         )
         with torch.no_grad():
             for batch in data_loader:
-                gen_batch = trim_batch(batch, 0, batch["token_ids"].shape[1] - 1)
-                prompt_text = decode_batch(gen_batch, dataset.text_tokenizer)[0]
-                generate(model, gen_batch, options.max_seq_len)
-                pred_text = decode_batch(gen_batch, dataset.text_tokenizer)[0]
+                prompt_text = decode_batch(batch, dataset.text_tokenizer)[0]
+                generate(model, batch, options)
+                pred_text = decode_batch(batch, dataset.text_tokenizer)[0]
 
                 print("Prompt:", prompt_text)
                 print("Prediction:", pred_text)
@@ -211,16 +217,17 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask):
         evaluate_cls_task(model, dataset, task, options)
     else:
         with open(os.path.join(OFEQ_DATA, "test.json"), encoding="utf-8") as headlines_file:
-            headlines = json.load(headlines_file)
+            headlines = json.load(headlines_file)[:10]
         dataset = GenTaskDataset(headlines, options.max_seq_len)
         _, results = evaluate_gen_task(model, dataset, task, options)
         print(results)
 
 def test_gen_task(model_name: str, task: DownstreamTask):
     model, options = load_model(model_name, task)
+    samples_to_try = 5
 
     with open(os.path.join(OFEQ_DATA, "test.json"), encoding="utf-8") as headlines_file:
-        headlines = json.load(headlines_file)
+        headlines = json.load(headlines_file)[:samples_to_try]
     dataset = GenTaskDataset(headlines, options.max_seq_len)
     data_loader = DataLoader(
         dataset,
@@ -228,12 +235,11 @@ def test_gen_task(model_name: str, task: DownstreamTask):
         batch_size=1 # Only process one sequence at a time since prompts may have different lengths
     )
     with torch.no_grad():
-        samples_to_try = 5
-        for batch_idx, batch in enumerate(data_loader):
+        for batch in data_loader:
             split_point = batch["prompt_lengths"][0]
             gen_batch = trim_batch(batch, 0, split_point)
             prompt_text = decode_batch(gen_batch, dataset.text_tokenizer)[0]
-            generate(model, gen_batch, options.max_seq_len)
+            generate(model, gen_batch, options)
             pred_text = decode_batch(trim_batch(gen_batch, split_point, options.max_seq_len), dataset.text_tokenizer)[0]
             og_text = decode_batch(trim_batch(batch, split_point, options.max_seq_len), dataset.text_tokenizer)[0]
 
@@ -241,6 +247,3 @@ def test_gen_task(model_name: str, task: DownstreamTask):
             print("OG Text:", og_text)
             print("Prediction:", pred_text)
             print("")
-
-            if batch_idx == samples_to_try - 1:
-                break

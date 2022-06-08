@@ -9,3 +9,5 @@ mypy-extensions==0.4.3
 pytest==7.1.1
 sklearn==0.0
 tqdm==4.64.0
+matplotlib==3.4.3
+rouge-score==0.0.4

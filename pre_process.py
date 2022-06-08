@@ -3,6 +3,7 @@ import os
 import re
 import json
 from subprocess import Popen, PIPE
+from copy import copy
 from tqdm import tqdm
 from bs4 import BeautifulSoup
 
@@ -14,6 +15,7 @@ from vocabulary import Vocabulary
 from constants import Formula, OPT, FORMULA_IDENTIFIER, GenTaskSample, Article, DATA, WIKI_DATA
 
 TEX_HEADER = "\\documentclass{article}\n\\usepackage{graphicx}\n\\usepackage{amssymb}\n\\usepackage{amsmath}\n\\usepackage[utf8]{inputenc}\n"
+SAMPLE_SEPARATOR = "NEW-SAMPLE"
 
 all_latexml_errs: List[str] = []
 all_tangent_cft_errs: Dict[str, int] = {}
@@ -72,16 +74,13 @@ def get_formulas(content: str):
         }
     return formulas
 
-def process_article(article_filename: str) -> Article:
+def process_article(content: str) -> Article:
     """
     Create a sanitized version of the article with text and formulas separated
     Add all encountered math symbols to the vocab
     Article is in HTML format, and formulas are in MathML format in <math> tags
     Use TangentCFT code (https://github.com/BehroozMansouri/TangentCFT) for initial formula conversion
     """
-
-    # Get raw text data from the article
-    _, content = MathDocument.read_doc_file(article_filename)
 
     # Get all formulas in the article
     formulas = get_formulas(content)
@@ -100,10 +99,18 @@ def process_article(article_filename: str) -> Article:
         text_content += searchable_content[:math_tag_loc.start()] + FORMULA_IDENTIFIER
         searchable_content = searchable_content[math_tag_loc.end():]
 
-    # Remove all html tags
+    # Convert HTML to readable text
     soup = BeautifulSoup(text_content, "lxml")
-    text_content = soup.get_text()
-    text_content = re.sub(r"\s+", " ", text_content)
+    body = soup.find("body")
+    selectors_to_delete = [".footnotes", "footer"]
+    for selector in selectors_to_delete:
+        item_to_delete = body.find(selector)
+        if item_to_delete:
+            item_to_delete.decompose()
+    text_content = body.get_text()
+    text_content = re.sub(r" +", " ", text_content)
+    text_content = re.sub(r"\n[\s↩]+", "\n", text_content)
+    text_content = text_content.strip()
 
     return {
         "text": text_content,
@@ -129,7 +136,8 @@ def process_wikipedia_data():
     max_articles = len(article_filenames)
     print("Processing articles...")
     for article_filename in tqdm(article_filenames[:max_articles]):
-        article_data = process_article(article_filename)
+        _, content = MathDocument.read_doc_file(article_filename)
+        article_data = process_article(content)
         out_filename = os.path.basename(article_filename).replace(".html", ".json")
         with open(os.path.join(WIKI_DATA, out_filename), "w", encoding="utf-8") as out_file:
             json.dump(article_data, out_file, indent=2, ensure_ascii=False)
@@ -137,45 +145,72 @@ def process_wikipedia_data():
     # Dump vocab to file
     Vocabulary.dump()
 
-def process_raw_text(src_text_batch: List[str], err_data: dict) -> List[Article]:
+def fix_matrix(formula_text: str):
+    final_text = formula_text
+    match_found = False
+    matrix_types = ["matrix", "pmatrix", "vmatrix", "Vmatrix", "bmatrix", "Bmatrix", "smallmatrix"]
+    for matrix_type in matrix_types:
+        pmat_start = formula_text.find(f"\\{matrix_type}")
+        if pmat_start >= 0:
+            # Find starting and ending brackets
+            bracket_lvl = 0
+            open_bracket_idx = formula_text.find("{", pmat_start)
+            for idx in range(open_bracket_idx, len(formula_text)):
+                if formula_text[idx] == "{":
+                    bracket_lvl += 1
+                elif formula_text[idx] == "}":
+                    bracket_lvl -= 1
+                if bracket_lvl == 0:
+                    break
+
+            # Replace with begin/end macros
+            final_text = formula_text[:pmat_start] +\
+                f" \\begin{{{matrix_type}}} " +\
+                formula_text[open_bracket_idx + 1 : idx] +\
+                f" \\end{{{matrix_type}}} " +\
+                formula_text[idx + 1:]
+            match_found = True
+            break
+
+    # Run check again in case there were multiple matrix elements
+    if match_found:
+        final_text = fix_matrix(final_text)
+    return final_text
+
+def process_raw_text(src_text_batch: List[str], err_data: Optional[dict] = None) -> List[Article]:
     """
     Extract text and processed formulas from batch of raw text
     """
 
-    # Extract text and gather formulas
-    all_formula_text = ""
-    just_text_batch: List[str] = []
-    num_formulas_batch: List[int] = []
-    for src_text in src_text_batch:
-        just_text = ""
-        num_formulas = 0
-        searchable_text = src_text
+    # Combine batch and convert formulas to viable LaTeX format
+    processed_text = ""
+    for batch_idx, src_text in enumerate(src_text_batch):
+        searchable_text = src_text.strip()
         form_start = searchable_text.find("<m>")
         while form_start >= 0:
-            just_text += searchable_text[:form_start]
+            processed_text += searchable_text[:form_start]
             form_end = searchable_text.find("</m>")
             formula_text = searchable_text[form_start + 3 : form_end]
-            if formula_text and not formula_text.isspace(): # There are some empty formulas in the data, remove them here to keep in sync with LaTeXML
-                if "\\newcommand" in formula_text: # \newcommand needs to not be in a math formula to be processed
-                    all_formula_text += formula_text + "\n"
-                else:
-                    num_formulas += 1
-                    all_formula_text += f"${formula_text}$\n"
-                    all_formula_text = all_formula_text.replace(" \\gt ", ">").replace(" \\lt ", "<")
-                    just_text += FORMULA_IDENTIFIER
+            formula_text = formula_text.replace(" \\gt ", ">").replace(" \\lt ", "<") # Fix unknown macros
+            if "\\newcommand" in formula_text: # \newcommand needs to not be in a math formula to be processed
+                processed_text += formula_text
+            else:
+                formula_text = fix_matrix(formula_text)
+                processed_text += f"${formula_text}$"
             searchable_text = searchable_text[form_end + 4:]
             form_start = searchable_text.find("<m>")
-        just_text += searchable_text or " "
-        just_text_batch.append(just_text)
-        num_formulas_batch.append(num_formulas)
+        processed_text += searchable_text or " "
+        if batch_idx != len(src_text_batch) - 1:
+            processed_text += f" {SAMPLE_SEPARATOR} "
+    processed_text = processed_text.replace("%", "\\%")
 
-    # Convert formulas to MathML using LaTeXML
+    # Convert LaTeX source with LaTeXML
     temp_filename = "temp.tex"
     temp_xml_filename = "temp.xml"
     math_output_filename = "temp.html"
     with open(temp_filename, "w", encoding="utf-8") as temp_file:
         temp_file.write(TEX_HEADER)
-        temp_file.write(all_formula_text)
+        temp_file.write(processed_text)
 
     remove_italics = True
     latexml_success = True
@@ -203,41 +238,48 @@ def process_raw_text(src_text_batch: List[str], err_data: dict) -> List[Article]
             latexml_success = False
             all_latexml_errs.append(errs.decode("utf-8"))
 
-    all_formulas: Dict[int, Formula] = {}
+    # Extract text and formulas from processed text
     if latexml_success:
-        _, content = MathDocument.read_doc_file(math_output_filename)
-        if content.count("<math") == sum(num_formulas_batch):
-            all_formulas = get_formulas(content)
-            err_data["formulas_missing_from_tangentcft"] += sum(num_formulas_batch) - len(all_formulas)
-        else:
-            import pdb; pdb.set_trace()
-            err_data["formulas_missing_from_latexml_randomly"] += sum(num_formulas_batch)
-    else:
-        err_data["formulas_missing_from_latexml_failure"] += sum(num_formulas_batch)
-
-    # Gather text and formulas for the batch
-    formula_start_idx = 0
-    articles: List[Article] = []
-    for just_text, num_formulas in zip(just_text_batch, num_formulas_batch):
-        formulas = {
-            (formula_idx - formula_start_idx): all_formulas[formula_idx]
-            for formula_idx in range(formula_start_idx, formula_start_idx + num_formulas)
-            if formula_idx in all_formulas
-        }
-        formula_start_idx += num_formulas
-        if num_formulas > len(formulas):
-            err_data["articles_missing_formulas"] += 1
-        articles.append({
-            "text": just_text,
-            "formulas": formulas
-        })
-    return articles
+        _, all_content = MathDocument.read_doc_file(math_output_filename)
+        # Resolve share elements since TangentCFT doesn't handle them
+        # TangentCFT doesn't handle matrix structure <apply><csymbol>matrix</csymbol><matrix>...</matrix></apply>, so collapse to <matrix>...</matrix>
+        if "<share" in all_content or "matrix</csymbol>" in all_content:
+            soup = BeautifulSoup(all_content, "lxml")
+            while True:
+                share_el = soup.find("share")
+                if not share_el:
+                    break
+                ref_el = soup.find(id=share_el.attrs["href"][1:])
+                if not ref_el:
+                    share_el.decompose() # Sometimes LaTeXML assigns a ref that doesn't exist, just destroy the element in that case
+                else:
+                    share_el.replace_with(copy(ref_el))
+            while True:
+                matrix_symb_el = soup.find("csymbol", string="matrix")
+                if not matrix_symb_el:
+                    break
+                matrix_el = matrix_symb_el.parent.contents[1]
+                matrix_symb_el.parent.replace_with(matrix_el)
+            all_content = str(soup)
+        articles = [process_article(content) for content in all_content.split(SAMPLE_SEPARATOR)]
+        for article in articles:
+            exp_num_formulas = article["text"].count(FORMULA_IDENTIFIER)
+            if exp_num_formulas != len(article["formulas"]):
+                err_data["formulas_missing_from_tangentcft"] += exp_num_formulas - len(article["formulas"])
+                err_data["articles_missing_formulas"] += 1
+        if len(articles) != len(src_text_batch):
+            err_data["formulas_missing_from_latexml_randomly"] += 1
+            raise Exception("Failed to split batch!")
+        return articles
+    elif err_data:
+        err_data["formulas_missing_from_latexml_failure"] += 1
+        raise Exception("LaTeXML failed!")
 
 def process_mathsum_data():
     """
     Process all data files in the MathSum datasets
     """
-    batch_size: Optional[int] = None
+    batch_size: Optional[int] = 20 # 20 seems fastest!
     err_data: Dict[str, Dict[str, int]] = {}
     root_dir = "../MathSum"
     # for dataset in ("EXEQ-300k", "OFEQ-10k"):
@@ -257,8 +299,14 @@ def process_mathsum_data():
             samples: List[GenTaskSample] = []
             with open(post_filename, encoding="utf-8") as post_file:
                 with open(title_filename, encoding="utf-8") as title_file:
-                    all_posts = post_file.readlines()[:100]
-                    all_titles = title_file.readlines()[:100]
+                    all_posts = post_file.readlines()
+                    all_titles = title_file.readlines()
+                    # These samples have invalid syntax that breaks LaTeXML
+                    if split == "train" and dataset == "OFEQ-10k":
+                        erroneous_samples = [5276, 6707]
+                        for sample_num, sample_idx in enumerate(erroneous_samples):
+                            all_posts = all_posts[:sample_idx - sample_num] + all_posts[sample_idx - sample_num + 1:]
+                            all_titles = all_titles[:sample_idx - sample_num] + all_titles[sample_idx - sample_num + 1:]
                     # Batching speeds things up a lot, but causes a single LaTeXML error to ruin the whole batch
                     if batch_size:
                         for batch_start_idx in tqdm(list(range(0, len(all_posts), batch_size))):
@@ -272,11 +320,9 @@ def process_mathsum_data():
                             } for idx in range(cur_batch_size)]
                     else:
                         for post, title in tqdm(list(zip(all_posts, all_titles))):
-                            processed_post = process_raw_text([post], cur_err_data)
-                            processed_title = process_raw_text([title], cur_err_data)
                             samples.append({
-                                "prompt": processed_post,
-                                "label": processed_title
+                                "prompt": process_raw_text([post], cur_err_data)[0],
+                                "label": process_raw_text([title], cur_err_data)[0]
                             })
 
             with open(out_filename, "w", encoding="utf-8") as out_file:
@@ -288,3 +334,19 @@ def process_mathsum_data():
             "all_latexml_errs": all_latexml_errs,
             "all_tangent_cft_errs": all_tangent_cft_errs,
         }, err_file, indent=2)
+
+def process_probes():
+    with open("data/probes.txt", encoding="utf-8") as src_prompt_file:
+        src_probes = src_prompt_file.readlines()
+    err_data = {
+        "articles_missing_formulas": 0,
+        "formulas_missing_from_latexml_failure": 0,
+        "formulas_missing_from_latexml_randomly": 0,
+        "formulas_missing_from_tangentcft": 0,
+    }
+    processed_probes = process_raw_text(src_probes, err_data)
+    print(err_data)
+    print(all_latexml_errs)
+    print(all_tangent_cft_errs)
+    with open("data/probes.json", "w", encoding="utf-8") as processed_prompt_file:
+        json.dump(processed_probes, processed_prompt_file, indent=2, ensure_ascii=False)
