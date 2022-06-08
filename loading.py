@@ -139,43 +139,46 @@ class GenTaskDataset(Dataset):
     def __init__(self, samples: List[GenTaskSample], max_seq_len: int):
         super().__init__()
         num_missing_formulas = 0
-        skipped_sequences = 0
+        trimmed_sequences = 0
         for sample in tqdm(samples):
+            # Tokenize the prompt and label sequences
             prompt_text = sample["prompt"]["text"] + SEP_TOKEN
             prompt_sequence, cur_missing_formulas = tokenize_sequence("", prompt_text, sample["prompt"]["formulas"], self.text_tokenizer)
             num_missing_formulas += cur_missing_formulas
             label_text = sample["label"]["text"] + EOS_TOKEN
             label_sequence, cur_missing_formulas = tokenize_sequence("", label_text, sample["label"]["formulas"], self.text_tokenizer)
             num_missing_formulas += cur_missing_formulas
+            # Trim the prompt if we go over the max length
+            overflow = len(prompt_sequence) + len(label_sequence) - max_seq_len
+            if overflow > 0:
+                import pdb; pdb.set_trace()
+                trimmed_sequences += 1
+                prompt_sequence = split_sequence(prompt_sequence, len(prompt_sequence) - overflow)[0]
+            # Concatenate into single sequence, and save the length of the prompt for creating generative labels
             sequence = prompt_sequence + label_sequence
             sequence.label = len(prompt_sequence)
-
-            if len(sequence) > max_seq_len:
-                skipped_sequences += 1
-                continue
-
             self.data.append(sequence)
         print("Missing", num_missing_formulas, "formulas")
-        print("Skipped", skipped_sequences, "long sequences")
+        print("Trimmed", trimmed_sequences, "long sequences")
 
 class ClassifyTaskDataset(Dataset):
     def __init__(self, samples: List[ClassifyTaskSample], max_seq_len: int):
         super().__init__()
         num_missing_formulas = 0
-        skipped_sequences = 0
+        trimmed_sequences = 0
         for sample in tqdm(samples):
+            # Tokenize sequence and save the label
             text = sample["text"] + CLS_TOKEN
             sequence, cur_missing_formulas = tokenize_sequence("", text, sample["formulas"], self.text_tokenizer)
             num_missing_formulas += cur_missing_formulas
             sequence.label = sample["label"]
-
+            # Trim the sequence if we go over the max length
             if len(sequence) > max_seq_len:
-                skipped_sequences += 1
-                continue
-
+                trimmed_sequences += 1
+                sequence = split_sequence(sequence, max_seq_len)[0]
             self.data.append(sequence)
         print("Missing", num_missing_formulas, "formulas")
-        print("Skipped", skipped_sequences, "long sequences")
+        print("Trimmed", trimmed_sequences, "long sequences")
 
 def trim_batch(batch: CollatedBatch, trim_start: int, trim_end: int) -> CollatedBatch:
     """
