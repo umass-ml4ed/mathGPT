@@ -68,7 +68,7 @@ def main():
     if args.train_downstream:
         train_downstream_task(args.name, args.pretrained_name, enum_value_to_member(args.train_downstream, DownstreamTask), TrainOptions(arg_dict))
     if args.evaluate_downstream:
-        evaluate_downstream_task(args.name, enum_value_to_member(args.evaluate_downstream, DownstreamTask))
+        evaluate_downstream_task(args.name, enum_value_to_member(args.evaluate_downstream, DownstreamTask), arg_dict)
     if args.test_downstream:
         test_gen_task(args.name, enum_value_to_member(args.test_downstream, DownstreamTask))
 

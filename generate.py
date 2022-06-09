@@ -7,7 +7,7 @@ from mathGPT.utils import TrainOptions
 from model_math_gpt import MathGPTLM
 from math_tokenize import encode_pos
 from utils import device
-from constants import CollatedBatch, TokenType, EOS_TOKEN_ID
+from constants import CollatedBatch, TokenType, EOS_TOKEN_ID, PADDING_TOKEN_ID
 
 def infer_math_pos(prev_pos_vecs: torch.Tensor, prev_pos_levels: torch.Tensor, prev_token_types: torch.Tensor):
     """
@@ -127,4 +127,71 @@ def generate(model: MathGPTLM, gen_batch: CollatedBatch, options: TrainOptions):
         gen_batch["attention_mask"] = torch.concat([gen_batch["attention_mask"], new_attention_mask.unsqueeze(1)], dim=1)
 
         if batch_size == 1 and gen_batch["token_ids"][0, -1] == EOS_TOKEN_ID:
+            break
+
+def generate_batch(model: MathGPTLM, gen_batch: CollatedBatch, options: TrainOptions):
+    """
+    Given a model and a batch, generate tokens up to the given length
+    Given batch is modified
+    """
+    model.eval()
+    # Pad batch to max_seq_len
+    batch_size, starting_len = gen_batch["token_ids"].shape
+    padding_size = options.max_seq_len - starting_len
+    gen_batch["token_ids"] = torch.concat([
+        gen_batch["token_ids"], torch.full((batch_size, padding_size), PADDING_TOKEN_ID).to(device)], dim=1)
+    gen_batch["token_types"] = torch.concat([
+        gen_batch["token_types"], torch.zeros((batch_size, padding_size), dtype=torch.long).to(device)], dim=1)
+    gen_batch["pos_vecs"] = torch.concat([
+        gen_batch["pos_vecs"], torch.zeros((batch_size, padding_size, gen_batch["pos_vecs"].shape[2]), dtype=torch.long).to(device)], dim=1)
+    gen_batch["pos_levels"] = torch.concat([
+        gen_batch["pos_levels"], torch.zeros((batch_size, padding_size), dtype=torch.long).to(device)], dim=1)
+    gen_batch["pos_encodings"] = torch.concat([
+        gen_batch["pos_encodings"], torch.zeros((batch_size, padding_size, gen_batch["pos_encodings"].shape[2])).to(device)], dim=1)
+    gen_batch["attention_mask"] = torch.concat([
+        gen_batch["attention_mask"], torch.zeros((batch_size, padding_size)).to(device)], dim=1)
+    # Tells model to not compute loss
+    gen_batch["gen_labels"] = torch.full((batch_size, options.max_seq_len), PADDING_TOKEN_ID).to(device)
+
+    starting_idx = torch.min(gen_batch["sequence_lengths"])
+    for _ in tqdm(range(starting_idx, options.max_seq_len)):
+        # TODO: can we make faster by removing sequences in the batch that hit EOS? or set attention mask to 0 after EOS?
+        # TODO: extract and pass past_key_values
+        # Get predictions from model
+        _, type_to_token_probs = model(gen_batch)
+        batch_all_idx = torch.arange(batch_size)
+        last_idx = gen_batch["sequence_lengths"] - 1
+
+        # Collapse predictions via decoding scheme
+        scheme = "nucleus"
+        if scheme == "greedy":
+            type_preds, token_preds = get_most_likely_predictions(type_to_token_probs)
+            type_preds = type_preds[batch_all_idx, last_idx]
+            token_preds = token_preds[batch_all_idx, last_idx]
+        if scheme == "nucleus":
+            type_preds, token_preds = get_nucleus_sample_predictions(
+                {token_type: probs[batch_all_idx, last_idx] for token_type, probs in type_to_token_probs.items()},
+                options
+            )
+
+        new_pos_vecs, new_pos_levels = infer_math_pos(
+            gen_batch["pos_vecs"][batch_all_idx, last_idx],
+            gen_batch["pos_levels"][batch_all_idx, last_idx],
+            gen_batch["token_types"][batch_all_idx, last_idx]
+        )
+        new_pos_encodings = torch.FloatTensor([encode_pos(pos_vec, pos_level) for pos_vec, pos_level in zip(new_pos_vecs, new_pos_levels)]).to(device)
+
+        # TODO: next_idx could be equal to max_seq_len, so include that check in not_eos_idx
+        not_eos_idx = gen_batch["token_ids"][batch_all_idx, last_idx] != EOS_TOKEN_ID
+        batch_cont_idx = batch_all_idx[not_eos_idx]
+        next_idx = gen_batch["sequence_lengths"][not_eos_idx]
+        gen_batch["token_ids"][batch_cont_idx, next_idx] = token_preds[batch_cont_idx]
+        gen_batch["token_types"][batch_cont_idx, next_idx] = type_preds[batch_cont_idx]
+        gen_batch["pos_vecs"][batch_cont_idx, next_idx] = new_pos_vecs[batch_cont_idx]
+        gen_batch["pos_levels"][batch_cont_idx, next_idx] = new_pos_levels[batch_cont_idx]
+        gen_batch["pos_encodings"][batch_cont_idx, next_idx] = new_pos_encodings[batch_cont_idx]
+        gen_batch["attention_mask"][batch_cont_idx, next_idx] = 1
+        gen_batch["sequence_lengths"][batch_cont_idx] += 1
+
+        if torch.all(gen_batch["token_ids"][batch_all_idx, gen_batch["sequence_lengths"] - 1] == EOS_TOKEN_ID):
             break

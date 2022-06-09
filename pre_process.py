@@ -133,17 +133,31 @@ def process_wikipedia_data():
             if article_filename.endswith(".html"):
                 article_filenames.append(article_filename)
 
-    max_articles = len(article_filenames)
     print("Processing articles...")
+    err_data = {
+        "articles_missing_formulas": 0,
+        "formulas_missing": 0,
+    }
+    max_articles = len(article_filenames)
     for article_filename in tqdm(article_filenames[:max_articles]):
         _, content = MathDocument.read_doc_file(article_filename)
         article_data = process_article(content)
+        form_diff = article_data["text"].count(FORMULA_IDENTIFIER) - len(article_data["formulas"])
+        if form_diff > 0:
+            err_data["articles_missing_formulas"] += 1
+            err_data["formulas_missing"] += form_diff
         out_filename = os.path.basename(article_filename).replace(".html", ".json")
         with open(os.path.join(WIKI_DATA, out_filename), "w", encoding="utf-8") as out_file:
             json.dump(article_data, out_file, indent=2, ensure_ascii=False)
 
     # Dump vocab to file
     Vocabulary.dump()
+
+    with open("wiki_errs.json", "w") as err_file:
+        json.dump({
+            **err_data,
+            "all_tangent_cft_errs": all_tangent_cft_errs,
+        }, err_file, indent=2)
 
 def fix_matrix(formula_text: str):
     final_text = formula_text
@@ -328,7 +342,7 @@ def process_mathsum_data():
             with open(out_filename, "w", encoding="utf-8") as out_file:
                 json.dump(samples, out_file, indent=2, ensure_ascii=False)
 
-    with open("math_sum_errs.json", "w") as err_file:
+    with open("mathsum_errs.json", "w") as err_file:
         json.dump({
             **err_data,
             "all_latexml_errs": all_latexml_errs,

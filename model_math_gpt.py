@@ -57,7 +57,6 @@ class MathGPTBase(nn.Module):
         self.token_embeddings[str(TokenType.END.value)] = nn.Embedding(1, EMB_SIZE)
 
         # Linear projection to convert raw math pos encoding into one that can be added to the input embeddings
-        # Not using bias so that the encoding is 0 for non-math tokens
         self.math_embedding_projection = nn.Linear(POS_ENCODING_SIZE, EMB_SIZE, bias=False)
 
     def load_pretrained(self, pretrained_name: str):
@@ -85,7 +84,8 @@ class MathGPTBase(nn.Module):
             input_embeddings[type_idxs] += self.token_embeddings[str(token_type.value)](batch["token_ids"][type_idxs])
 
         # Add math position encodings
-        input_embeddings += self.math_embedding_projection(batch["pos_encodings"])
+        math_idxs = ~((batch["token_types"] == TokenType.TEXT) | (batch["token_types"] == TokenType.START_FORMULA) | (batch["token_types"] == TokenType.END_FORMULA))
+        input_embeddings[math_idxs] += self.math_embedding_projection(batch["pos_encodings"])[math_idxs]
 
         return input_embeddings
 

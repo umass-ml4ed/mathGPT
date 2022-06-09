@@ -208,8 +208,9 @@ def train_downstream_task(model_name: str, pretrained_name: str, task: Downstrea
     )
     train(model, model_name, train_loader, val_data, options, task)
 
-def evaluate_downstream_task(model_name: str, task: DownstreamTask):
+def evaluate_downstream_task(model_name: str, task: DownstreamTask, eval_options: dict):
     model, options = load_model(model_name, task)
+    options.update(eval_options)
 
     # TODO: get data files for the given task
     if is_cls_task(task):
@@ -232,7 +233,7 @@ def test_gen_task(model_name: str, task: DownstreamTask):
     data_loader = DataLoader(
         dataset,
         collate_fn=Collator(task),
-        batch_size=1 # Only process one sequence at a time since prompts may have different lengths
+        batch_size=1
     )
     with torch.no_grad():
         for batch in data_loader:
