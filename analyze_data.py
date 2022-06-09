@@ -1,10 +1,12 @@
 import os
 import json
+from typing import Iterable, Tuple, List
 from tqdm import tqdm
 from matplotlib import pyplot as plt
 import numpy as np
 
-from constants import Article, OPT, TYPE_STR_TO_INT, WIKI_DATA
+from vocabulary import Vocabulary
+from constants import Article, GenTaskSample, OPT, TYPE_STR_TO_INT, WIKI_DATA, OFEQ_DATA, SpecialNumToken, SpecialOpToken, SpecialVarToken
 
 START_PARENS = ("normal-(", "normal-[", "normal-{")
 END_PARENS = ("normal-)", "normal-]", "normal-}")
@@ -99,7 +101,7 @@ def process_tree(article_name: str, tree_node: OPT, depth: int, err_found: bool,
 
     return err_found, cat_err_found
 
-def analyze_data():
+def analyze_data(formulas: Iterable[Tuple[str, OPT]]):
     """
     Gather high-level info on pre-processed data
     """
@@ -125,18 +127,13 @@ def analyze_data():
         "num_text_ops": 0,
     }
 
-    # Gather data from each processed article
-    for article_name in tqdm(os.listdir(WIKI_DATA)):
-        article_filepath = os.path.join(WIKI_DATA, article_name)
-        with open(article_filepath, encoding="utf-8") as article_file:
-            article: Article = json.load(article_file)
-        for formula in article["formulas"].values():
-            stats["num_formulas"] += 1
-            has_err, has_cat_err = process_tree(article_name, formula["opt"], 1, False, False, stats)
-            if has_err:
-                stats["num_formulas_with_err"] += 1
-            if has_cat_err:
-                stats["num_formulas_with_cat_err"] += 1
+    for article_name, formula in formulas:
+        stats["num_formulas"] += 1
+        has_err, has_cat_err = process_tree(article_name, formula["opt"], 1, False, False, stats)
+        if has_err:
+            stats["num_formulas_with_err"] += 1
+        if has_cat_err:
+            stats["num_formulas_with_cat_err"] += 1
 
     # Print results
     # for type_str, token_to_child_range in type_to_token_to_child_range.items():
@@ -156,9 +153,42 @@ def analyze_data():
     print("Num text tokens:", stats["num_text"], "with children:", stats["num_text_ops"])
     print("Max depth:", stats["max_depth"], "Max width:", stats["max_width"])
 
+    num_unks = sum(
+        1 for type_str, token_to_freq in stats["type_to_token_to_freq"].items() for token in token_to_freq.keys()
+        if type_str not in ("E", "E_no_more", "+") and Vocabulary.get_token(type_str, token)[1] in (SpecialVarToken.UNK, SpecialNumToken.UNK, SpecialOpToken.UNK)
+    )
+    print("Num unique tokens converted to UNK:", num_unks)
+
     # For relevant types, plot n most frequent types against portion of nodes covered by those types
     for type_str in ["N", "T", "V", "-", "O", "F"]:
         frequencies = sorted(stats["type_to_token_to_freq"][type_str].values(), reverse=True)
         plt.plot(list(range(len(frequencies))), np.cumsum(frequencies) / sum(frequencies))
         plt.title(f"Frequency CDF for {type_str} type")
         plt.show()
+
+def get_wiki_formulas():
+    for article_name in tqdm(os.listdir(WIKI_DATA)):
+        article_filepath = os.path.join(WIKI_DATA, article_name)
+        with open(article_filepath, encoding="utf-8") as article_file:
+            article: Article = json.load(article_file)
+        for formula in article["formulas"].values():
+            yield article_name, formula
+
+def analyze_wiki():
+    analyze_data(get_wiki_formulas())
+
+def get_mathsum_formulas():
+    with open(os.path.join(OFEQ_DATA, "train.json"), encoding="utf-8") as train_file:
+        train_data: List[GenTaskSample] = json.load(train_file)
+    with open(os.path.join(OFEQ_DATA, "val.json"), encoding="utf-8") as val_file:
+        val_data: List[GenTaskSample] = json.load(val_file)
+    with open(os.path.join(OFEQ_DATA, "test.json"), encoding="utf-8") as test_file:
+        test_data: List[GenTaskSample] = json.load(test_file)
+    all_formulas = []
+    for src in [train_data, val_data, test_data]:
+        for part in ["prompt", "label"]:
+            all_formulas += [("", formula) for sample in src for formula in sample[part]["formulas"].values()]
+    return tqdm(all_formulas)
+
+def analyze_mathsum():
+    analyze_data(get_mathsum_formulas())

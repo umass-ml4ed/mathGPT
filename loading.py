@@ -151,7 +151,6 @@ class GenTaskDataset(Dataset):
             # Trim the prompt if we go over the max length
             overflow = len(prompt_sequence) + len(label_sequence) - max_seq_len
             if overflow > 0:
-                import pdb; pdb.set_trace()
                 trimmed_sequences += 1
                 prompt_sequence = split_sequence(prompt_sequence, len(prompt_sequence) - overflow)[0]
             # Concatenate into single sequence, and save the length of the prompt for creating generative labels

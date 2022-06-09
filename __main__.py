@@ -2,7 +2,7 @@ import argparse
 import torch
 
 from pre_process import process_wikipedia_data, process_mathsum_data, process_probes
-from analyze_data import analyze_data
+from analyze_data import analyze_wiki, analyze_mathsum
 from training import pretrain, evaluate_pretrained_lm, test_lm, train_downstream_task, evaluate_downstream_task, test_gen_task
 from utils import TrainOptions, initialize_seeds, device, enum_choices, enum_value_to_member
 from constants import DownstreamTask
@@ -26,7 +26,8 @@ def main():
     parser.add_argument("--preprocess_wiki", action="store_true", help="Process raw Wikipedia data and save to JSON files; generate raw vocab file")
     parser.add_argument("--preprocess_mathsum", action="store_true", help="Process raw MathSum data and save to JSON files")
     parser.add_argument("--process_probes", action="store_true", help="Process LM probes and save to JSON files")
-    parser.add_argument("--analyze_data", action="store_true", help="Produce stats on pre-processed dataset")
+    parser.add_argument("--analyze_wiki", action="store_true", help="Produce stats on pre-processed Wikipedia dataset")
+    parser.add_argument("--analyze_mathsum", action="store_true", help="Produce stats on pre-processed MathSum dataset")
     parser.add_argument("--pretrain", action="store_true", help="Pre-train LM")
     parser.add_argument("--evaluate_lm", action="store_true", help="Evaluate LM performance on test set")
     parser.add_argument("--test_lm", help="Run language generation using given article")
@@ -54,8 +55,10 @@ def main():
         process_mathsum_data()
     if args.process_probes:
         process_probes()
-    if args.analyze_data:
-        analyze_data()
+    if args.analyze_wiki:
+        analyze_wiki()
+    if args.analyze_mathsum:
+        analyze_mathsum()
     if args.pretrain:
         pretrain(args.name, args.pretrained_name, arg_dict)
     if args.evaluate_lm:
