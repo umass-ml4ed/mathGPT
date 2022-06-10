@@ -2,6 +2,7 @@ import random
 from typing import Optional
 import numpy as np
 import torch
+import neptune.new as neptune
 
 from constants import DownstreamTask
 
@@ -16,6 +17,12 @@ def initialize_seeds(seed_num: int):
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed_num)
         torch.cuda.manual_seed_all(seed_num)
+
+def new_neptune_run():
+    return neptune.init(
+        project="ajscarlatos/MGPT",
+        api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiIwNDhjNTZiYS04YTU2LTQ2MTQtOWMxNy1jOTliYTZlNTJlYmEifQ==",
+    )
 
 def enum_choices(enum):
     return [choice.value for choice in enum]

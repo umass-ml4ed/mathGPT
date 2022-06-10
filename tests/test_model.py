@@ -3,7 +3,7 @@ import torch
 from math_tokenize import encode_pos, EMPTY_POS_ENCODING
 from model_math_gpt import MathGPTLM, EMB_SIZE, TEXT_VOCAB_SIZE
 from vocabulary import Vocabulary
-from constants import TokenType, PADDING_TOKEN_ID
+from constants import TokenType, PADDING_TOKEN_ID, MAX_FORMULA_DEPTH
 from utils import TrainOptions
 from test_utils import assert_tensors_equal, assert_tensor_sums_to
 
@@ -142,43 +142,56 @@ def test_masks():
 
 def test_type_probs():
     with torch.no_grad():
+        # The second sequence in the batch makes no sense realistically, it's just to test the max width/depth protection
+        vec_pad = [0] * (MAX_FORMULA_DEPTH - 2)
         batch = {
             "token_ids": torch.LongTensor([
-                [10, 0, 5, 4, 3, 0, 0]
+                [10, 0, 5, 4, 3, 0, 0, PADDING_TOKEN_ID],
+                [0, 0, 0, 0, 0, 0, 0, 0]
             ]),
             "token_types": torch.LongTensor([
-                [TokenType.TEXT, TokenType.START_FORMULA, TokenType.OP, TokenType.NUM, TokenType.VAR, TokenType.END, TokenType.END_FORMULA]
+                [TokenType.TEXT, TokenType.START_FORMULA, TokenType.OP, TokenType.NUM, TokenType.VAR, TokenType.END, TokenType.END_FORMULA, 0],
+                [TokenType.VAR, TokenType.END, TokenType.OP, TokenType.VAR, TokenType.END, TokenType.VAR, TokenType.END, TokenType.OP]
             ]),
             "pos_vecs": torch.LongTensor([
-                [[0, 0], [0, 0], [0, 0], [0, 0], [0, 1], [0, 2], [0, 0]]
+                [[0, 0] + vec_pad, [0, 0] + vec_pad, [0, 0] + vec_pad, [0, 0] + vec_pad, [0, 1] + vec_pad, [0, 2] + vec_pad, [0, 0] + vec_pad, [0, 0] + vec_pad],
+                [[0, 0] + vec_pad, [0, 0] + vec_pad, [0, 0] + vec_pad, [0, 0] + vec_pad, [0, 0] + vec_pad,
+                 [0, 62] + vec_pad, [0, 62, 2] + [0] * (MAX_FORMULA_DEPTH - 3), [0, 62] + vec_pad]
             ]),
             "pos_levels": torch.LongTensor([
-                [0, 0, 0, 1, 1, 1, 0]
+                [0, 0, 0, 1, 1, 1, 0, 0],
+                [31, 31, 30, 30, 30, 1, 2, 1]
             ])
         }
-        gpt_output_mock = GPTOutputMock(torch.Tensor([
-            [[1] * EMB_SIZE, [1] * EMB_SIZE, [1] * EMB_SIZE, [1] * EMB_SIZE, [1] * EMB_SIZE, [1] * EMB_SIZE, [1] * EMB_SIZE]
-        ]))
+        gpt_output_mock = GPTOutputMock(torch.Tensor([[[1] * EMB_SIZE] * 8] * 2))
 
         model = MathGPTLM(TrainOptions({}))
         type_idxs, final_formula_token_idx = model.get_prediction_masks(batch)
-        type_probs = model.get_type_probs(gpt_output_mock, type_idxs, final_formula_token_idx)
+        type_probs = model.get_type_probs(gpt_output_mock, type_idxs, final_formula_token_idx, batch)
 
-        def assert_probs(idx, allowed_types):
-            assert_tensor_sums_to(type_probs[0][idx], 1)
+        def assert_probs(batch_idx, idx, allowed_types):
+            assert_tensor_sums_to(type_probs[batch_idx][idx], 1)
             assert all([
-                (type_probs[0][idx][token_type] > 0) if token_type in allowed_types else (type_probs[0][idx][token_type] == 0)
+                (type_probs[batch_idx][idx][token_type] > 0) if token_type in allowed_types else (type_probs[batch_idx][idx][token_type] == 0)
                 for token_type in TokenType
             ])
 
-        assert type_probs.shape == (1, 7, 7)
-        assert_probs(0, (TokenType.TEXT, TokenType.START_FORMULA))
-        assert_probs(1, (TokenType.OP, TokenType.VAR, TokenType.NUM))
-        assert_probs(2, (TokenType.OP, TokenType.VAR, TokenType.NUM, TokenType.END))
-        assert_probs(3, (TokenType.OP, TokenType.VAR, TokenType.NUM, TokenType.END))
-        assert_probs(4, (TokenType.OP, TokenType.VAR, TokenType.NUM, TokenType.END))
-        assert_probs(5, (TokenType.END_FORMULA,))
-        assert_probs(6, (TokenType.TEXT,))
+        assert type_probs.shape == (2, 8, 7)
+        assert_probs(0, 0, (TokenType.TEXT, TokenType.START_FORMULA))
+        assert_probs(0, 1, (TokenType.OP, TokenType.VAR, TokenType.NUM))
+        assert_probs(0, 2, (TokenType.OP, TokenType.VAR, TokenType.NUM, TokenType.END))
+        assert_probs(0, 3, (TokenType.OP, TokenType.VAR, TokenType.NUM, TokenType.END))
+        assert_probs(0, 4, (TokenType.OP, TokenType.VAR, TokenType.NUM, TokenType.END))
+        assert_probs(0, 5, (TokenType.END_FORMULA,))
+        assert_probs(0, 6, (TokenType.TEXT,))
+        assert_probs(1, 0, (TokenType.VAR, TokenType.NUM, TokenType.END))
+        assert_probs(1, 1, (TokenType.OP, TokenType.VAR, TokenType.NUM, TokenType.END))
+        assert_probs(1, 2, (TokenType.VAR, TokenType.NUM, TokenType.END))
+        assert_probs(1, 3, (TokenType.OP, TokenType.VAR, TokenType.NUM, TokenType.END))
+        assert_probs(1, 4, (TokenType.OP, TokenType.VAR, TokenType.NUM, TokenType.END))
+        assert_probs(1, 5, (TokenType.END,))
+        assert_probs(1, 6, (TokenType.END,))
+        assert_probs(1, 7, (TokenType.OP, TokenType.VAR, TokenType.NUM, TokenType.END))
 
 def test_token_probs():
     with torch.no_grad():
@@ -202,7 +215,7 @@ def test_token_probs():
 
         model = MathGPTLM(TrainOptions({}))
         type_idxs, final_formula_token_idx = model.get_prediction_masks(batch)
-        type_probs = model.get_type_probs(gpt_output_mock, type_idxs, final_formula_token_idx)
+        type_probs = model.get_type_probs(gpt_output_mock, type_idxs, final_formula_token_idx, batch)
         type_to_token_probs = model.get_token_probs(gpt_output_mock, type_probs)
 
         def assert_probs(idx):
@@ -234,6 +247,7 @@ def test_loss():
             [0] * 7,
             [0] * 7,
         ]),
+        "gen_labels": None,
     }
     type_to_token_probs = {
         TokenType.TEXT: torch.Tensor([

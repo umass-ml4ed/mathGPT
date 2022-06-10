@@ -1,12 +1,13 @@
 from typing import Dict, List, Optional
 import torch
 from torch import Tensor, nn
+import torch.nn.functional as F
 from transformers import GPT2Model, GPT2LMHeadModel
 from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions as GPTOutput
 
 from vocabulary import Vocabulary
 from math_tokenize import POS_ENCODING_SIZE
-from constants import CollatedBatch, TokenType, PADDING_TOKEN_ID
+from constants import CollatedBatch, TokenType, PADDING_TOKEN_ID, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH
 from utils import device, TrainOptions
 
 # Leverages pre-trained GPT2 from transformers library
@@ -136,10 +137,12 @@ class MathGPTLM(MathGPTBase):
         final_formula_token_idx |= (type_idxs[TokenType.VAR] | type_idxs[TokenType.NUM]) & (batch["pos_levels"] == 0)
         return type_idxs, final_formula_token_idx
 
-    def get_type_probs(self, gpt_output: GPTOutput, type_idxs: Dict[TokenType, torch.Tensor], final_formula_token_idx: torch.Tensor) -> torch.Tensor:
+    def get_type_probs(self, gpt_output: GPTOutput, type_idxs: Dict[TokenType, torch.Tensor],
+                       final_formula_token_idx: torch.Tensor, batch: CollatedBatch) -> torch.Tensor:
         """
         Calculate the probability of generating each type for each token in the batch, including masking to constrain to possible transitions
         """
+        batch_size = batch["token_ids"].shape[0]
         # Get raw prediction values from model output
         type_preds = self.type_pred_layer(gpt_output.last_hidden_state)
         # Create mask with allowed (False) and unallowed (True) types for the following token at each index
@@ -148,9 +151,24 @@ class MathGPTLM(MathGPTBase):
             for allowed_type in allowed_types:
                 type_mask[:, :, allowed_type][type_idxs[token_type]] = False
         # Tokens that finish a formula can only generate END_FORMULA
-        just_end_form_token = torch.full((len(TokenType),), True).to(device)
-        just_end_form_token[TokenType.END_FORMULA] = False
-        type_mask[final_formula_token_idx] = just_end_form_token
+        type_mask[final_formula_token_idx] = ~F.one_hot(torch.tensor(TokenType.END_FORMULA), num_classes=len(TokenType)).type(torch.bool).to(device)
+        # Prevent nodes from exceeding max depth, which happens if an OP token is produced in the maximum level
+        op_unallowed_idx = ((batch["pos_levels"] == MAX_FORMULA_DEPTH - 1) & ~type_idxs[TokenType.END]) |\
+                           ((batch["pos_levels"] == MAX_FORMULA_DEPTH - 2) & type_idxs[TokenType.OP])
+        op_blocked_mask = type_mask.clone()
+        op_blocked_mask[:, :, TokenType.OP] = True
+        type_mask[op_unallowed_idx] = op_blocked_mask[op_unallowed_idx]
+        # Prevent nodes from exceeding max width by forcing the last possible child node to be an END token
+        cur_level_mask = F.one_hot(batch["pos_levels"], num_classes=batch["pos_vecs"].shape[2]).type(torch.bool)
+        upper_level_mask = F.one_hot(torch.clamp(batch["pos_levels"] - 1, min=0), num_classes=batch["pos_vecs"].shape[2]).type(torch.bool)
+        must_end_idx = (
+            (type_idxs[TokenType.VAR] | type_idxs[TokenType.NUM]) &\
+            (batch["pos_vecs"][cur_level_mask].view(batch_size, -1) == MAX_FORMULA_WIDTH - 2)
+        ) | (
+            type_idxs[TokenType.END] &\
+            (batch["pos_vecs"][upper_level_mask].view(batch_size, -1) == MAX_FORMULA_WIDTH - 2)
+        )
+        type_mask[must_end_idx] = ~F.one_hot(torch.tensor(TokenType.END), num_classes=len(TokenType)).type(torch.bool).to(device)
         # Get predicted probability of types at each index
         type_preds[type_mask] = -torch.inf
         type_probs = nn.Softmax(dim=-1)(type_preds)
@@ -222,7 +240,7 @@ class MathGPTLM(MathGPTBase):
         type_idxs, final_formula_token_idx = self.get_prediction_masks(batch)
 
         # Calculate P(type) for each possible type
-        type_probs = self.get_type_probs(gpt_output, type_idxs, final_formula_token_idx)
+        type_probs = self.get_type_probs(gpt_output, type_idxs, final_formula_token_idx, batch)
 
         # Calculate P(token, type) for all types/tokens
         type_to_token_probs = self.get_token_probs(gpt_output, type_probs)

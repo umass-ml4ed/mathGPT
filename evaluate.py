@@ -115,7 +115,7 @@ def evaluate_gen_task(model: MathGPTLM, dataset: Dataset, task: DownstreamTask, 
     all_labels: List[CollatedBatch] = []
     all_predictions: List[CollatedBatch] = []
     with torch.no_grad():
-        for batch in data_loader:
+        for batch in tqdm(data_loader):
             split_point = batch["prompt_lengths"][0]
             gen_batch = trim_batch(batch, 0, split_point)
             generate(model, gen_batch, options)
@@ -127,7 +127,6 @@ def evaluate_gen_task(model: MathGPTLM, dataset: Dataset, task: DownstreamTask, 
         if pred["token_ids"].shape == label["token_ids"].shape and torch.all(pred["token_ids"] == label["token_ids"]) and torch.all(pred["token_types"] == label["token_types"])
     )
     accuracy = num_exact_match / len(all_labels)
-    import pdb; pdb.set_trace()
     pred_text_batch = [decode_batch(pred, dataset.text_tokenizer)[0].replace("\n", " ") for pred in all_predictions]
     label_text_batch = [decode_batch(label, dataset.text_tokenizer)[0].replace("\n", " ") for label in all_labels]
     pred_filename = "preds.txt"

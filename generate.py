@@ -102,7 +102,7 @@ def generate(model: MathGPTLM, gen_batch: CollatedBatch, options: TrainOptions):
     """
     model.eval()
     batch_size, starting_len = gen_batch["token_ids"].shape
-    for _ in tqdm(range(starting_len, options.max_seq_len)):
+    for _ in range(starting_len, options.max_seq_len):
         # TODO: can we make faster by removing sequences in the batch that hit EOS? or set attention mask to 0 after EOS?
         # TODO: extract and pass past_key_values
         _, type_to_token_probs = model(gen_batch)

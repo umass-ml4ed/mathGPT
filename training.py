@@ -2,7 +2,6 @@ import time
 import os
 import json
 from typing import Optional, List
-from requests import options
 import torch
 from torch.utils.data import Dataset, DataLoader, Subset
 from tqdm import tqdm
@@ -13,7 +12,7 @@ from loading import PreTrainDataset, PreTrainDatasetPreloaded, GenTaskDataset, C
 from evaluate import evaluate_lm, evaluate_lm_accuracy, evaluate_cls_task, evaluate_gen_task
 from generate import generate
 from decode import decode_batch
-from utils import TrainOptions, device, is_cls_task
+from utils import TrainOptions, device, is_cls_task, new_neptune_run
 from constants import DownstreamTask, DOWNSTREAM_TASK_TO_NUM_CLASSES, WIKI_DATA, OFEQ_DATA
 
 def get_article_names():
@@ -49,6 +48,11 @@ def train(model: MathGPTBase, model_name: str, train_loader: DataLoader, validat
     # Split computations across GPUs if multiple available
     use_dp = torch.cuda.device_count() > 1
     model_dp = torch.nn.parallel.DataParallel(model) if use_dp else None
+
+    run = new_neptune_run()
+    run["name"] = model_name
+    run["options"] = options.__dict__
+    run["task"] = str(task)
 
     best_metric = None
     best_stats = None
@@ -88,8 +92,12 @@ def train(model: MathGPTBase, model_name: str, train_loader: DataLoader, validat
                 optimizer.zero_grad()
 
         model.eval() # Set model to evaluation mode
+        avg_train_loss = train_loss / num_batches
         val_loss, results = evaluate_model(model, validation_dataset, task, options)
-        print(f"Epoch: {epoch + 1}, Train Loss: {train_loss / num_batches:.3f}, Val Loss: {val_loss:.3f}, {results}, Time: {time.time() - start_time:.2f}")
+        run["train/loss"].log(avg_train_loss)
+        run["val/loss"].log(val_loss)
+        run["val/metrics"].log(results)
+        print(f"Epoch: {epoch + 1}, Train Loss: {avg_train_loss:.3f}, Val Loss: {val_loss:.3f}, {results}, Time: {time.time() - start_time:.2f}")
 
         # Save model for best validation metric
         if not best_metric or val_loss < best_metric:
@@ -105,6 +113,7 @@ def train(model: MathGPTBase, model_name: str, train_loader: DataLoader, validat
             print("Early stopping")
             break
 
+    run.stop()
     return best_stats
 
 def pretrain(model_name: str, pretrained_name: str, options_dict: dict):
@@ -218,7 +227,7 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask, eval_options
         evaluate_cls_task(model, dataset, task, options)
     else:
         with open(os.path.join(OFEQ_DATA, "test.json"), encoding="utf-8") as headlines_file:
-            headlines = json.load(headlines_file)[:10]
+            headlines = json.load(headlines_file)
         dataset = GenTaskDataset(headlines, options.max_seq_len)
         _, results = evaluate_gen_task(model, dataset, task, options)
         print(results)
