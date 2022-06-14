@@ -5,7 +5,7 @@ from pre_process import process_wikipedia_data, process_mathsum_data, process_pr
 from analyze_data import analyze_wiki, analyze_mathsum
 from training import pretrain, evaluate_pretrained_lm, test_lm, train_downstream_task, evaluate_downstream_task, test_gen_task
 from utils import TrainOptions, initialize_seeds, device, enum_choices, enum_value_to_member
-from constants import DownstreamTask
+from constants import DownstreamTask, TPE
 
 def bool_type(arg):
     return False if arg == "0" else True
@@ -45,6 +45,7 @@ def main():
     parser.add_argument("--amp", type=bool_type, help="Use automated mixed precision during training")
     parser.add_argument("--ns_p", type=float, help="P parameter for nucleus sampling")
     parser.add_argument("--use_type_embs", type=bool_type, help="Add type-specific embeddings to input token embeddings")
+    parser.add_argument("--tpe", help="Scheme to use for tree position encodings", choices=enum_choices(TPE))
 
     args = parser.parse_args()
     arg_dict = {arg: val for arg, val in vars(args).items() if val is not None}

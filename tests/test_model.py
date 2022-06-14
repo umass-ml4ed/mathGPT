@@ -1,9 +1,9 @@
 import torch
 
-from math_tokenize import encode_pos, EMPTY_POS_ENCODING
-from model_math_gpt import MathGPTLM, EMB_SIZE, TEXT_VOCAB_SIZE
+from math_tokenize import encode_pos, get_empty_pos_encoding
+from model_math_gpt import MathGPTLM
 from vocabulary import Vocabulary
-from constants import TokenType, PADDING_TOKEN_ID, MAX_FORMULA_DEPTH
+from constants import TokenType, TPE, PADDING_TOKEN_ID, MAX_FORMULA_DEPTH, EMB_SIZE, TEXT_VOCAB_SIZE
 from utils import TrainOptions
 from test_utils import assert_tensors_equal, assert_tensor_sums_to
 
@@ -16,9 +16,9 @@ def test_get_input_embeddings():
         pos_vecs = [[0, 0], [0, 0], [0, 0], [0, 0], [0, 1], [0, 2], [0, 0], [0, 0]]
         pos_levels = [0, 0, 0, 1, 1, 1, 0, 0]
         pos_encodings = [
-            EMPTY_POS_ENCODING, EMPTY_POS_ENCODING,
-            *[encode_pos(pos_vec, pos_level) for pos_vec, pos_level in zip(pos_vecs[2:6], pos_levels[2:6])],
-            EMPTY_POS_ENCODING, EMPTY_POS_ENCODING
+            get_empty_pos_encoding(TPE.FORTE.value), get_empty_pos_encoding(TPE.FORTE.value),
+            *[encode_pos(pos_vec, pos_level, TPE.FORTE.value) for pos_vec, pos_level in zip(pos_vecs[2:6], pos_levels[2:6])],
+            get_empty_pos_encoding(TPE.FORTE.value), get_empty_pos_encoding(TPE.FORTE.value)
         ]
         batch = {
             "token_ids": torch.LongTensor([

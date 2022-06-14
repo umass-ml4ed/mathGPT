@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import neptune.new as neptune
 
-from constants import DownstreamTask
+from constants import DownstreamTask, TPE
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -35,6 +35,7 @@ def is_cls_task(task: Optional[DownstreamTask]):
 
 class TrainOptions:
     def __init__(self, options: dict):
+        # Training/testing params
         self.lr: float = options.get("lr", 1e-5)
         self.weight_decay: float = options.get("weight_decay", 1e-2)
         self.epochs: int = options.get("epochs", 20)
@@ -45,8 +46,14 @@ class TrainOptions:
         self.amp: bool = options.get("amp", False)
         self.ns_p: float = options.get("ns_p", 0.90)
         self.stride: Optional[int] = options.get("stride", None)
+        # Model config
         self.num_classes: Optional[int] = options.get("num_classes", None)
         self.use_type_embs: bool = options.get("use_type_embs", True)
+        self.tpe: str = options.get("tpe", TPE.FORTE.value)
+
+    def as_dict(self):
+        self_dict = self.__dict__
+        return self_dict
 
     def update(self, options: dict):
         self.__dict__.update(options)

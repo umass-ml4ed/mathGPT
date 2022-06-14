@@ -2,11 +2,10 @@ from typing import Dict, List
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
-from mathGPT.utils import TrainOptions
 
 from model_math_gpt import MathGPTLM
 from math_tokenize import encode_pos
-from utils import device
+from utils import device, TrainOptions
 from constants import CollatedBatch, TokenType, EOS_TOKEN_ID, PADDING_TOKEN_ID
 
 def infer_math_pos(prev_pos_vecs: torch.Tensor, prev_pos_levels: torch.Tensor, prev_token_types: torch.Tensor):
@@ -116,7 +115,7 @@ def generate(model: MathGPTLM, gen_batch: CollatedBatch, options: TrainOptions):
             type_preds, token_preds = get_nucleus_sample_predictions(type_to_token_probs, options)
 
         new_pos_vecs, new_pos_levels = infer_math_pos(gen_batch["pos_vecs"][:, -1], gen_batch["pos_levels"][:, -1], gen_batch["token_types"][:, -1])
-        new_pos_encodings = torch.LongTensor([encode_pos(pos_vec, pos_level) for pos_vec, pos_level in zip(new_pos_vecs, new_pos_levels)]).to(device)
+        new_pos_encodings = torch.LongTensor([encode_pos(pos_vec, pos_level, options.tpe) for pos_vec, pos_level in zip(new_pos_vecs, new_pos_levels)]).to(device)
         new_attention_mask = torch.ones(batch_size).to(device)
 
         gen_batch["token_ids"] = torch.concat([gen_batch["token_ids"], token_preds.unsqueeze(1)], dim=1)
@@ -179,7 +178,7 @@ def generate_batch(model: MathGPTLM, gen_batch: CollatedBatch, options: TrainOpt
             gen_batch["pos_levels"][batch_all_idx, last_idx],
             gen_batch["token_types"][batch_all_idx, last_idx]
         )
-        new_pos_encodings = torch.FloatTensor([encode_pos(pos_vec, pos_level) for pos_vec, pos_level in zip(new_pos_vecs, new_pos_levels)]).to(device)
+        new_pos_encodings = torch.FloatTensor([encode_pos(pos_vec, pos_level, options.tpe) for pos_vec, pos_level in zip(new_pos_vecs, new_pos_levels)]).to(device)
 
         # TODO: next_idx could be equal to max_seq_len, so include that check in not_eos_idx
         not_eos_idx = gen_batch["token_ids"][batch_all_idx, last_idx] != EOS_TOKEN_ID

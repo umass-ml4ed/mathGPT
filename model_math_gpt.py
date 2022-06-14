@@ -6,16 +6,14 @@ from transformers import GPT2Model, GPT2LMHeadModel
 from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions as GPTOutput
 
 from vocabulary import Vocabulary
-from math_tokenize import POS_ENCODING_SIZE
-from constants import CollatedBatch, TokenType, PADDING_TOKEN_ID, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH
+from math_tokenize import POS_ENCODING_SIZE_FORTE
+from constants import CollatedBatch, TokenType, TPE, EMB_SIZE, PADDING_TOKEN_ID, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH
 from utils import device, TrainOptions
 
 # Leverages pre-trained GPT2 from transformers library
 # https://huggingface.co/docs/transformers/model_doc/gpt2
 # https://github.com/huggingface/transformers/blob/v4.18.0/src/transformers/models/gpt2/modeling_gpt2.py
 
-EMB_SIZE = 768
-TEXT_VOCAB_SIZE = 50257
 NUM_TYPES = len(TokenType)
 
 # Map of type to allowed types for next token
@@ -58,7 +56,8 @@ class MathGPTBase(nn.Module):
         self.token_embeddings[str(TokenType.END.value)] = nn.Embedding(1, EMB_SIZE)
 
         # Linear projection to convert raw math pos encoding into one that can be added to the input embeddings
-        self.math_embedding_projection = nn.Linear(POS_ENCODING_SIZE, EMB_SIZE, bias=False)
+        if options.tpe == TPE.FORTE.value:
+            self.math_embedding_projection = nn.Linear(POS_ENCODING_SIZE_FORTE, EMB_SIZE, bias=False)
 
     def load_pretrained(self, pretrained_name: str):
         state_dict = self.state_dict()
@@ -66,6 +65,11 @@ class MathGPTBase(nn.Module):
         for param_name, param_val in pretrained_state_dict.items():
             state_dict[param_name] = param_val
         self.load_state_dict(state_dict)
+
+    def get_math_embeddings(self, batch: CollatedBatch) -> torch.Tensor:
+        if self.options.tpe == TPE.FORTE.value:
+            return self.math_embedding_projection(batch["pos_encodings"])
+        return batch["pos_encodings"]
 
     def get_input_embeddings(self, batch: CollatedBatch) -> torch.Tensor:
         """
@@ -86,7 +90,7 @@ class MathGPTBase(nn.Module):
 
         # Add math position encodings
         math_idxs = ~((batch["token_types"] == TokenType.TEXT) | (batch["token_types"] == TokenType.START_FORMULA) | (batch["token_types"] == TokenType.END_FORMULA))
-        input_embeddings[math_idxs] += self.math_embedding_projection(batch["pos_encodings"])[math_idxs]
+        input_embeddings[math_idxs] += self.get_math_embeddings(batch)[math_idxs]
 
         return input_embeddings
 

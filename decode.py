@@ -88,6 +88,7 @@ def tree_to_text(tree_node: DecodeTreeNode) -> str:
         if symbol == "divide":
             return f" \\frac {{ {left} }} {{ {right} }}"
         return f" {left} {symbol} {right} "
+    # TODO: handle matrices and matrix rows
     return f" {symbol} " + "".join(tree_to_text(child) for child in tree_node.children)
 
 def decode_formula(token_ids: torch.Tensor, token_types: torch.Tensor):

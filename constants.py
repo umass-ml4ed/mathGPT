@@ -111,7 +111,7 @@ class CollatedBatch(TypedDict):
     pos_encodings: torch.Tensor
     attention_mask: torch.Tensor
     sequence_lengths: torch.Tensor
-    prompt_lengths: torch.Tensor
+    prompt_lengths: Optional[torch.Tensor]
     gen_labels: Optional[torch.Tensor]
     cls_labels: Optional[torch.Tensor]
 
@@ -127,8 +127,16 @@ DOWNSTREAM_TASK_TO_NUM_CLASSES = {
     DownstreamTask.KC_PRED: 10,
 }
 
+class TPE(Enum):
+    FORTE = "forte"
+    SIN_PART = "sin_part"
+    SIN_ADD = "sin_add"
+
 MAX_FORMULA_DEPTH = 32
 MAX_FORMULA_WIDTH = 64
+
+EMB_SIZE = 768
+TEXT_VOCAB_SIZE = 50257
 
 # The following are the defaults for the transformers tokenizer
 PADDING_TOKEN_ID = -100

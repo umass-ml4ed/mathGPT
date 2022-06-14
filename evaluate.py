@@ -9,12 +9,11 @@ from nlgeval import compute_metrics
 # from rouge_score import rouge_scorer, scoring
 
 from loading import Dataset, Collator, trim_batch
-from mathGPT.constants import DownstreamTask
 from model_math_gpt import MathGPTBase, MathGPTLM, MathGPTClassifier
 from generate import get_most_likely_predictions, generate
 from decode import decode_batch
 from utils import TrainOptions
-from constants import PADDING_TOKEN_ID, CollatedBatch
+from constants import PADDING_TOKEN_ID, CollatedBatch, DownstreamTask
 
 def evaluate_lm(model: MathGPTLM, dataset: Dataset, options: TrainOptions):
     """
@@ -122,6 +121,7 @@ def evaluate_gen_task(model: MathGPTLM, dataset: Dataset, task: DownstreamTask, 
             all_predictions.append(trim_batch(gen_batch, split_point, options.max_seq_len))
             all_labels.append(trim_batch(batch, split_point, options.max_seq_len))
 
+    # TODO: compare decoded text for exact match
     num_exact_match = sum(
         1 for pred, label in zip(all_predictions, all_labels)
         if pred["token_ids"].shape == label["token_ids"].shape and torch.all(pred["token_ids"] == label["token_ids"]) and torch.all(pred["token_types"] == label["token_types"])

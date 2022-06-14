@@ -5,7 +5,7 @@ from typing import Optional, List
 import torch
 from torch.utils.data import Dataset, DataLoader, Subset
 from tqdm import tqdm
-from mathGPT.constants import Article
+from neptune.new.run import Run
 
 from model_math_gpt import MathGPTBase, MathGPTLM, MathGPTClassifier
 from loading import PreTrainDataset, PreTrainDatasetPreloaded, GenTaskDataset, ClassifyTaskDataset, Collator, trim_batch
@@ -13,7 +13,7 @@ from evaluate import evaluate_lm, evaluate_lm_accuracy, evaluate_cls_task, evalu
 from generate import generate
 from decode import decode_batch
 from utils import TrainOptions, device, is_cls_task, new_neptune_run
-from constants import DownstreamTask, DOWNSTREAM_TASK_TO_NUM_CLASSES, WIKI_DATA, OFEQ_DATA
+from constants import DownstreamTask, Article, DOWNSTREAM_TASK_TO_NUM_CLASSES, WIKI_DATA, OFEQ_DATA
 
 def get_article_names():
     return [os.path.join(WIKI_DATA, article_filename) for article_filename in os.listdir(WIKI_DATA)]
@@ -21,9 +21,10 @@ def get_article_names():
 def save_model(model: MathGPTBase, model_name: str, options: TrainOptions):
     torch.save(model.state_dict(), f"{model_name}.pt")
     with open(f"{model_name}.json", "w", encoding="utf-8") as config_file:
-        json.dump(options.__dict__, config_file, indent=4)
+        json.dump(options.as_dict(), config_file, indent=4)
 
 def load_model(model_name: str, task: Optional[DownstreamTask] = None):
+    print("Loading model...")
     with open(f"{model_name}.json", encoding="utf-8") as config_file:
         options = TrainOptions(json.load(config_file))
     if is_cls_task(task):
@@ -40,7 +41,8 @@ def evaluate_model(model: MathGPTBase, dataset: Dataset, task: Optional[Downstre
         return evaluate_cls_task(model, dataset, task, options)
     return evaluate_lm_accuracy(model, dataset, task, options)
 
-def train(model: MathGPTBase, model_name: str, train_loader: DataLoader, validation_dataset: Dataset, options: TrainOptions, task: Optional[DownstreamTask] = None):
+def train(model: MathGPTBase, model_name: str, train_loader: DataLoader, validation_dataset: Dataset, options: TrainOptions,
+          run: Optional[Run] = None, task: Optional[DownstreamTask] = None):
     optimizer = torch.optim.AdamW(model.parameters(), lr=options.lr, weight_decay=options.weight_decay)
     torch.autograd.set_detect_anomaly(True) # Pause exectuion and get stack trace if something weird happens (ex: NaN grads)
     # Scaler prevents gradient underflow when using fp16 precision
@@ -49,10 +51,10 @@ def train(model: MathGPTBase, model_name: str, train_loader: DataLoader, validat
     use_dp = torch.cuda.device_count() > 1
     model_dp = torch.nn.parallel.DataParallel(model) if use_dp else None
 
-    run = new_neptune_run()
-    run["name"] = model_name
-    run["options"] = options.__dict__
-    run["task"] = str(task)
+    if run:
+        run["name"] = model_name
+        run["options"] = options.as_dict()
+        run["task"] = str(task)
 
     best_metric = None
     best_stats = None
@@ -94,9 +96,10 @@ def train(model: MathGPTBase, model_name: str, train_loader: DataLoader, validat
         model.eval() # Set model to evaluation mode
         avg_train_loss = train_loss / num_batches
         val_loss, results = evaluate_model(model, validation_dataset, task, options)
-        run["train/loss"].log(avg_train_loss)
-        run["val/loss"].log(val_loss)
-        run["val/metrics"].log(results)
+        if run:
+            run["train/loss"].log(avg_train_loss)
+            run["val/loss"].log(val_loss)
+            run["val/metrics"].log(results)
         print(f"Epoch: {epoch + 1}, Train Loss: {avg_train_loss:.3f}, Val Loss: {val_loss:.3f}, {results}, Time: {time.time() - start_time:.2f}")
 
         # Save model for best validation metric
@@ -113,7 +116,6 @@ def train(model: MathGPTBase, model_name: str, train_loader: DataLoader, validat
             print("Early stopping")
             break
 
-    run.stop()
     return best_stats
 
 def pretrain(model_name: str, pretrained_name: str, options_dict: dict):
@@ -121,10 +123,10 @@ def pretrain(model_name: str, pretrained_name: str, options_dict: dict):
         model, options = load_model(pretrained_name)
         options.update(options_dict)
     else:
-        model = MathGPTLM(options).to(device)
         options = TrainOptions(options_dict)
+        model = MathGPTLM(options).to(device)
     articles = get_article_names()
-    dataset = PreTrainDataset(articles, options.max_seq_len)
+    dataset = PreTrainDataset(articles, options.tpe, options.max_seq_len)
     train_data = Subset(dataset, list(range(0, int(len(dataset) * .9))))
     val_data = Subset(dataset, list(range(int(len(dataset) * .9), len(dataset))))
     train_loader = DataLoader(
@@ -134,7 +136,9 @@ def pretrain(model_name: str, pretrained_name: str, options_dict: dict):
         shuffle=True,
         drop_last=True
     )
-    train(model, model_name, train_loader, val_data, options)
+    run = new_neptune_run()
+    train(model, model_name, train_loader, val_data, options, run)
+    run.stop()
 
 def evaluate_pretrained_lm(model_name: str, test_options: dict):
     model, options = load_model(model_name)
@@ -144,7 +148,7 @@ def evaluate_pretrained_lm(model_name: str, test_options: dict):
     # TODO: try excluding test articles that contain UNKs, see how many are left out
     articles = get_article_names()
     test_articles = articles[int(len(articles) * .9):]
-    dataset = PreTrainDataset(test_articles, max_seq_len=None)
+    dataset = PreTrainDataset(test_articles, options.tpe, max_seq_len=None)
     loss, results = evaluate_lm(model, dataset, options)
     print(f"Loss: {loss:.3f}, {results}")
 
@@ -154,7 +158,7 @@ def test_lm(model_name: str, test_article: str, test_options: dict):
 
     wiki = False
     if wiki:
-        dataset = PreTrainDataset([test_article], options.max_seq_len // 2)
+        dataset = PreTrainDataset([test_article], options.tpe, options.max_seq_len // 2)
         data_loader = DataLoader(
             dataset,
             collate_fn=Collator(),
@@ -177,7 +181,7 @@ def test_lm(model_name: str, test_article: str, test_options: dict):
     else:
         with open("data/probes.json", encoding="utf-8") as probes_file:
             probes: List[Article] = json.load(probes_file)
-        dataset = PreTrainDatasetPreloaded(probes, options.max_seq_len)
+        dataset = PreTrainDatasetPreloaded(probes, options.tpe, options.max_seq_len)
         data_loader = DataLoader(
             dataset,
             collate_fn=Collator(),
@@ -197,15 +201,15 @@ def train_downstream_task(model_name: str, pretrained_name: str, task: Downstrea
     if is_cls_task(task):
         # TODO: get data files for the given task
         options.num_classes = DOWNSTREAM_TASK_TO_NUM_CLASSES.get(task)
-        dataset = ClassifyTaskDataset([], options.max_seq_len)
+        dataset = ClassifyTaskDataset([], options.tpe, options.max_seq_len)
         model = MathGPTClassifier(options).to(device)
     else:
         with open(os.path.join(OFEQ_DATA, "train.json"), encoding="utf-8") as headlines_file:
             train_headlines = json.load(headlines_file)
         with open(os.path.join(OFEQ_DATA, "val.json"), encoding="utf-8") as headlines_file:
             val_headlines = json.load(headlines_file)
-        train_data = GenTaskDataset(train_headlines, options.max_seq_len)
-        val_data = GenTaskDataset(val_headlines, options.max_seq_len)
+        train_data = GenTaskDataset(train_headlines, options.tpe, options.max_seq_len)
+        val_data = GenTaskDataset(val_headlines, options.tpe, options.max_seq_len)
         model = MathGPTLM(options).to(device)
     model.load_pretrained(pretrained_name)
     train_loader = DataLoader(
@@ -215,7 +219,11 @@ def train_downstream_task(model_name: str, pretrained_name: str, task: Downstrea
         shuffle=True,
         drop_last=False
     )
-    train(model, model_name, train_loader, val_data, options, task)
+    run = new_neptune_run()
+    train(model, model_name, train_loader, val_data, options, run, task)
+    results = evaluate_downstream_task(model_name, task, options.as_dict())
+    run["results"] = results
+    run.stop()
 
 def evaluate_downstream_task(model_name: str, task: DownstreamTask, eval_options: dict):
     model, options = load_model(model_name, task)
@@ -223,14 +231,15 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask, eval_options
 
     # TODO: get data files for the given task
     if is_cls_task(task):
-        dataset = ClassifyTaskDataset([], options.max_seq_len)
-        evaluate_cls_task(model, dataset, task, options)
+        dataset = ClassifyTaskDataset([], options.tpe, options.max_seq_len)
+        _, results = evaluate_cls_task(model, dataset, task, options)
     else:
         with open(os.path.join(OFEQ_DATA, "test.json"), encoding="utf-8") as headlines_file:
             headlines = json.load(headlines_file)
-        dataset = GenTaskDataset(headlines, options.max_seq_len)
+        dataset = GenTaskDataset(headlines, options.tpe, options.max_seq_len)
         _, results = evaluate_gen_task(model, dataset, task, options)
-        print(results)
+    print(results)
+    return results
 
 def test_gen_task(model_name: str, task: DownstreamTask):
     model, options = load_model(model_name, task)
@@ -238,7 +247,7 @@ def test_gen_task(model_name: str, task: DownstreamTask):
 
     with open(os.path.join(OFEQ_DATA, "test.json"), encoding="utf-8") as headlines_file:
         headlines = json.load(headlines_file)[:samples_to_try]
-    dataset = GenTaskDataset(headlines, options.max_seq_len)
+    dataset = GenTaskDataset(headlines, options.tpe, options.max_seq_len)
     data_loader = DataLoader(
         dataset,
         collate_fn=Collator(task),

@@ -45,7 +45,6 @@ def process_tree(article_name: str, tree_node: OPT, depth: int, err_found: bool,
             e_node = tree_node[2][child_idx + 1]
             if e_node[0] == "E" and e_node[2] and len(e_node[2]) > 3 and e_node[2][0][1] == "fragments" and e_node[2][1][1] in START_PARENS and e_node[2][-1][1] in END_PARENS:
                 # Unset E type of child to avoid double counting
-                # import pdb; pdb.set_trace()
                 e_node[0] = "E_no_more"
                 err_found = True
                 stats["num_err_ops"] += 1
@@ -70,12 +69,8 @@ def process_tree(article_name: str, tree_node: OPT, depth: int, err_found: bool,
         # Check for err case 3
         if not err_matched and num_children > 3 and tree_node[2][0][1] == "fragments":
             if tree_node[2][1][1] in START_PARENS and tree_node[2][-1][1] in END_PARENS:
-                # import pdb; pdb.set_trace()
                 stats["num_err_case_3"] += 1
                 err_matched = True
-
-        # if not err_matched:
-        #     import pdb; pdb.set_trace()
 
     if err_matched:
         cat_err_found = True
@@ -91,7 +86,7 @@ def process_tree(article_name: str, tree_node: OPT, depth: int, err_found: bool,
         child_range[1] = max(num_children, child_range[1])
 
     # Process children
-    if num_children:
+    if tree_node[2]:
         for child in tree_node[2]:
             if child[0] == "E" and tree_node[0] != "M" and not child[2]:
                 print("Non-mat err w/o children - ", article_name)

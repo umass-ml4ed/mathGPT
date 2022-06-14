@@ -285,9 +285,9 @@ def process_raw_text(src_text_batch: List[str], err_data: Optional[dict] = None)
             err_data["formulas_missing_from_latexml_randomly"] += 1
             raise Exception("Failed to split batch!")
         return articles
-    elif err_data:
+    if err_data:
         err_data["formulas_missing_from_latexml_failure"] += 1
-        raise Exception("LaTeXML failed!")
+    raise Exception("LaTeXML failed!")
 
 def process_mathsum_data():
     """
