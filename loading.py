@@ -2,11 +2,11 @@ import json
 from typing import List, Optional, Dict
 from tqdm import tqdm
 import torch
-import numpy as np
+from torch.utils.data import Dataset as TorchDataset, DataLoader, BatchSampler, distributed
 from transformers import GPT2TokenizerFast
 
 from math_tokenize import tokenize_formula, EMPTY_POS_VECTOR, get_empty_pos_encoding
-from constants import Article, GenTaskSample, ClassifyTaskSample, TokenType, Formula, Sequence, CollatedBatch, DownstreamTask, TPE, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, CLS_TOKEN, FORMULA_IDENTIFIER
+from constants import Article, GenTaskSample, ClassifyTaskSample, TokenType, Formula, Sequence, CollatedBatch, DownstreamTask, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, CLS_TOKEN, FORMULA_IDENTIFIER
 from utils import device, is_cls_task
 
 def split_sequence(sequence: Sequence, max_seq_len: int) -> List[Sequence]:
@@ -89,7 +89,7 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_t
 
     return sequence, num_missing_formulas
 
-class Dataset(torch.utils.data.Dataset):
+class Dataset(TorchDataset):
     def __init__(self):
         self.data: List[Sequence] = []
         self.text_tokenizer: GPT2TokenizerFast = GPT2TokenizerFast.from_pretrained("gpt2")
@@ -179,6 +179,24 @@ class ClassifyTaskDataset(Dataset):
             self.data.append(sequence)
         print("Missing", num_missing_formulas, "formulas")
         print("Trimmed", trimmed_sequences, "long sequences")
+
+def get_data_loader(dataset: Dataset, task: Optional[DownstreamTask], batch_size: int, shuffle: bool, drop_last: bool, ddp: bool):
+    return DataLoader(
+        dataset,
+        collate_fn=Collator(task),
+        batch_size=1 if ddp else batch_size,
+        shuffle=not ddp and shuffle,
+        drop_last=not ddp and drop_last,
+        batch_sampler=BatchSampler(
+            distributed.DistributedSampler(
+                dataset,
+                shuffle=shuffle,
+                drop_last=drop_last
+            ),
+            batch_size=batch_size,
+            drop_last=drop_last
+        ) if ddp else None
+    )
 
 def trim_batch(batch: CollatedBatch, trim_start: int, trim_end: int) -> CollatedBatch:
     """

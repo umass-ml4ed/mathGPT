@@ -1,14 +1,16 @@
 import time
 import os
 import json
-from typing import Optional, List
+from typing import Optional, List, Union
 import torch
 from torch.utils.data import Dataset, DataLoader, Subset
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
 from tqdm import tqdm
 from neptune.new.run import Run
 
 from model_math_gpt import MathGPTBase, MathGPTLM, MathGPTClassifier
-from loading import PreTrainDataset, PreTrainDatasetPreloaded, GenTaskDataset, ClassifyTaskDataset, Collator, trim_batch
+from loading import PreTrainDataset, PreTrainDatasetPreloaded, GenTaskDataset, ClassifyTaskDataset, Collator, trim_batch, get_data_loader
 from evaluate import evaluate_lm, evaluate_lm_accuracy, evaluate_cls_task, evaluate_gen_task
 from generate import generate
 from decode import decode_batch
@@ -19,11 +21,15 @@ def get_article_names():
     return [os.path.join(WIKI_DATA, article_filename) for article_filename in os.listdir(WIKI_DATA)]
 
 def save_model(model: MathGPTBase, model_name: str, options: TrainOptions):
-    torch.save(model.state_dict(), f"{model_name}.pt")
+    if options.ddp:
+        state_dict = {param.replace("module.", ""): val for param, val in model.state_dict().items()}
+    else:
+        state_dict = model.state_dict()
+    torch.save(state_dict, f"{model_name}.pt")
     with open(f"{model_name}.json", "w", encoding="utf-8") as config_file:
         json.dump(options.as_dict(), config_file, indent=4)
 
-def load_model(model_name: str, task: Optional[DownstreamTask] = None):
+def load_model(model_name: str, ddp: bool, task: Optional[DownstreamTask] = None):
     print("Loading model...")
     with open(f"{model_name}.json", encoding="utf-8") as config_file:
         options = TrainOptions(json.load(config_file))
@@ -32,6 +38,8 @@ def load_model(model_name: str, task: Optional[DownstreamTask] = None):
     else:
         model = MathGPTLM(options).to(device)
     model.load_state_dict(torch.load(f"{model_name}.pt", map_location=device))
+    if ddp:
+        model = DDP(model, device_ids=[torch.cuda.current_device()], find_unused_parameters=True)
     return model, options
 
 def evaluate_model(model: MathGPTBase, dataset: Dataset, task: Optional[DownstreamTask], options: TrainOptions):
@@ -41,15 +49,12 @@ def evaluate_model(model: MathGPTBase, dataset: Dataset, task: Optional[Downstre
         return evaluate_cls_task(model, dataset, task, options)
     return evaluate_lm_accuracy(model, dataset, task, options)
 
-def train(model: MathGPTBase, model_name: str, train_loader: DataLoader, validation_dataset: Dataset, options: TrainOptions,
+def train(model: Union[MathGPTBase, DDP], model_name: str, train_loader: DataLoader, validation_dataset: Dataset, options: TrainOptions,
           run: Optional[Run] = None, task: Optional[DownstreamTask] = None):
     optimizer = torch.optim.AdamW(model.parameters(), lr=options.lr, weight_decay=options.weight_decay)
     torch.autograd.set_detect_anomaly(True) # Pause exectuion and get stack trace if something weird happens (ex: NaN grads)
     # Scaler prevents gradient underflow when using fp16 precision
     scaler = torch.cuda.amp.grad_scaler.GradScaler() if options.amp else None
-    # Split computations across GPUs if multiple available
-    use_dp = torch.cuda.device_count() > 1
-    model_dp = torch.nn.parallel.DataParallel(model) if use_dp else None
 
     if run:
         run["name"] = model_name
@@ -63,6 +68,8 @@ def train(model: MathGPTBase, model_name: str, train_loader: DataLoader, validat
 
     print("Training...")
     for epoch in range(options.epochs):
+        if options.ddp:
+            train_loader.batch_sampler.sampler.set_epoch(epoch)
         start_time = time.time()
         model.train() # Set model to training mode
         train_loss = 0.0
@@ -70,18 +77,10 @@ def train(model: MathGPTBase, model_name: str, train_loader: DataLoader, validat
         for batch in tqdm(train_loader):
             if scaler:
                 with torch.cuda.amp.autocast():
-                    if use_dp:
-                        loss = model_dp(batch)[0]
-                        loss = loss.mean()
-                    else:
-                        loss = model(batch)[0]
+                    loss = model(batch)[0]
                 scaler.scale(loss).backward()
             else:
-                if use_dp:
-                    loss = model_dp(batch)[0]
-                    loss = loss.mean()
-                else:
-                    loss = model(batch)[0]
+                loss = model(batch)[0]
                 loss.backward()
             train_loss += float(loss.detach().cpu().numpy())
             num_batches += 1
@@ -107,9 +106,11 @@ def train(model: MathGPTBase, model_name: str, train_loader: DataLoader, validat
             best_metric = val_loss
             best_epoch = epoch
             best_stats = cur_stats
-            print("Saving model")
-            # TODO: consider saving info for checkpointing - epoch, seed, etc. (look up examples)
-            save_model(model, model_name, options)
+            if not options.ddp or torch.cuda.current_device() == 0:
+                print("Saving model")
+                save_model(model, model_name, options)
+            if options.ddp:
+                dist.barrier() # Wait for main process to finish saving
 
         # Stop training if we haven't improved in a while
         if options.patience and (epoch - best_epoch >= options.patience):
@@ -120,28 +121,28 @@ def train(model: MathGPTBase, model_name: str, train_loader: DataLoader, validat
 
 def pretrain(model_name: str, pretrained_name: str, options_dict: dict):
     if pretrained_name:
-        model, options = load_model(pretrained_name)
+        model, options = load_model(pretrained_name, options_dict.get("ddp", False))
         options.update(options_dict)
     else:
         options = TrainOptions(options_dict)
         model = MathGPTLM(options).to(device)
+        if options.ddp:
+            model = DDP(model, device_ids=[torch.cuda.current_device()], find_unused_parameters=True)
+
     articles = get_article_names()
+    # TODO: should actually not set max seq len for val set if we're calculating perplexity
     dataset = PreTrainDataset(articles, options.tpe, options.max_seq_len)
     train_data = Subset(dataset, list(range(0, int(len(dataset) * .9))))
     val_data = Subset(dataset, list(range(int(len(dataset) * .9), len(dataset))))
-    train_loader = DataLoader(
-        train_data,
-        collate_fn=Collator(),
-        batch_size=options.batch_size,
-        shuffle=True,
-        drop_last=True
-    )
-    run = new_neptune_run()
+    train_loader = get_data_loader(train_data, None, options.batch_size, True, True, options.ddp)
+    main_proc = not options.ddp or torch.cuda.current_device() == 0
+    run = new_neptune_run() if main_proc else None
     train(model, model_name, train_loader, val_data, options, run)
-    run.stop()
+    if run:
+        run.stop()
 
 def evaluate_pretrained_lm(model_name: str, test_options: dict):
-    model, options = load_model(model_name)
+    model, options = load_model(model_name, test_options.get("ddp", False))
     options.update(test_options)
 
     # TODO: get test split from a file
@@ -153,17 +154,13 @@ def evaluate_pretrained_lm(model_name: str, test_options: dict):
     print(f"Loss: {loss:.3f}, {results}")
 
 def test_lm(model_name: str, test_article: str, test_options: dict):
-    model, options = load_model(model_name)
+    model, options = load_model(model_name, test_options.get("ddp", False))
     options.update(test_options)
 
     wiki = False
     if wiki:
         dataset = PreTrainDataset([test_article], options.tpe, options.max_seq_len // 2)
-        data_loader = DataLoader(
-            dataset,
-            collate_fn=Collator(),
-            batch_size=1
-        )
+        data_loader = get_data_loader(dataset, None, 1, False, False, options.ddp)
         with torch.no_grad():
             data_loader_it = iter(data_loader)
             gen_batch = next(data_loader_it)
@@ -182,11 +179,7 @@ def test_lm(model_name: str, test_article: str, test_options: dict):
         with open("data/probes.json", encoding="utf-8") as probes_file:
             probes: List[Article] = json.load(probes_file)
         dataset = PreTrainDatasetPreloaded(probes, options.tpe, options.max_seq_len)
-        data_loader = DataLoader(
-            dataset,
-            collate_fn=Collator(),
-            batch_size=1
-        )
+        data_loader = get_data_loader(dataset, None, 1, False, False, options.ddp)
         with torch.no_grad():
             for batch in data_loader:
                 prompt_text = decode_batch(batch, dataset.text_tokenizer)[0]
@@ -212,21 +205,19 @@ def train_downstream_task(model_name: str, pretrained_name: str, task: Downstrea
         val_data = GenTaskDataset(val_headlines, options.tpe, options.max_seq_len)
         model = MathGPTLM(options).to(device)
     model.load_pretrained(pretrained_name)
-    train_loader = DataLoader(
-        train_data,
-        collate_fn=Collator(task),
-        batch_size=options.batch_size,
-        shuffle=True,
-        drop_last=False
-    )
-    run = new_neptune_run()
+    if options.ddp:
+        model = DDP(model, device_ids=[torch.cuda.current_device()], find_unused_parameters=True)
+    train_loader = get_data_loader(train_data, task, options.batch_size, True, True, options.ddp)
+    main_proc = not options.ddp or torch.cuda.current_device() == 0
+    run = new_neptune_run() if main_proc else None
     train(model, model_name, train_loader, val_data, options, run, task)
     results = evaluate_downstream_task(model_name, task, options.as_dict())
-    run["results"] = results
-    run.stop()
+    if run:
+        run["results"] = results
+        run.stop()
 
 def evaluate_downstream_task(model_name: str, task: DownstreamTask, eval_options: dict):
-    model, options = load_model(model_name, task)
+    model, options = load_model(model_name, eval_options.get("ddp", False), task)
     options.update(eval_options)
 
     # TODO: get data files for the given task
@@ -241,18 +232,15 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask, eval_options
     print(results)
     return results
 
-def test_gen_task(model_name: str, task: DownstreamTask):
-    model, options = load_model(model_name, task)
+def test_gen_task(model_name: str, task: DownstreamTask, test_options: dict):
+    model, options = load_model(model_name, test_options.get("ddp", False), task)
+    options.update(test_options)
     samples_to_try = 5
 
     with open(os.path.join(OFEQ_DATA, "test.json"), encoding="utf-8") as headlines_file:
         headlines = json.load(headlines_file)[:samples_to_try]
     dataset = GenTaskDataset(headlines, options.tpe, options.max_seq_len)
-    data_loader = DataLoader(
-        dataset,
-        collate_fn=Collator(task),
-        batch_size=1
-    )
+    data_loader = get_data_loader(dataset, task, 1, False, False, options.ddp)
     with torch.no_grad():
         for batch in data_loader:
             split_point = batch["prompt_lengths"][0]

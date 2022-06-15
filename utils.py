@@ -1,7 +1,9 @@
 import random
+import os
 from typing import Optional
 import numpy as np
 import torch
+import torch.distributed as dist
 import neptune.new as neptune
 
 from constants import DownstreamTask, TPE
@@ -23,6 +25,21 @@ def new_neptune_run():
         project="ajscarlatos/MGPT",
         api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiIwNDhjNTZiYS04YTU2LTQ2MTQtOWMxNy1jOTliYTZlNTJlYmEifQ==",
     )
+
+def setup_proc_group(rank: int, world_size: int):
+    global device
+
+    # Set the device to the GPU given to the process
+    torch.cuda.set_device(rank)
+    device = torch.device(f"cuda:{rank}")
+
+    # Initialize the process group
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = "12355"
+    dist.init_process_group("gloo", rank=rank, world_size=world_size)
+
+def cleanup_proc_group():
+    dist.destroy_process_group()
 
 def enum_choices(enum):
     return [choice.value for choice in enum]
@@ -46,6 +63,7 @@ class TrainOptions:
         self.amp: bool = options.get("amp", False)
         self.ns_p: float = options.get("ns_p", 0.90)
         self.stride: Optional[int] = options.get("stride", None)
+        self.ddp: bool = options.get("ddp", False)
         # Model config
         self.num_classes: Optional[int] = options.get("num_classes", None)
         self.use_type_embs: bool = options.get("use_type_embs", True)

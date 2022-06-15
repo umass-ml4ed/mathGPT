@@ -1,10 +1,11 @@
 import argparse
 import torch
+import torch.multiprocessing as mp
 
 from pre_process import process_wikipedia_data, process_mathsum_data, process_probes
 from analyze_data import analyze_wiki, analyze_mathsum
 from training import pretrain, evaluate_pretrained_lm, test_lm, train_downstream_task, evaluate_downstream_task, test_gen_task
-from utils import TrainOptions, initialize_seeds, device, enum_choices, enum_value_to_member
+from utils import TrainOptions, initialize_seeds, device, enum_choices, enum_value_to_member, setup_proc_group, cleanup_proc_group
 from constants import DownstreamTask, TPE
 
 def bool_type(arg):
@@ -37,6 +38,7 @@ def main():
     # Config
     parser.add_argument("--name", help="Name of current model/experiment, used for saving/loading model and config")
     parser.add_argument("--pretrained_name", help="Name of pre-trained LM for initializing model parameters")
+    parser.add_argument("--lr", type=float, help="Learning rate")
     parser.add_argument("--epochs", type=int, help="Maximum number of training epochs")
     parser.add_argument("--batch_size", type=int, help="Maximum number of sequences per batch")
     parser.add_argument("--grad_accum_batches", type=int, help="Number of batches to accumulate gradients for")
@@ -46,8 +48,25 @@ def main():
     parser.add_argument("--ns_p", type=float, help="P parameter for nucleus sampling")
     parser.add_argument("--use_type_embs", type=bool_type, help="Add type-specific embeddings to input token embeddings")
     parser.add_argument("--tpe", help="Scheme to use for tree position encodings", choices=enum_choices(TPE))
+    parser.add_argument("--ddp", type=bool_type, help="Use DistributedDataParallel")
 
     args = parser.parse_args()
+
+    if args.ddp:
+        world_size = torch.cuda.device_count()
+        mp.spawn(
+            main_worker,
+            nprocs=world_size,
+            args=(world_size, args),
+            join=True
+        )
+    else:
+        main_worker(0, 1, args)
+
+def main_worker(rank: int, world_size: int, args: argparse.Namespace):
+    if args.ddp:
+        setup_proc_group(rank, world_size)
+
     arg_dict = {arg: val for arg, val in vars(args).items() if val is not None}
 
     if args.preprocess_wiki:
@@ -71,7 +90,10 @@ def main():
     if args.evaluate_downstream:
         evaluate_downstream_task(args.name, enum_value_to_member(args.evaluate_downstream, DownstreamTask), arg_dict)
     if args.test_downstream:
-        test_gen_task(args.name, enum_value_to_member(args.test_downstream, DownstreamTask))
+        test_gen_task(args.name, enum_value_to_member(args.test_downstream, DownstreamTask), arg_dict)
+
+    if args.ddp:
+        cleanup_proc_group()
 
 if __name__ == "__main__":
     main()
