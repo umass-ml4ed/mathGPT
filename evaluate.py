@@ -21,7 +21,7 @@ def evaluate_lm(model: MathGPTLM, dataset: Dataset, options: TrainOptions):
     """
     # TODO: unit test
     # Only 1 sequence can be processed at a time to recover NLL from the cross-entropy loss (because of padding complications)
-    data_loader = get_data_loader(dataset, None, 1, False, False, options.ddp)
+    data_loader = get_data_loader(dataset, None, 1, False, False, options)
     total_loss = 0.0
     num_batches = 0
     stride = options.stride or options.max_seq_len
@@ -67,7 +67,7 @@ def evaluate_lm(model: MathGPTLM, dataset: Dataset, options: TrainOptions):
     return total_loss / num_batches, f"Perplexity: {perplexity:.3f}"
 
 def process_model_output(model: MathGPTBase, dataset: Dataset, task: Optional[DownstreamTask], options: TrainOptions, output_accumulator: Callable[[Tuple, CollatedBatch], None]):
-    data_loader = get_data_loader(dataset, task, options.batch_size, False, False, options.ddp)
+    data_loader = get_data_loader(dataset, task, options.batch_size, False, False, options)
     total_loss = 0.0
     num_batches = 0
     model.eval()
@@ -123,7 +123,7 @@ def evaluate_lm_accuracy(model: MathGPTLM, dataset: Dataset, task: Optional[Down
 def evaluate_gen_task(model: MathGPTLM, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
     # TODO: unit test
     # Only process one sequence at a time since prompts may have different lengths
-    data_loader = get_data_loader(dataset, task, 1, False, False, options.ddp)
+    data_loader = get_data_loader(dataset, task, 1, False, False, options)
     all_labels: List[CollatedBatch] = []
     all_predictions: List[CollatedBatch] = []
     with torch.no_grad():

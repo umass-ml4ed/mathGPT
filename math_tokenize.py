@@ -131,7 +131,7 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
     sequence.token_types.append(token_type)
     sequence.pos_vecs.append(pos_vec)
     sequence.pos_levels.append(cur_level)
-    sequence.pos_encodings.append(encode_pos(pos_vec, cur_level, tpe))
+    # sequence.pos_encodings.append(encode_pos(pos_vec, cur_level, tpe))
 
     # Process children
     child_idx = 0

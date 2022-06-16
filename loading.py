@@ -6,7 +6,7 @@ from torch.utils.data import Dataset as TorchDataset, DataLoader, BatchSampler, 
 from transformers import GPT2TokenizerFast
 from mathGPT.utils import TrainOptions
 
-from math_tokenize import tokenize_formula, EMPTY_POS_VECTOR, get_empty_pos_encoding
+from math_tokenize import tokenize_formula, EMPTY_POS_VECTOR, get_empty_pos_encoding, encode_pos
 from decode import decode_formula
 from constants import Article, GenTaskSample, ClassifyTaskSample, TokenType, Formula, Sequence, CollatedBatch, DownstreamTask, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, CLS_TOKEN, FORMULA_IDENTIFIER
 from utils import device, is_cls_task
@@ -57,7 +57,7 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_t
         sequence.token_types += [TokenType.TEXT] * len(text_token_ids)
         sequence.pos_vecs += [EMPTY_POS_VECTOR] * len(text_token_ids)
         sequence.pos_levels += [0] * len(text_token_ids)
-        sequence.pos_encodings += [get_empty_pos_encoding(options.tpe)] * len(text_token_ids)
+        # sequence.pos_encodings += [get_empty_pos_encoding(options.tpe)] * len(text_token_ids)
 
         # Sequence will end with a text chunk (even if it's an empty string)
         if text_chunk_idx == len(text_chunks) - 1:
@@ -79,28 +79,28 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_t
             sequence.token_types += [TokenType.TEXT] * len(formula_token_ids)
             sequence.pos_vecs += [EMPTY_POS_VECTOR] * len(formula_token_ids)
             sequence.pos_levels += [0] * len(formula_token_ids)
-            sequence.pos_encodings += [get_empty_pos_encoding(options.tpe)] * len(formula_token_ids)
+            # sequence.pos_encodings += [get_empty_pos_encoding(options.tpe)] * len(formula_token_ids)
         else:
             # Add formula start token
             sequence.token_ids.append(0)
             sequence.token_types.append(TokenType.START_FORMULA)
             sequence.pos_vecs.append(EMPTY_POS_VECTOR)
             sequence.pos_levels.append(0)
-            sequence.pos_encodings.append(get_empty_pos_encoding(options.tpe))
+            # sequence.pos_encodings.append(get_empty_pos_encoding(options.tpe))
 
             # Add formula
             sequence.token_ids += formula_sequence.token_ids
             sequence.token_types += formula_sequence.token_types
             sequence.pos_vecs += formula_sequence.pos_vecs
             sequence.pos_levels += formula_sequence.pos_levels
-            sequence.pos_encodings += formula_sequence.pos_encodings
+            # sequence.pos_encodings += formula_sequence.pos_encodings
 
             # Add formula end token
             sequence.token_ids.append(0)
             sequence.token_types.append(TokenType.END_FORMULA)
             sequence.pos_vecs.append(EMPTY_POS_VECTOR)
             sequence.pos_levels.append(0)
-            sequence.pos_encodings.append(get_empty_pos_encoding(options.tpe))
+            # sequence.pos_encodings.append(get_empty_pos_encoding(options.tpe))
 
     return sequence, num_missing_formulas
 
@@ -197,13 +197,13 @@ class ClassifyTaskDataset(Dataset):
         print("Missing", num_missing_formulas, "formulas")
         print("Trimmed", trimmed_sequences, "long sequences")
 
-def get_data_loader(dataset: Dataset, task: Optional[DownstreamTask], batch_size: int, shuffle: bool, drop_last: bool, ddp: bool):
+def get_data_loader(dataset: Dataset, task: Optional[DownstreamTask], batch_size: int, shuffle: bool, drop_last: bool, options: TrainOptions):
     return DataLoader(
         dataset,
-        collate_fn=Collator(task),
-        batch_size=1 if ddp else batch_size,
-        shuffle=not ddp and shuffle,
-        drop_last=not ddp and drop_last,
+        collate_fn=Collator(options.tpe, task),
+        batch_size=1 if options.ddp else batch_size,
+        shuffle=not options.ddp and shuffle,
+        drop_last=not options.ddp and drop_last,
         batch_sampler=BatchSampler(
             distributed.DistributedSampler(
                 dataset,
@@ -212,7 +212,7 @@ def get_data_loader(dataset: Dataset, task: Optional[DownstreamTask], batch_size
             ),
             batch_size=batch_size,
             drop_last=drop_last
-        ) if ddp else None
+        ) if options.ddp else None
     )
 
 def trim_batch(batch: CollatedBatch, trim_start: int, trim_end: int) -> CollatedBatch:
@@ -234,7 +234,8 @@ def trim_batch(batch: CollatedBatch, trim_start: int, trim_end: int) -> Collated
     }
 
 class Collator:
-    def __init__(self, task: Optional[DownstreamTask] = None):
+    def __init__(self, tpe: str, task: Optional[DownstreamTask] = None):
+        self.tpe = tpe
         self.task = task
 
     def __call__(self, batch: List[Sequence]) -> CollatedBatch:
@@ -255,7 +256,13 @@ class Collator:
             token_type_batches.append(torch.LongTensor(sequence.token_types))
             pos_vec_batches.append(torch.LongTensor(sequence.pos_vecs))
             pos_level_batches.append(torch.LongTensor(sequence.pos_levels))
-            pos_encoding_batches.append(torch.FloatTensor(sequence.pos_encodings))
+            pos_encodings = [
+                encode_pos(pos_vec, pos_level, self.tpe)
+                    if token_type not in (TokenType.TEXT, TokenType.START_FORMULA, TokenType.END_FORMULA)
+                    else get_empty_pos_encoding(self.tpe)
+                for token_type, pos_vec, pos_level in zip(sequence.token_types, sequence.pos_vecs, sequence.pos_levels)
+            ]
+            pos_encoding_batches.append(torch.FloatTensor(pos_encodings))
             attention_mask.append(torch.ones(len(sequence.token_ids)))
             sequence_lengths.append(len(sequence))
             if self.task:

@@ -154,11 +154,13 @@ def pretrain(model_name: str, pretrained_name: str, options_dict: dict):
     dataset = PreTrainDataset(articles, options, options.max_seq_len)
     train_data = Subset(dataset, list(range(0, int(len(dataset) * .9))))
     val_data = Subset(dataset, list(range(int(len(dataset) * .9), len(dataset))))
-    train_loader = get_data_loader(train_data, None, options.batch_size, True, True, options.ddp)
+    train_loader = get_data_loader(train_data, None, options.batch_size, True, True, options)
     main_proc = not options.ddp or torch.cuda.current_device() == 0
     run = new_neptune_run() if main_proc else None
     train(model, model_name, train_loader, val_data, options, run)
+    results = evaluate_pretrained_lm(model_name, options.as_dict())
     if run:
+        run["results"] = results
         run.stop()
 
 def evaluate_pretrained_lm(model_name: str, test_options: dict):
@@ -172,6 +174,7 @@ def evaluate_pretrained_lm(model_name: str, test_options: dict):
     dataset = PreTrainDataset(test_articles, options, max_seq_len=None)
     loss, results = evaluate_lm(model, dataset, options)
     print(f"Loss: {loss:.3f}, {results}")
+    return results
 
 def test_lm(model_name: str, test_article: str, test_options: dict):
     model, options = load_model(model_name, test_options.get("ddp", False))
@@ -180,7 +183,7 @@ def test_lm(model_name: str, test_article: str, test_options: dict):
     wiki = False
     if wiki:
         dataset = PreTrainDataset([test_article], options, options.max_seq_len // 2)
-        data_loader = get_data_loader(dataset, None, 1, False, False, options.ddp)
+        data_loader = get_data_loader(dataset, None, 1, False, False, options)
         with torch.no_grad():
             data_loader_it = iter(data_loader)
             gen_batch = next(data_loader_it)
@@ -199,7 +202,7 @@ def test_lm(model_name: str, test_article: str, test_options: dict):
         with open("data/probes.json", encoding="utf-8") as probes_file:
             probes: List[Article] = json.load(probes_file)
         dataset = PreTrainDatasetPreloaded(probes, options, options.max_seq_len)
-        data_loader = get_data_loader(dataset, None, 1, False, False, options.ddp)
+        data_loader = get_data_loader(dataset, None, 1, False, False, options)
         with torch.no_grad():
             for batch in data_loader:
                 prompt_text = decode_batch(batch, dataset.text_tokenizer)[0]
@@ -228,7 +231,7 @@ def train_downstream_task(model_name: str, pretrained_name: Optional[str], task:
         model.load_pretrained(pretrained_name)
     if options.ddp:
         model = DDP(model, device_ids=[torch.cuda.current_device()], find_unused_parameters=True)
-    train_loader = get_data_loader(train_data, task, options.batch_size, True, True, options.ddp)
+    train_loader = get_data_loader(train_data, task, options.batch_size, True, True, options)
     main_proc = not options.ddp or torch.cuda.current_device() == 0
     run = new_neptune_run() if main_proc else None
     train(model, model_name, train_loader, val_data, options, run, task)
@@ -258,7 +261,7 @@ def test_gen_task(model_name: str, task: DownstreamTask, test_options: dict):
 
     headlines = get_headline_data("test", options)[:samples_to_try]
     dataset = GenTaskDataset(headlines, options, options.max_seq_len)
-    data_loader = get_data_loader(dataset, task, 1, False, False, options.ddp)
+    data_loader = get_data_loader(dataset, task, 1, False, False, options)
     with torch.no_grad():
         for batch in data_loader:
             split_point = batch["prompt_lengths"][0]
