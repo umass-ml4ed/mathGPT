@@ -5,11 +5,9 @@ import torch
 import torch.distributed as dist
 from tqdm import tqdm
 from sklearn import metrics
-# from nltk.translate.bleu_score import corpus_bleu
 from nlgeval import compute_metrics
-# from rouge_score import rouge_scorer, scoring
 
-from loading import Dataset, Collator, trim_batch, get_data_loader
+from loading import Dataset, trim_batch, get_data_loader
 from model_math_gpt import MathGPTBase, MathGPTLM, MathGPTClassifier
 from generate import get_most_likely_predictions, generate
 from decode import decode_batch
@@ -160,15 +158,6 @@ def evaluate_gen_task(model: MathGPTLM, dataset: Dataset, task: DownstreamTask, 
     with open(label_filename, "w", encoding="utf-8") as label_file:
         label_file.write("\n".join(label_text_batch))
     metrics = compute_metrics(hypothesis=pred_filename, references=[label_filename], no_skipthoughts=True, no_glove=True)
-    # bleu = corpus_bleu([[label_text.split()] for label_text in label_text_batch], [pred_text.split() for pred_text in pred_text_batch])
-    # rouge_types = ["rouge1", "rouge2", "rougeL"]
-    # scorer = rouge_scorer.RougeScorer(rouge_types, use_stemmer=True)
-    # rouge_scores: Dict[str, scoring.Score] = [scorer.score(label_text, pred_text) for label_text, pred_text in zip(label_text_batch, pred_text_batch)]
-    # rouge_avg = {
-    #     rouge_type: np.mean([score[rouge_type].fmeasure for score in rouge_scores])
-    #     for rouge_type in rouge_types
-    # }
-    # return 0, f"Exact Match Accuracy: {accuracy:.3f}, BLEU-4: {metrics['Bleu_4']:.3f}, ROUGE-1: {rouge_avg['rouge1']:.3f}, ROUGE-2: {rouge_avg['rouge2']:.3f}, ROUGE-L: {rouge_avg['rougeL']:.3f}, METEOR: {metrics['METEOR']:.3f}"
     return 0, f"Exact Match Accuracy: {accuracy:.3f}, BLEU-4: {metrics['Bleu_4']:.3f}, ROUGE-L: {metrics['ROUGE_L']:.3f}, METEOR: {metrics['METEOR']:.3f}"
 
 def evaluate_cls_task(model: MathGPTClassifier, dataset: Dataset, task: DownstreamTask, options: TrainOptions):

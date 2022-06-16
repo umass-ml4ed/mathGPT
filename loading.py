@@ -4,8 +4,10 @@ from tqdm import tqdm
 import torch
 from torch.utils.data import Dataset as TorchDataset, DataLoader, BatchSampler, distributed
 from transformers import GPT2TokenizerFast
+from mathGPT.utils import TrainOptions
 
 from math_tokenize import tokenize_formula, EMPTY_POS_VECTOR, get_empty_pos_encoding
+from decode import decode_formula
 from constants import Article, GenTaskSample, ClassifyTaskSample, TokenType, Formula, Sequence, CollatedBatch, DownstreamTask, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, CLS_TOKEN, FORMULA_IDENTIFIER
 from utils import device, is_cls_task
 
@@ -43,7 +45,8 @@ def split_sequence(sequence: Sequence, max_seq_len: int) -> List[Sequence]:
     pre_split, post_split = sequence.split_at(pre_form_text_tok_id + 1)
     return [pre_split] + split_sequence(post_split, max_seq_len)
 
-def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_tokenizer: GPT2TokenizerFast, tpe: str):
+def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_tokenizer: GPT2TokenizerFast, options: TrainOptions):
+    decode_formulas = options.baseline and options.post_proc
     sequence = Sequence(name)
     text_chunks = text.split(FORMULA_IDENTIFIER)
     num_missing_formulas = 0
@@ -54,7 +57,7 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_t
         sequence.token_types += [TokenType.TEXT] * len(text_token_ids)
         sequence.pos_vecs += [EMPTY_POS_VECTOR] * len(text_token_ids)
         sequence.pos_levels += [0] * len(text_token_ids)
-        sequence.pos_encodings += [get_empty_pos_encoding(tpe)] * len(text_token_ids)
+        sequence.pos_encodings += [get_empty_pos_encoding(options.tpe)] * len(text_token_ids)
 
         # Sequence will end with a text chunk (even if it's an empty string)
         if text_chunk_idx == len(text_chunks) - 1:
@@ -65,27 +68,39 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_t
             num_missing_formulas += 1
             continue
 
-        # Add formula start token
-        sequence.token_ids.append(0)
-        sequence.token_types.append(TokenType.START_FORMULA)
-        sequence.pos_vecs.append(EMPTY_POS_VECTOR)
-        sequence.pos_levels.append(0)
-        sequence.pos_encodings.append(get_empty_pos_encoding(tpe))
+        # Tokenize the formula
+        formula_sequence = tokenize_formula(formulas[str(text_chunk_idx)]["opt"], options.tpe)
 
-        # Tokenize the formula and add it to the sequence
-        formula_sequence = tokenize_formula(formulas[str(text_chunk_idx)]["opt"], tpe)
-        sequence.token_ids += formula_sequence.token_ids
-        sequence.token_types += formula_sequence.token_types
-        sequence.pos_vecs += formula_sequence.pos_vecs
-        sequence.pos_levels += formula_sequence.pos_levels
-        sequence.pos_encodings += formula_sequence.pos_encodings
+        if decode_formulas:
+            # Decode formula back into text, with start and stop latex tokens, and add to the sequence
+            formula_text = " $ " + decode_formula(formula_sequence.token_ids, formula_sequence.token_types) + " $ "
+            formula_token_ids = text_tokenizer(formula_text)["input_ids"]
+            sequence.token_ids += formula_token_ids
+            sequence.token_types += [TokenType.TEXT] * len(formula_token_ids)
+            sequence.pos_vecs += [EMPTY_POS_VECTOR] * len(formula_token_ids)
+            sequence.pos_levels += [0] * len(formula_token_ids)
+            sequence.pos_encodings += [get_empty_pos_encoding(options.tpe)] * len(formula_token_ids)
+        else:
+            # Add formula start token
+            sequence.token_ids.append(0)
+            sequence.token_types.append(TokenType.START_FORMULA)
+            sequence.pos_vecs.append(EMPTY_POS_VECTOR)
+            sequence.pos_levels.append(0)
+            sequence.pos_encodings.append(get_empty_pos_encoding(options.tpe))
 
-        # Add formula end token
-        sequence.token_ids.append(0)
-        sequence.token_types.append(TokenType.END_FORMULA)
-        sequence.pos_vecs.append(EMPTY_POS_VECTOR)
-        sequence.pos_levels.append(0)
-        sequence.pos_encodings.append(get_empty_pos_encoding(tpe))
+            # Add formula
+            sequence.token_ids += formula_sequence.token_ids
+            sequence.token_types += formula_sequence.token_types
+            sequence.pos_vecs += formula_sequence.pos_vecs
+            sequence.pos_levels += formula_sequence.pos_levels
+            sequence.pos_encodings += formula_sequence.pos_encodings
+
+            # Add formula end token
+            sequence.token_ids.append(0)
+            sequence.token_types.append(TokenType.END_FORMULA)
+            sequence.pos_vecs.append(EMPTY_POS_VECTOR)
+            sequence.pos_levels.append(0)
+            sequence.pos_encodings.append(get_empty_pos_encoding(options.tpe))
 
     return sequence, num_missing_formulas
 
@@ -102,7 +117,7 @@ class Dataset(TorchDataset):
         return self.data[index]
 
 class PreTrainDataset(Dataset):
-    def __init__(self, article_filenames: List[str], tpe: str, max_seq_len: Optional[int] = None):
+    def __init__(self, article_filenames: List[str], options: TrainOptions, max_seq_len: Optional[int]):
         super().__init__()
         num_missing_formulas = 0
         for article_name in tqdm(article_filenames):
@@ -110,7 +125,7 @@ class PreTrainDataset(Dataset):
                 article: Article = json.load(article_file)
 
             article_text = article["text"] + EOS_TOKEN
-            sequence, cur_missing_formulas = tokenize_sequence(article_name, article_text, article["formulas"], self.text_tokenizer, tpe)
+            sequence, cur_missing_formulas = tokenize_sequence(article_name, article_text, article["formulas"], self.text_tokenizer, options)
             num_missing_formulas += cur_missing_formulas
 
             if max_seq_len:
@@ -121,12 +136,12 @@ class PreTrainDataset(Dataset):
         print("Missing", num_missing_formulas, "formulas")
 
 class PreTrainDatasetPreloaded(Dataset):
-    def __init__(self, articles: List[Article], tpe: str, max_seq_len: Optional[int] = None):
+    def __init__(self, articles: List[Article], options: TrainOptions, max_seq_len: Optional[int]):
         super().__init__()
         num_missing_formulas = 0
         for article in tqdm(articles):
             article_text = article["text"]
-            sequence, cur_missing_formulas = tokenize_sequence("", article_text, article["formulas"], self.text_tokenizer, tpe)
+            sequence, cur_missing_formulas = tokenize_sequence("", article_text, article["formulas"], self.text_tokenizer, options)
             num_missing_formulas += cur_missing_formulas
 
             if max_seq_len:
@@ -137,39 +152,41 @@ class PreTrainDatasetPreloaded(Dataset):
         print("Missing", num_missing_formulas, "formulas")
 
 class GenTaskDataset(Dataset):
-    def __init__(self, samples: List[GenTaskSample], tpe: str, max_seq_len: int):
+    def __init__(self, samples: List[GenTaskSample], options: TrainOptions, max_seq_len: int):
         super().__init__()
         num_missing_formulas = 0
         trimmed_sequences = 0
         for sample in tqdm(samples):
             # Tokenize the prompt and label sequences
-            prompt_text = sample["prompt"]["text"] + SEP_TOKEN
-            prompt_sequence, cur_missing_formulas = tokenize_sequence("", prompt_text, sample["prompt"]["formulas"], self.text_tokenizer, tpe)
+            prompt_text = "Question: " + sample["prompt"]["text"]
+            prompt_sequence, cur_missing_formulas = tokenize_sequence("", prompt_text, sample["prompt"]["formulas"], self.text_tokenizer, options)
             num_missing_formulas += cur_missing_formulas
+            intermediate_text = SEP_TOKEN + " Summary: "
+            intermediate_sequence, _ = tokenize_sequence("", intermediate_text, [], self.text_tokenizer, options)
             label_text = sample["label"]["text"] + EOS_TOKEN
-            label_sequence, cur_missing_formulas = tokenize_sequence("", label_text, sample["label"]["formulas"], self.text_tokenizer, tpe)
+            label_sequence, cur_missing_formulas = tokenize_sequence("", label_text, sample["label"]["formulas"], self.text_tokenizer, options)
             num_missing_formulas += cur_missing_formulas
             # Trim the prompt if we go over the max length
-            overflow = len(prompt_sequence) + len(label_sequence) - max_seq_len
+            overflow = len(prompt_sequence) + len(intermediate_sequence) + len(label_sequence) - max_seq_len
             if overflow > 0:
                 trimmed_sequences += 1
                 prompt_sequence = split_sequence(prompt_sequence, len(prompt_sequence) - overflow)[0]
             # Concatenate into single sequence, and save the length of the prompt for creating generative labels
-            sequence = prompt_sequence + label_sequence
-            sequence.label = len(prompt_sequence)
+            sequence = prompt_sequence + intermediate_sequence + label_sequence
+            sequence.label = len(prompt_sequence) + len(intermediate_sequence)
             self.data.append(sequence)
         print("Missing", num_missing_formulas, "formulas")
         print("Trimmed", trimmed_sequences, "long sequences")
 
 class ClassifyTaskDataset(Dataset):
-    def __init__(self, samples: List[ClassifyTaskSample], tpe: str, max_seq_len: int):
+    def __init__(self, samples: List[ClassifyTaskSample], options: TrainOptions, max_seq_len: int):
         super().__init__()
         num_missing_formulas = 0
         trimmed_sequences = 0
         for sample in tqdm(samples):
             # Tokenize sequence and save the label
             text = sample["text"] + CLS_TOKEN
-            sequence, cur_missing_formulas = tokenize_sequence("", text, sample["formulas"], self.text_tokenizer, tpe)
+            sequence, cur_missing_formulas = tokenize_sequence("", text, sample["formulas"], self.text_tokenizer, options)
             num_missing_formulas += cur_missing_formulas
             sequence.label = sample["label"]
             # Trim the sequence if we go over the max length

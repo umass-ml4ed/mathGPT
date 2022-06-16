@@ -46,6 +46,8 @@ def main():
     parser.add_argument("--stride", type=int, help="Stride for computing perplexity with sliding context window")
     parser.add_argument("--amp", type=bool_type, help="Use automated mixed precision during training")
     parser.add_argument("--ns_p", type=float, help="P parameter for nucleus sampling")
+    parser.add_argument("--baseline", type=bool_type, help="Use baseline GPT-2 model")
+    parser.add_argument("--post_proc", type=bool_type, help="For baseline - if true, train on post-processed and decoded formulas, else train on original formulas")
     parser.add_argument("--use_type_embs", type=bool_type, help="Add type-specific embeddings to input token embeddings")
     parser.add_argument("--tpe", help="Scheme to use for tree position encodings", choices=enum_choices(TPE))
     parser.add_argument("--ddp", type=bool_type, help="Use DistributedDataParallel")

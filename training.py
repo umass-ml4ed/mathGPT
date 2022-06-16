@@ -8,9 +8,11 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 from tqdm import tqdm
 from neptune.new.run import Run
+from mathGPT.constants import GenTaskSample
 
 from model_math_gpt import MathGPTBase, MathGPTLM, MathGPTClassifier
-from loading import PreTrainDataset, PreTrainDatasetPreloaded, GenTaskDataset, ClassifyTaskDataset, Collator, trim_batch, get_data_loader
+from model_baseline import GPTBaseline
+from loading import PreTrainDataset, PreTrainDatasetPreloaded, GenTaskDataset, ClassifyTaskDataset, trim_batch, get_data_loader
 from evaluate import evaluate_lm, evaluate_lm_accuracy, evaluate_cls_task, evaluate_gen_task
 from generate import generate
 from decode import decode_batch
@@ -36,11 +38,28 @@ def load_model(model_name: str, ddp: bool, task: Optional[DownstreamTask] = None
     if is_cls_task(task):
         model = MathGPTClassifier(options).to(device)
     else:
-        model = MathGPTLM(options).to(device)
+        if options.baseline:
+            model = GPTBaseline().to(device)
+        else:
+            model = MathGPTLM(options).to(device)
     model.load_state_dict(torch.load(f"{model_name}.pt", map_location=device))
     if ddp:
         model = DDP(model, device_ids=[torch.cuda.current_device()], find_unused_parameters=True)
     return model, options
+
+def get_headline_data(split: str, options: TrainOptions) -> List[GenTaskSample]:
+    # Load pre-processed dataset when using the MathGPT model, or using the post_proc option for the baseline model
+    pre_processed = not options.baseline or options.post_proc
+    if pre_processed:
+        with open(os.path.join(OFEQ_DATA, f"{split}.json"), encoding="utf-8") as headlines_file:
+            return json.load(headlines_file)
+    else:
+        with open(f"../MathSum/OFEQ-10k/post.{split}", encoding="utf-8") as post_file:
+            with open(f"../MathSum/OFEQ-10k/title.{split}", encoding="utf-8") as title_file:
+                return [
+                    {"prompt": {"text": post, "formulas": {}}, "label": {"text": title, "formulas": {}}}
+                    for post, title in zip(post_file, title_file)
+                ]
 
 def evaluate_model(model: MathGPTBase, dataset: Dataset, task: Optional[DownstreamTask], options: TrainOptions):
     if not task:
@@ -52,6 +71,7 @@ def evaluate_model(model: MathGPTBase, dataset: Dataset, task: Optional[Downstre
 def train(model: Union[MathGPTBase, DDP], model_name: str, train_loader: DataLoader, validation_dataset: Dataset, options: TrainOptions,
           run: Optional[Run] = None, task: Optional[DownstreamTask] = None):
     optimizer = torch.optim.AdamW(model.parameters(), lr=options.lr, weight_decay=options.weight_decay)
+    # TODO: try turning this off and running with amp
     torch.autograd.set_detect_anomaly(True) # Pause exectuion and get stack trace if something weird happens (ex: NaN grads)
     # Scaler prevents gradient underflow when using fp16 precision
     scaler = torch.cuda.amp.grad_scaler.GradScaler() if options.amp else None
@@ -131,7 +151,7 @@ def pretrain(model_name: str, pretrained_name: str, options_dict: dict):
 
     articles = get_article_names()
     # TODO: should actually not set max seq len for val set if we're calculating perplexity
-    dataset = PreTrainDataset(articles, options.tpe, options.max_seq_len)
+    dataset = PreTrainDataset(articles, options, options.max_seq_len)
     train_data = Subset(dataset, list(range(0, int(len(dataset) * .9))))
     val_data = Subset(dataset, list(range(int(len(dataset) * .9), len(dataset))))
     train_loader = get_data_loader(train_data, None, options.batch_size, True, True, options.ddp)
@@ -149,7 +169,7 @@ def evaluate_pretrained_lm(model_name: str, test_options: dict):
     # TODO: try excluding test articles that contain UNKs, see how many are left out
     articles = get_article_names()
     test_articles = articles[int(len(articles) * .9):]
-    dataset = PreTrainDataset(test_articles, options.tpe, max_seq_len=None)
+    dataset = PreTrainDataset(test_articles, options, max_seq_len=None)
     loss, results = evaluate_lm(model, dataset, options)
     print(f"Loss: {loss:.3f}, {results}")
 
@@ -159,7 +179,7 @@ def test_lm(model_name: str, test_article: str, test_options: dict):
 
     wiki = False
     if wiki:
-        dataset = PreTrainDataset([test_article], options.tpe, options.max_seq_len // 2)
+        dataset = PreTrainDataset([test_article], options, options.max_seq_len // 2)
         data_loader = get_data_loader(dataset, None, 1, False, False, options.ddp)
         with torch.no_grad():
             data_loader_it = iter(data_loader)
@@ -178,7 +198,7 @@ def test_lm(model_name: str, test_article: str, test_options: dict):
     else:
         with open("data/probes.json", encoding="utf-8") as probes_file:
             probes: List[Article] = json.load(probes_file)
-        dataset = PreTrainDatasetPreloaded(probes, options.tpe, options.max_seq_len)
+        dataset = PreTrainDatasetPreloaded(probes, options, options.max_seq_len)
         data_loader = get_data_loader(dataset, None, 1, False, False, options.ddp)
         with torch.no_grad():
             for batch in data_loader:
@@ -190,21 +210,22 @@ def test_lm(model_name: str, test_article: str, test_options: dict):
                 print("Prediction:", pred_text)
                 print("")
 
-def train_downstream_task(model_name: str, pretrained_name: str, task: DownstreamTask, options: TrainOptions):
+def train_downstream_task(model_name: str, pretrained_name: Optional[str], task: DownstreamTask, options: TrainOptions):
     if is_cls_task(task):
-        # TODO: get data files for the given task
         options.num_classes = DOWNSTREAM_TASK_TO_NUM_CLASSES.get(task)
-        dataset = ClassifyTaskDataset([], options.tpe, options.max_seq_len)
+        dataset = ClassifyTaskDataset([], options, options.max_seq_len)
         model = MathGPTClassifier(options).to(device)
     else:
-        with open(os.path.join(OFEQ_DATA, "train.json"), encoding="utf-8") as headlines_file:
-            train_headlines = json.load(headlines_file)
-        with open(os.path.join(OFEQ_DATA, "val.json"), encoding="utf-8") as headlines_file:
-            val_headlines = json.load(headlines_file)
-        train_data = GenTaskDataset(train_headlines, options.tpe, options.max_seq_len)
-        val_data = GenTaskDataset(val_headlines, options.tpe, options.max_seq_len)
-        model = MathGPTLM(options).to(device)
-    model.load_pretrained(pretrained_name)
+        train_headlines = get_headline_data("train", options)
+        val_headlines = get_headline_data("val", options)
+        train_data = GenTaskDataset(train_headlines, options, options.max_seq_len)
+        val_data = GenTaskDataset(val_headlines, options, options.max_seq_len)
+        if options.baseline:
+            model = GPTBaseline().to(device)
+        else:
+            model = MathGPTLM(options).to(device)
+    if pretrained_name:
+        model.load_pretrained(pretrained_name)
     if options.ddp:
         model = DDP(model, device_ids=[torch.cuda.current_device()], find_unused_parameters=True)
     train_loader = get_data_loader(train_data, task, options.batch_size, True, True, options.ddp)
@@ -220,14 +241,12 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask, eval_options
     model, options = load_model(model_name, eval_options.get("ddp", False), task)
     options.update(eval_options)
 
-    # TODO: get data files for the given task
     if is_cls_task(task):
-        dataset = ClassifyTaskDataset([], options.tpe, options.max_seq_len)
+        dataset = ClassifyTaskDataset([], options, options.max_seq_len)
         _, results = evaluate_cls_task(model, dataset, task, options)
     else:
-        with open(os.path.join(OFEQ_DATA, "test.json"), encoding="utf-8") as headlines_file:
-            headlines = json.load(headlines_file)
-        dataset = GenTaskDataset(headlines, options.tpe, options.max_seq_len)
+        headlines = get_headline_data("test", options)
+        dataset = GenTaskDataset(headlines, options, options.max_seq_len)
         _, results = evaluate_gen_task(model, dataset, task, options)
     print(results)
     return results
@@ -237,9 +256,8 @@ def test_gen_task(model_name: str, task: DownstreamTask, test_options: dict):
     options.update(test_options)
     samples_to_try = 5
 
-    with open(os.path.join(OFEQ_DATA, "test.json"), encoding="utf-8") as headlines_file:
-        headlines = json.load(headlines_file)[:samples_to_try]
-    dataset = GenTaskDataset(headlines, options.tpe, options.max_seq_len)
+    headlines = get_headline_data("test", options)[:samples_to_try]
+    dataset = GenTaskDataset(headlines, options, options.max_seq_len)
     data_loader = get_data_loader(dataset, task, 1, False, False, options.ddp)
     with torch.no_grad():
         for batch in data_loader:
