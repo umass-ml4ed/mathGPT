@@ -149,6 +149,7 @@ EOS_TOKEN = "<|endoftext|>"
 EOS_TOKEN_ID = 50256
 SEP_TOKEN = "[SEP]"
 CLS_TOKEN = "[CLS]"
+DOLLAR_TOK = 720
 
 # File paths
 DATA = "data"

@@ -7,7 +7,7 @@ from loading import trim_batch
 from model_math_gpt import MathGPTLM
 from math_tokenize import encode_pos
 from utils import device, TrainOptions
-from constants import CollatedBatch, TokenType, Gen, EOS_TOKEN_ID, PADDING_TOKEN_ID
+from constants import CollatedBatch, TokenType, Gen, EOS_TOKEN_ID, PADDING_TOKEN_ID, DOLLAR_TOK
 
 def infer_math_pos(prev_pos_vecs: torch.Tensor, prev_pos_levels: torch.Tensor, prev_token_types: torch.Tensor):
     """
@@ -146,6 +146,15 @@ def generate(model: MathGPTLM, start_batch: CollatedBatch, options: TrainOptions
             break
     return gen_batch
 
+def beam_ended(batch: CollatedBatch, options: TrainOptions):
+    test_first_eq = False
+    if test_first_eq:
+        if options.baseline and options.post_proc:
+            return (batch["token_ids"][0, -1] == DOLLAR_TOK and batch["gen_labels"][0, -1] != PADDING_TOKEN_ID) or batch["token_ids"][0, -1] == PADDING_TOKEN_ID
+        return batch["token_types"][0, -1] == TokenType.END_FORMULA or batch["token_ids"][0, -1] == PADDING_TOKEN_ID
+    else:
+        return batch["token_ids"][0, -1] in (EOS_TOKEN_ID, PADDING_TOKEN_ID)
+
 def generate_beam(model: MathGPTLM, start_batch: CollatedBatch, options: TrainOptions):
     model.eval()
     batch_size, starting_len = start_batch["token_ids"].shape
@@ -156,7 +165,7 @@ def generate_beam(model: MathGPTLM, start_batch: CollatedBatch, options: TrainOp
         top_candidate_info: List[Tuple[float, int, int, int]] = []
         for batch_idx, (nll, batch) in enumerate(candidate_batches):
             # If an EOS has already been generated, just keep the single path as a candidate
-            if batch["token_ids"][0, -1] in (EOS_TOKEN_ID, PADDING_TOKEN_ID):
+            if beam_ended(batch, options):
                 top_candidate_info.append((
                     nll,
                     PADDING_TOKEN_ID,
@@ -187,7 +196,7 @@ def generate_beam(model: MathGPTLM, start_batch: CollatedBatch, options: TrainOp
             new_candidate_batches.append((nll, new_batch))
         candidate_batches = new_candidate_batches
         # Stop if all beams hit an EOS
-        if all(batch[1]["token_ids"][0, -1] in (EOS_TOKEN_ID, PADDING_TOKEN_ID) for batch in candidate_batches):
+        if all(beam_ended(batch[1], options) for batch in candidate_batches):
             break
     return sorted(candidate_batches, key=lambda candidate: candidate[0])[0][1]
 

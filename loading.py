@@ -8,7 +8,7 @@ from mathGPT.utils import TrainOptions
 
 from math_tokenize import tokenize_formula, EMPTY_POS_VECTOR, get_empty_pos_encoding, encode_pos
 from decode import decode_formula
-from constants import Article, GenTaskSample, ClassifyTaskSample, TokenType, Formula, Sequence, CollatedBatch, DownstreamTask, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, CLS_TOKEN, FORMULA_IDENTIFIER
+from constants import Article, GenTaskSample, ClassifyTaskSample, TokenType, Formula, Sequence, CollatedBatch, DownstreamTask, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, CLS_TOKEN, FORMULA_IDENTIFIER, DOLLAR_TOK
 from utils import device, is_cls_task
 
 def split_sequence(sequence: Sequence, max_seq_len: int) -> List[Sequence]:
@@ -154,6 +154,7 @@ class PreTrainDatasetPreloaded(Dataset):
 class GenTaskDataset(Dataset):
     def __init__(self, samples: List[GenTaskSample], options: TrainOptions, max_seq_len: int):
         super().__init__()
+        test_first_eq = False
         num_missing_formulas = 0
         trimmed_sequences = 0
         for sample in tqdm(samples):
@@ -166,11 +167,26 @@ class GenTaskDataset(Dataset):
             label_text = sample["label"]["text"] + EOS_TOKEN
             label_sequence, cur_missing_formulas = tokenize_sequence("", label_text, sample["label"]["formulas"], self.text_tokenizer, options)
             num_missing_formulas += cur_missing_formulas
+            # Sanity check - just generate the first equation of the label with the preceding text given
+            if test_first_eq:
+                if options.baseline and options.post_proc:
+                    start_idx = next((idx for idx, token_id in enumerate(label_sequence.token_ids) if token_id == DOLLAR_TOK), None)
+                else:
+                    start_idx = next((idx for idx, token_type in enumerate(label_sequence.token_types) if token_type == TokenType.START_FORMULA), None)
+                if not start_idx:
+                    continue
+                headline_start, headline_end = label_sequence.split_at(start_idx + 1)
+                intermediate_sequence = intermediate_sequence + headline_start
+                if options.baseline and options.post_proc:
+                    end_idx = next((idx for idx, token_id in enumerate(headline_end.token_ids) if token_id == DOLLAR_TOK), None)
+                else:
+                    end_idx = next((idx for idx, token_type in enumerate(headline_end.token_types) if token_type == TokenType.END_FORMULA), None)
+                label_sequence = headline_end.split_at(end_idx + 1)[0]
             # Trim the prompt if we go over the max length
             overflow = len(prompt_sequence) + len(intermediate_sequence) + len(label_sequence) - max_seq_len
             if overflow > 0:
                 trimmed_sequences += 1
-                prompt_sequence = split_sequence(prompt_sequence, len(prompt_sequence) - overflow)[0]
+                prompt_sequence = prompt_sequence.split_at(len(prompt_sequence) - overflow)[0]
             # Concatenate into single sequence, and save the length of the prompt for creating generative labels
             sequence = prompt_sequence + intermediate_sequence + label_sequence
             sequence.label = len(prompt_sequence) + len(intermediate_sequence)
@@ -190,9 +206,10 @@ class ClassifyTaskDataset(Dataset):
             num_missing_formulas += cur_missing_formulas
             sequence.label = sample["label"]
             # Trim the sequence if we go over the max length
+            # TODO: this will remove the CLS token...
             if len(sequence) > max_seq_len:
                 trimmed_sequences += 1
-                sequence = split_sequence(sequence, max_seq_len)[0]
+                sequence = sequence.split_at(max_seq_len)[0]
             self.data.append(sequence)
         print("Missing", num_missing_formulas, "formulas")
         print("Trimmed", trimmed_sequences, "long sequences")

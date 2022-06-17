@@ -71,8 +71,8 @@ def evaluate_model(model: MathGPTBase, dataset: Dataset, task: Optional[Downstre
 def train(model: Union[MathGPTBase, DDP], model_name: str, train_loader: DataLoader, validation_dataset: Dataset, options: TrainOptions,
           run: Optional[Run] = None, task: Optional[DownstreamTask] = None):
     optimizer = torch.optim.AdamW(model.parameters(), lr=options.lr, weight_decay=options.weight_decay)
-    # TODO: try turning this off and running with amp
-    torch.autograd.set_detect_anomaly(True) # Pause exectuion and get stack trace if something weird happens (ex: NaN grads)
+    if not options.amp:
+        torch.autograd.set_detect_anomaly(True) # Pause exectuion and get stack trace if something weird happens (ex: NaN grads)
     # Scaler prevents gradient underflow when using fp16 precision
     scaler = torch.cuda.amp.grad_scaler.GradScaler() if options.amp else None
 
