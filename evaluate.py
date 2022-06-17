@@ -129,8 +129,7 @@ def evaluate_gen_task(model: MathGPTLM, dataset: Dataset, task: DownstreamTask, 
     with torch.no_grad():
         for batch in tqdm(data_loader):
             split_point = batch["prompt_lengths"][0]
-            gen_batch = trim_batch(batch, 0, split_point)
-            generate(model, gen_batch, options)
+            gen_batch = generate(model, trim_batch(batch, 0, split_point), options)
             all_predictions.append(trim_batch(gen_batch, split_point, options.max_seq_len))
             all_labels.append(trim_batch(batch, split_point, options.max_seq_len))
 

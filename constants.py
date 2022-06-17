@@ -132,6 +132,11 @@ class TPE(Enum):
     SIN_PART = "sin_part"
     SIN_ADD = "sin_add"
 
+class Gen(Enum):
+    GREEDY = "greedy"
+    NUCLEUS = "nucleus"
+    BEAM = "beam"
+
 MAX_FORMULA_DEPTH = 32
 MAX_FORMULA_WIDTH = 64
 

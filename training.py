@@ -189,7 +189,7 @@ def test_lm(model_name: str, test_article: str, test_options: dict):
             gen_batch = next(data_loader_it)
             gen_batch_len = len(gen_batch["token_ids"])
             prompt_text = decode_batch(gen_batch, dataset.text_tokenizer)[0]
-            generate(model, gen_batch, options)
+            gen_batch = generate(model, gen_batch, options)
             pred_text = decode_batch(trim_batch(gen_batch, gen_batch_len, options.max_seq_len), dataset.text_tokenizer)[0]
             followup_batch = next(data_loader_it)
             og_text = decode_batch(followup_batch, dataset.text_tokenizer)[0]
@@ -206,8 +206,8 @@ def test_lm(model_name: str, test_article: str, test_options: dict):
         with torch.no_grad():
             for batch in data_loader:
                 prompt_text = decode_batch(batch, dataset.text_tokenizer)[0]
-                generate(model, batch, options)
-                pred_text = decode_batch(batch, dataset.text_tokenizer)[0]
+                gen_batch = generate(model, batch, options)
+                pred_text = decode_batch(gen_batch, dataset.text_tokenizer)[0]
 
                 print("Prompt:", prompt_text)
                 print("Prediction:", pred_text)
@@ -267,7 +267,7 @@ def test_gen_task(model_name: str, task: DownstreamTask, test_options: dict):
             split_point = batch["prompt_lengths"][0]
             gen_batch = trim_batch(batch, 0, split_point)
             prompt_text = decode_batch(gen_batch, dataset.text_tokenizer)[0]
-            generate(model, gen_batch, options)
+            gen_batch = generate(model, gen_batch, options)
             pred_text = decode_batch(trim_batch(gen_batch, split_point, options.max_seq_len), dataset.text_tokenizer)[0]
             og_text = decode_batch(trim_batch(batch, split_point, options.max_seq_len), dataset.text_tokenizer)[0]
 

@@ -6,7 +6,7 @@ from pre_process import process_wikipedia_data, process_mathsum_data, process_pr
 from analyze_data import analyze_wiki, analyze_mathsum
 from training import pretrain, evaluate_pretrained_lm, test_lm, train_downstream_task, evaluate_downstream_task, test_gen_task
 from utils import TrainOptions, initialize_seeds, device, enum_choices, enum_value_to_member, setup_proc_group, cleanup_proc_group
-from constants import DownstreamTask, TPE
+from constants import DownstreamTask, TPE, Gen
 
 def bool_type(arg):
     return False if arg == "0" else True
@@ -45,7 +45,9 @@ def main():
     parser.add_argument("--max_seq_len", type=int, help="Maximum length, in tokens, of any sequence")
     parser.add_argument("--stride", type=int, help="Stride for computing perplexity with sliding context window")
     parser.add_argument("--amp", type=bool_type, help="Use automated mixed precision during training")
+    parser.add_argument("--gen", help="Algorithm to use for generation", choices=enum_choices(Gen))
     parser.add_argument("--ns_p", type=float, help="P parameter for nucleus sampling")
+    parser.add_argument("--beam_width", type=int, help="Width to use in beam search decoding")
     parser.add_argument("--baseline", type=bool_type, help="Use baseline GPT-2 model")
     parser.add_argument("--post_proc", type=bool_type, help="For baseline - if true, train on post-processed and decoded formulas, else train on original formulas")
     parser.add_argument("--use_type_embs", type=bool_type, help="Add type-specific embeddings to input token embeddings")

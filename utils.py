@@ -6,7 +6,7 @@ import torch
 import torch.distributed as dist
 import neptune.new as neptune
 
-from constants import DownstreamTask, TPE
+from constants import DownstreamTask, TPE, Gen
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -61,7 +61,9 @@ class TrainOptions:
         self.grad_accum_batches: int = options.get("grad_accum_batches", 1)
         self.max_seq_len: int = options.get("max_seq_len", 1024)
         self.amp: bool = options.get("amp", False)
+        self.gen: str = options.get("gen", Gen.BEAM.value)
         self.ns_p: float = options.get("ns_p", 0.90)
+        self.beam_width: int = options.get("beam_width", 3)
         self.stride: Optional[int] = options.get("stride", None)
         self.ddp: bool = options.get("ddp", False)
         # Model config
