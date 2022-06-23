@@ -7,7 +7,7 @@ from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttenti
 
 from vocabulary import Vocabulary
 from math_tokenize import POS_ENCODING_SIZE_FORTE
-from constants import CollatedBatch, TokenType, TPE, EMB_SIZE, PADDING_TOKEN_ID, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH
+from constants import CollatedBatch, TokenType, TPE, EMB_SIZE, PADDING_TOKEN_ID, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH, TEXT_VOCAB_SIZE
 from utils import device, TrainOptions
 
 # Leverages pre-trained GPT2 from transformers library
@@ -59,9 +59,8 @@ class MathGPTBase(nn.Module):
         if options.tpe == TPE.FORTE.value:
             self.math_embedding_projection = nn.Linear(POS_ENCODING_SIZE_FORTE, EMB_SIZE, bias=False)
 
-    def load_pretrained(self, pretrained_name: str):
+    def load_pretrained(self, pretrained_state_dict: Dict[str, torch.Tensor]):
         state_dict = self.state_dict()
-        pretrained_state_dict: Dict[str, Tensor] = torch.load(f"{pretrained_name}.pt", map_location=device)
         for param_name, param_val in pretrained_state_dict.items():
             state_dict[param_name] = param_val
         self.load_state_dict(state_dict)
@@ -110,18 +109,30 @@ class MathGPTLM(MathGPTBase):
     def __init__(self, options: TrainOptions):
         super().__init__(options)
 
-        # Predictive type layer for generation
-        self.type_pred_layer = nn.Linear(EMB_SIZE, NUM_TYPES)
+        if options.joint:
+            # Predictive type layer for generation
+            self.type_pred_layer = nn.Linear(EMB_SIZE, NUM_TYPES)
 
-        # Predictive token layers for generation
-        self.type_to_token_pred_layer = nn.ModuleDict({
-            str(token_type.value): nn.Linear(EMB_SIZE, Vocabulary.num_tokens_in_type(token_type))
-            for token_type in TokenType
-            if token_type not in (TokenType.TEXT, TokenType.START_FORMULA, TokenType.END_FORMULA, TokenType.END)
-        })
-        # Use pre-trained predictive head for text tokens
-        self.type_to_token_pred_layer[str(TokenType.TEXT.value)] = self.gpt2_lm.lm_head
-        # Special single-tokens types only have a single token each, so no need for predicting them
+            # Predictive token layers for generation
+            self.type_to_token_pred_layer = nn.ModuleDict({
+                str(token_type.value): nn.Linear(EMB_SIZE, Vocabulary.num_tokens_in_type(token_type))
+                for token_type in TokenType
+                if token_type not in (TokenType.TEXT, TokenType.START_FORMULA, TokenType.END_FORMULA, TokenType.END)
+            })
+            # Use pre-trained predictive head for text tokens
+            self.type_to_token_pred_layer[str(TokenType.TEXT.value)] = self.gpt2_lm.lm_head
+            # For joint probability modeling, single-token types only rely on the probability of their corresponding type
+        else:
+            self.text_pred_layer = self.gpt2_lm.lm_head
+            self.type_to_size = {
+                TokenType.OP: Vocabulary.num_tokens_in_type(TokenType.OP),
+                TokenType.VAR: Vocabulary.num_tokens_in_type(TokenType.VAR),
+                TokenType.NUM: Vocabulary.num_tokens_in_type(TokenType.NUM),
+                TokenType.END: 1,
+                TokenType.START_FORMULA: 1,
+                TokenType.END_FORMULA: 1,
+            }
+            self.math_pred_layer = nn.Linear(EMB_SIZE, sum(self.type_to_size.values()))
 
     def get_prediction_masks(self, batch: CollatedBatch):
         """
@@ -141,16 +152,12 @@ class MathGPTLM(MathGPTBase):
         final_formula_token_idx |= (type_idxs[TokenType.VAR] | type_idxs[TokenType.NUM]) & (batch["pos_levels"] == 0)
         return type_idxs, final_formula_token_idx
 
-    def get_type_probs(self, gpt_output: GPTOutput, type_idxs: Dict[TokenType, torch.Tensor],
-                       final_formula_token_idx: torch.Tensor, batch: CollatedBatch) -> torch.Tensor:
+    def get_type_mask(self, type_idxs: Dict[TokenType, torch.Tensor], final_formula_token_idx: torch.Tensor, batch: CollatedBatch):
         """
-        Calculate the probability of generating each type for each token in the batch, including masking to constrain to possible transitions
+        Create mask with allowed (False) and unallowed (True) types for the following token at each index
         """
-        batch_size = batch["token_ids"].shape[0]
-        # Get raw prediction values from model output
-        type_preds = self.type_pred_layer(gpt_output.last_hidden_state)
-        # Create mask with allowed (False) and unallowed (True) types for the following token at each index
-        type_mask = torch.full(type_preds.shape, True).to(device)
+        batch_size, max_seq_len = batch["token_ids"].shape
+        type_mask = torch.full((batch_size, max_seq_len, NUM_TYPES), True).to(device)
         for token_type, allowed_types in ALLOWED_TRANSITIONS.items():
             for allowed_type in allowed_types:
                 type_mask[:, :, allowed_type][type_idxs[token_type]] = False
@@ -173,7 +180,15 @@ class MathGPTLM(MathGPTBase):
             (batch["pos_vecs"][upper_level_mask].view(batch_size, -1) == MAX_FORMULA_WIDTH - 2)
         )
         type_mask[must_end_idx] = ~F.one_hot(torch.tensor(TokenType.END), num_classes=len(TokenType)).type(torch.bool).to(device)
-        # Get predicted probability of types at each index
+        return type_mask
+
+    def get_type_probs(self, gpt_output: GPTOutput, type_mask: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate the probability of generating each type for each token in the batch, including masking to constrain to possible transitions
+        """
+        # Get raw prediction values from model output
+        type_preds = self.type_pred_layer(gpt_output.last_hidden_state)
+        # Apply mask and get predicted probability of types at each index
         type_preds[type_mask] = -torch.inf
         type_probs = nn.Softmax(dim=-1)(type_preds)
         return type_probs
@@ -236,6 +251,62 @@ class MathGPTLM(MathGPTBase):
             losses.append(loss)
         return torch.concat(losses, dim=0).mean()
 
+    def get_token_activations(self, gpt_output: GPTOutput, type_mask: torch.Tensor):
+        # Get activations from linear layers
+        text_activations = self.text_pred_layer(gpt_output.last_hidden_state)
+        math_activations = self.math_pred_layer(gpt_output.last_hidden_state)
+        # Apply type-specific transition mask
+        text_activations[type_mask[:, :, TokenType.TEXT]] = -torch.inf
+        math_activation_parts: List[torch.Tensor] = []
+        start_idx = 0
+        for token_type in TokenType:
+            if token_type == TokenType.TEXT:
+                continue
+            activation = math_activations[:, :, start_idx : start_idx + self.type_to_size[token_type]]
+            activation[type_mask[:, :, token_type]] = -torch.inf
+            math_activation_parts.append(activation)
+            start_idx += self.type_to_size[token_type]
+        return torch.concat([text_activations] + math_activation_parts, dim=-1)
+
+    def get_token_probs_from_activations(self, token_activations: torch.Tensor):
+        type_to_token_probs: Dict[TokenType, torch.Tensor] = {}
+        token_probs = nn.Softmax(dim=-1)(token_activations)
+        type_to_token_probs[TokenType.TEXT] = token_probs[:, :, :TEXT_VOCAB_SIZE]
+        start_idx = TEXT_VOCAB_SIZE
+        for token_type in TokenType:
+            if token_type == TokenType.TEXT:
+                continue
+            type_to_token_probs[token_type] = token_probs[:, :, start_idx : start_idx + self.type_to_size[token_type]]
+            start_idx += self.type_to_size[token_type]
+        return type_to_token_probs
+
+    def get_prediction_loss_from_activations(self, token_activations: torch.Tensor, batch: CollatedBatch, labels: Optional[torch.Tensor]):
+        # Grab the appropriate target tensor
+        if batch["gen_labels"] is not None:
+            target_tokens = batch["gen_labels"]
+        elif labels is not None:
+            target_tokens = labels
+        else:
+            target_tokens = batch["token_ids"]
+        if target_tokens.shape[1] == 1 or torch.all(target_tokens == PADDING_TOKEN_ID):
+            # If the sequence has a length of 1, there are no targets to predict, so return a loss of 0
+            # If we have a full padding region (this is the case when generating from a prompt) then no loss can be computed
+            return torch.tensor(0.0).to(device)
+
+        # Adjust the token IDs to reference the indices in the extended activation vector
+        target_tokens = target_tokens.clone()
+        start_idx = TEXT_VOCAB_SIZE
+        for token_type in TokenType:
+            if token_type == TokenType.TEXT:
+                continue
+            target_tokens[batch["token_types"] == token_type] += start_idx
+            start_idx += self.type_to_size[token_type]
+        shifted_target_tokens = target_tokens[:, 1:]
+        # Loss function implicitly applies softmax, log, and mean, and ignores padding regions
+        loss_fn = nn.CrossEntropyLoss(reduction="mean", ignore_index=PADDING_TOKEN_ID)
+        loss = loss_fn(token_activations[:, :-1].reshape(-1, token_activations.shape[2]), shifted_target_tokens.reshape(-1))
+        return loss
+
     def forward(self, batch: CollatedBatch, labels: torch.Tensor = None):
         # Get GPT output
         gpt_output = self.get_transformer_output(batch)
@@ -243,14 +314,27 @@ class MathGPTLM(MathGPTBase):
         # Get relevant masks
         type_idxs, final_formula_token_idx = self.get_prediction_masks(batch)
 
-        # Calculate P(type) for each possible type
-        type_probs = self.get_type_probs(gpt_output, type_idxs, final_formula_token_idx, batch)
+        # Get type masks that constrain predictions to permitted transitions
+        type_mask = self.get_type_mask(type_idxs, final_formula_token_idx, batch)
 
-        # Calculate P(token, type) for all types/tokens
-        type_to_token_probs = self.get_token_probs(gpt_output, type_probs)
+        if self.options.joint:
+            # Calculate P(type) for each possible type
+            type_probs = self.get_type_probs(gpt_output, type_mask)
 
-        # Calculate cross-entropy loss
-        loss = self.get_prediction_loss(type_to_token_probs, type_idxs, batch, labels)
+            # Calculate P(token, type) for all types/tokens
+            type_to_token_probs = self.get_token_probs(gpt_output, type_probs)
+
+            # Calculate cross-entropy loss
+            loss = self.get_prediction_loss(type_to_token_probs, type_idxs, batch, labels)
+        else:
+            # Get activations for all text and math tokens
+            token_activations = self.get_token_activations(gpt_output, type_mask)
+
+            # Calculate cross-entropy loss
+            loss = self.get_prediction_loss_from_activations(token_activations, batch, labels)
+
+            # Get token probabilities from the activations
+            type_to_token_probs = self.get_token_probs_from_activations(token_activations)
 
         return loss, type_to_token_probs
 

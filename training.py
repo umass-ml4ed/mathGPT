@@ -3,12 +3,12 @@ import os
 import json
 from typing import Optional, List, Union
 import torch
-from torch.utils.data import Dataset, DataLoader, Subset
+from torch.utils.data import Dataset, DataLoader
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
+from torch.cuda.amp.grad_scaler import GradScaler
 from tqdm import tqdm
 from neptune.new.run import Run
-from mathGPT.constants import GenTaskSample
 
 from model_math_gpt import MathGPTBase, MathGPTLM, MathGPTClassifier
 from model_baseline import GPTBaseline
@@ -17,19 +17,10 @@ from evaluate import evaluate_lm, evaluate_lm_accuracy, evaluate_cls_task, evalu
 from generate import generate
 from decode import decode_batch
 from utils import TrainOptions, device, is_cls_task, new_neptune_run
-from constants import DownstreamTask, Article, DOWNSTREAM_TASK_TO_NUM_CLASSES, WIKI_DATA, OFEQ_DATA
+from constants import DownstreamTask, Article, GenTaskSample, Checkpoint, DOWNSTREAM_TASK_TO_NUM_CLASSES, WIKI_DATA, OFEQ_DATA
 
 def get_article_names():
     return [os.path.join(WIKI_DATA, article_filename) for article_filename in os.listdir(WIKI_DATA)]
-
-def save_model(model: MathGPTBase, model_name: str, options: TrainOptions):
-    if options.ddp:
-        state_dict = {param.replace("module.", ""): val for param, val in model.state_dict().items()}
-    else:
-        state_dict = model.state_dict()
-    torch.save(state_dict, f"{model_name}.pt")
-    with open(f"{model_name}.json", "w", encoding="utf-8") as config_file:
-        json.dump(options.as_dict(), config_file, indent=4)
 
 def load_model(model_name: str, ddp: bool, task: Optional[DownstreamTask] = None):
     print("Loading model...")
@@ -42,10 +33,15 @@ def load_model(model_name: str, ddp: bool, task: Optional[DownstreamTask] = None
             model = GPTBaseline().to(device)
         else:
             model = MathGPTLM(options).to(device)
-    model.load_state_dict(torch.load(f"{model_name}.pt", map_location=device))
+    checkpoint: Checkpoint = torch.load(f"{model_name}.pt", map_location=device)
+    if "model_state_dict" not in checkpoint: # Backward compatability
+        model.load_state_dict(checkpoint)
+        checkpoint = None
+    else:
+        model.load_state_dict(checkpoint["model_state_dict"])
     if ddp:
         model = DDP(model, device_ids=[torch.cuda.current_device()], find_unused_parameters=True)
-    return model, options
+    return model, checkpoint, options
 
 def get_headline_data(split: str, options: TrainOptions) -> List[GenTaskSample]:
     # Load pre-processed dataset when using the MathGPT model, or using the post_proc option for the baseline model
@@ -69,25 +65,33 @@ def evaluate_model(model: MathGPTBase, dataset: Dataset, task: Optional[Downstre
     return evaluate_lm_accuracy(model, dataset, task, options)
 
 def train(model: Union[MathGPTBase, DDP], model_name: str, train_loader: DataLoader, validation_dataset: Dataset, options: TrainOptions,
-          run: Optional[Run] = None, task: Optional[DownstreamTask] = None):
+          run: Optional[Run] = None, task: Optional[DownstreamTask] = None, checkpoint: Optional[Checkpoint] = None):
     optimizer = torch.optim.AdamW(model.parameters(), lr=options.lr, weight_decay=options.weight_decay)
+    if checkpoint:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     if not options.amp:
         torch.autograd.set_detect_anomaly(True) # Pause exectuion and get stack trace if something weird happens (ex: NaN grads)
     # Scaler prevents gradient underflow when using fp16 precision
-    scaler = torch.cuda.amp.grad_scaler.GradScaler() if options.amp else None
+    scaler = GradScaler() if options.amp else None
+    if checkpoint and scaler is not None:
+        scaler.load_state_dict(checkpoint["scaler_state_dict"])
 
     if run:
         run["name"] = model_name
         run["options"] = options.as_dict()
         run["task"] = str(task)
 
+    starting_epoch = checkpoint["epoch"] + 1 if checkpoint else 0
     best_metric = None
     best_stats = None
     cur_stats = None
-    best_epoch = 0
+    best_epoch = starting_epoch
+
+    if checkpoint:
+        torch.random.set_rng_state(checkpoint["rng_state"].cpu())
 
     print("Training...")
-    for epoch in range(options.epochs):
+    for epoch in range(starting_epoch, options.epochs):
         if options.ddp:
             train_loader.batch_sampler.sampler.set_epoch(epoch)
         start_time = time.time()
@@ -128,7 +132,19 @@ def train(model: Union[MathGPTBase, DDP], model_name: str, train_loader: DataLoa
             best_stats = cur_stats
             if not options.ddp or torch.cuda.current_device() == 0:
                 print("Saving model")
-                save_model(model, model_name, options)
+                if options.ddp:
+                    model_state_dict = {param.replace("module.", ""): val for param, val in model.state_dict().items()}
+                else:
+                    model_state_dict = model.state_dict()
+                torch.save({
+                    "model_state_dict": model_state_dict,
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scaler_state_dict": scaler.state_dict() if scaler else None,
+                    "rng_state": torch.random.get_rng_state(),
+                    "epoch": epoch,
+                }, f"{model_name}.pt")
+                with open(f"{model_name}.json", "w", encoding="utf-8") as config_file:
+                    json.dump(options.as_dict(), config_file, indent=4)
             if options.ddp:
                 dist.barrier() # Wait for main process to finish saving
 
@@ -141,43 +157,46 @@ def train(model: Union[MathGPTBase, DDP], model_name: str, train_loader: DataLoa
 
 def pretrain(model_name: str, pretrained_name: str, options_dict: dict):
     if pretrained_name:
-        model, options = load_model(pretrained_name, options_dict.get("ddp", False))
+        model, checkpoint, options = load_model(pretrained_name, options_dict.get("ddp", False))
         options.update(options_dict)
     else:
+        checkpoint = None
         options = TrainOptions(options_dict)
         model = MathGPTLM(options).to(device)
         if options.ddp:
             model = DDP(model, device_ids=[torch.cuda.current_device()], find_unused_parameters=True)
 
     articles = get_article_names()
-    # TODO: should actually not set max seq len for val set if we're calculating perplexity
-    dataset = PreTrainDataset(articles, options, options.max_seq_len)
-    train_data = Subset(dataset, list(range(0, int(len(dataset) * .9))))
-    val_data = Subset(dataset, list(range(int(len(dataset) * .9), len(dataset))))
+    split_point = int(len(articles) * .90)
+    train_data = PreTrainDataset(articles[:split_point], options, options.max_seq_len)
+    val_data = PreTrainDataset(articles[split_point:], options, max_seq_len=None)
     train_loader = get_data_loader(train_data, None, options.batch_size, True, True, options)
     main_proc = not options.ddp or torch.cuda.current_device() == 0
-    run = new_neptune_run() if main_proc else None
-    train(model, model_name, train_loader, val_data, options, run)
+    train(model, model_name, train_loader, val_data, options, checkpoint=checkpoint)
     results = evaluate_pretrained_lm(model_name, options.as_dict())
+    # Create run after training/eval to avoid using up hours
+    run = new_neptune_run() if main_proc else None
     if run:
         run["results"] = results
         run.stop()
 
 def evaluate_pretrained_lm(model_name: str, test_options: dict):
-    model, options = load_model(model_name, test_options.get("ddp", False))
+    model, _, options = load_model(model_name, test_options.get("ddp", False))
     options.update(test_options)
 
     # TODO: get test split from a file
     # TODO: try excluding test articles that contain UNKs, see how many are left out
     articles = get_article_names()
-    test_articles = articles[int(len(articles) * .9):]
+    split_point = int(len(articles) * .90)
+    test_articles = articles[split_point:]
     dataset = PreTrainDataset(test_articles, options, max_seq_len=None)
     loss, results = evaluate_lm(model, dataset, options)
     print(f"Loss: {loss:.3f}, {results}")
+    # TODO: record to run
     return results
 
 def test_lm(model_name: str, test_article: str, test_options: dict):
-    model, options = load_model(model_name, test_options.get("ddp", False))
+    model, _, options = load_model(model_name, test_options.get("ddp", False))
     options.update(test_options)
 
     wiki = False
@@ -228,7 +247,8 @@ def train_downstream_task(model_name: str, pretrained_name: Optional[str], task:
         else:
             model = MathGPTLM(options).to(device)
     if pretrained_name:
-        model.load_pretrained(pretrained_name)
+        checkpoint: Checkpoint = torch.load(f"{model_name}.pt", map_location=device)
+        model.load_pretrained(checkpoint["model_state_dict"] if "model_state_dict" in checkpoint else checkpoint)
     if options.ddp:
         model = DDP(model, device_ids=[torch.cuda.current_device()], find_unused_parameters=True)
     train_loader = get_data_loader(train_data, task, options.batch_size, True, True, options)
@@ -241,7 +261,7 @@ def train_downstream_task(model_name: str, pretrained_name: Optional[str], task:
         run.stop()
 
 def evaluate_downstream_task(model_name: str, task: DownstreamTask, eval_options: dict):
-    model, options = load_model(model_name, eval_options.get("ddp", False), task)
+    model, _, options = load_model(model_name, eval_options.get("ddp", False), task)
     options.update(eval_options)
 
     if is_cls_task(task):
@@ -252,10 +272,11 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask, eval_options
         dataset = GenTaskDataset(headlines, options, options.max_seq_len)
         _, results = evaluate_gen_task(model, dataset, task, options)
     print(results)
+    # TODO: record to run
     return results
 
 def test_gen_task(model_name: str, task: DownstreamTask, test_options: dict):
-    model, options = load_model(model_name, test_options.get("ddp", False), task)
+    model, _, options = load_model(model_name, test_options.get("ddp", False), task)
     options.update(test_options)
     samples_to_try = 5
 

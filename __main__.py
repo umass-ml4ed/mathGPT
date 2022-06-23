@@ -2,7 +2,7 @@ import argparse
 import torch
 import torch.multiprocessing as mp
 
-from pre_process import process_wikipedia_data, process_mathsum_data, process_probes
+from pre_process import process_wikipedia_data, process_probes, process_mathsum_data, process_answer_scoring_data
 from analyze_data import analyze_wiki, analyze_mathsum
 from training import pretrain, evaluate_pretrained_lm, test_lm, train_downstream_task, evaluate_downstream_task, test_gen_task
 from utils import TrainOptions, initialize_seeds, device, enum_choices, enum_value_to_member, setup_proc_group, cleanup_proc_group
@@ -26,6 +26,7 @@ def main():
     # Modes
     parser.add_argument("--preprocess_wiki", action="store_true", help="Process raw Wikipedia data and save to JSON files; generate raw vocab file")
     parser.add_argument("--preprocess_mathsum", action="store_true", help="Process raw MathSum data and save to JSON files")
+    parser.add_argument("--preprocess_answer_scoring", action="store_true", help="Process answer scoring dataset")
     parser.add_argument("--process_probes", action="store_true", help="Process LM probes and save to JSON files")
     parser.add_argument("--analyze_wiki", action="store_true", help="Produce stats on pre-processed Wikipedia dataset")
     parser.add_argument("--analyze_mathsum", action="store_true", help="Produce stats on pre-processed MathSum dataset")
@@ -50,6 +51,7 @@ def main():
     parser.add_argument("--beam_width", type=int, help="Width to use in beam search decoding")
     parser.add_argument("--baseline", type=bool_type, help="Use baseline GPT-2 model")
     parser.add_argument("--post_proc", type=bool_type, help="For baseline - if true, train on post-processed and decoded formulas, else train on original formulas")
+    parser.add_argument("--joint", type=bool_type, help="When true, model type/token probability jointly, otherwise model token probability directly")
     parser.add_argument("--use_type_embs", type=bool_type, help="Add type-specific embeddings to input token embeddings")
     parser.add_argument("--tpe", help="Scheme to use for tree position encodings", choices=enum_choices(TPE))
     parser.add_argument("--ddp", type=bool_type, help="Use DistributedDataParallel")
@@ -77,6 +79,8 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
         process_wikipedia_data()
     if args.preprocess_mathsum:
         process_mathsum_data()
+    if args.preprocess_answer_scoring:
+        process_answer_scoring_data()
     if args.process_probes:
         process_probes()
     if args.analyze_wiki:

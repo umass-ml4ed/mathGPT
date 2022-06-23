@@ -69,9 +69,10 @@ class TrainOptions:
         # Model config
         self.baseline: bool = options.get("baseline", False)
         self.post_proc: bool = options.get("post_proc", False)
-        self.num_classes: Optional[int] = options.get("num_classes", None)
+        self.joint: bool = options.get("joint", True)
         self.use_type_embs: bool = options.get("use_type_embs", True)
         self.tpe: str = options.get("tpe", TPE.FORTE.value)
+        self.num_classes: Optional[int] = options.get("num_classes", None)
 
     def as_dict(self):
         self_dict = self.__dict__

@@ -115,6 +115,13 @@ class CollatedBatch(TypedDict):
     gen_labels: Optional[torch.Tensor]
     cls_labels: Optional[torch.Tensor]
 
+class Checkpoint(TypedDict):
+    model_state_dict: Dict[str, torch.Tensor]
+    optimizer_state_dict: dict
+    scaler_state_dict: Optional[dict]
+    rng_state: torch.Tensor
+    epoch: int
+
 class DownstreamTask(Enum):
     HEADLINES = "headlines"
     SOLVING = "solving"
@@ -156,3 +163,4 @@ DATA = "data"
 WIKI_DATA = "data/wikipedia"
 EXEQ_DATA = "data/EXEQ-300k"
 OFEQ_DATA = "data/OFEQ-10k"
+AS_DATA = "data/answer_scoring"
