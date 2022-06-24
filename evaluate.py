@@ -161,7 +161,7 @@ def evaluate_cls_task(model: MathGPTClassifier, dataset: Dataset, task: Downstre
     all_predictions = []
     all_labels = []
     def accumulate_predictions(model_output, batch: CollatedBatch):
-        predictions = torch.argmax(model_output[1], dim=-1)
+        predictions = torch.nn.Softmax(dim=-1)(model_output[1])
         all_predictions.append(predictions.detach().cpu().numpy())
         all_labels.append(batch["cls_labels"].detach().cpu().numpy())
 
@@ -177,9 +177,14 @@ def evaluate_cls_task(model: MathGPTClassifier, dataset: Dataset, task: Downstre
         all_predictions = list(chain(*[result["all_predictions"] for result in all_results]))
         all_labels = list(chain(*[result["all_labels"] for result in all_results]))
 
+    possible_labels = list(range(options.num_classes))
     all_preds_np = np.concatenate(all_predictions, axis=0)
     all_labels_np = np.concatenate(all_labels, axis=0)
+    # This is the equivalent of averaging the AUC on each label individually
+    auc = metrics.roc_auc_score(all_labels_np, all_preds_np, labels=possible_labels, multi_class="ovr", average="macro")
+    all_preds_np = np.argmax(all_preds_np, axis=-1)
+    rmse = np.sqrt(metrics.mean_squared_error(all_labels_np, all_preds_np))
     accuracy = metrics.accuracy_score(all_labels_np, all_preds_np)
+    kappa = metrics.cohen_kappa_score(all_labels_np, all_preds_np, labels=possible_labels)
     _, _, f1, _ = metrics.precision_recall_fscore_support(all_labels_np, all_preds_np)
-    # TODO: AUC, Kappa, RMSE
-    return loss, f"Accuracy: {accuracy:.3f}, Macro F1: {f1.mean():.3f}"
+    return loss, f"Accuracy: {accuracy:.3f}, AUC: {auc:.3f}, Kappa: {kappa:.3f}, RMSE: {rmse:.3f}, F1: {f1.mean():.3f}"

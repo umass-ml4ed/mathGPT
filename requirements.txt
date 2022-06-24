@@ -8,6 +8,7 @@ mypy==0.942
 mypy-extensions==0.4.3
 pytest==7.1.1
 sklearn==0.0
+scikit-learn==1.1.1
 tqdm==4.64.0
 matplotlib==3.4.3
 neptune-client==0.16.3
