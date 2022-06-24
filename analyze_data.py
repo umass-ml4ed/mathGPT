@@ -6,7 +6,8 @@ from matplotlib import pyplot as plt
 import numpy as np
 
 from vocabulary import Vocabulary
-from constants import Article, GenTaskSample, OPT, TYPE_STR_TO_INT, WIKI_DATA, OFEQ_DATA, SpecialNumToken, SpecialOpToken, SpecialVarToken
+from data_types import Article, GenTaskSample, OPT
+from constants import TYPE_STR_TO_INT, WIKI_DATA, OFEQ_DATA, SpecialNumToken, SpecialOpToken, SpecialVarToken
 
 START_PARENS = ("normal-(", "normal-[", "normal-{")
 END_PARENS = ("normal-)", "normal-]", "normal-}")

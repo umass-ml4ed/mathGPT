@@ -12,14 +12,14 @@ from model_math_gpt import MathGPTBase, MathGPTLM, MathGPTClassifier
 from generate import get_most_likely_predictions, generate
 from decode import decode_batch
 from utils import TrainOptions
-from constants import PADDING_TOKEN_ID, CollatedBatch, DownstreamTask
+from data_types import CollatedBatch
+from constants import PADDING_TOKEN_ID, DownstreamTask
 
 def evaluate_lm(model: MathGPTLM, dataset: Dataset, options: TrainOptions):
     """
     Calculate perplexity: e ^ ((1/n) * nll)
     Algorithm from https://huggingface.co/docs/transformers/perplexity
     """
-    # TODO: unit test
     # Only 1 sequence can be processed at a time to recover NLL from the cross-entropy loss (because of padding complications)
     data_loader = get_data_loader(dataset, None, 1, False, False, options)
     total_loss = 0.0
@@ -83,7 +83,6 @@ def evaluate_lm_accuracy(model: MathGPTLM, dataset: Dataset, task: Optional[Down
     """
     Calculate per-token prediction accuracy
     """
-    # TODO: unit test
     all_predictions = []
     all_labels = []
     def accumulate_predictions(model_output, batch: CollatedBatch):
@@ -121,7 +120,6 @@ def evaluate_lm_accuracy(model: MathGPTLM, dataset: Dataset, task: Optional[Down
     return loss, f"Accuracy: {accuracy:.3f}"
 
 def evaluate_gen_task(model: MathGPTLM, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
-    # TODO: unit test
     # Only process one sequence at a time since prompts may have different lengths
     data_loader = get_data_loader(dataset, task, 1, False, False, options)
     all_labels: List[CollatedBatch] = []
@@ -160,7 +158,6 @@ def evaluate_gen_task(model: MathGPTLM, dataset: Dataset, task: DownstreamTask, 
     return 0, f"Exact Match Accuracy: {accuracy:.3f}, BLEU-4: {metrics['Bleu_4']:.3f}, ROUGE-L: {metrics['ROUGE_L']:.3f}, METEOR: {metrics['METEOR']:.3f}"
 
 def evaluate_cls_task(model: MathGPTClassifier, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
-    # TODO: unit test
     all_predictions = []
     all_labels = []
     def accumulate_predictions(model_output, batch: CollatedBatch):
@@ -184,4 +181,5 @@ def evaluate_cls_task(model: MathGPTClassifier, dataset: Dataset, task: Downstre
     all_labels_np = np.concatenate(all_labels, axis=0)
     accuracy = metrics.accuracy_score(all_labels_np, all_preds_np)
     _, _, f1, _ = metrics.precision_recall_fscore_support(all_labels_np, all_preds_np)
-    return loss, f"Accuracy: {accuracy:.3f}, F1: {f1:.3f}"
+    # TODO: AUC, Kappa, RMSE
+    return loss, f"Accuracy: {accuracy:.3f}, Macro F1: {f1.mean():.3f}"

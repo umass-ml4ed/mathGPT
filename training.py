@@ -1,47 +1,29 @@
 import time
 import os
 import json
-from typing import Optional, List, Union
+from typing import Optional, List, Tuple, Union, Dict
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 from torch.cuda.amp.grad_scaler import GradScaler
 from tqdm import tqdm
 from neptune.new.run import Run
+from sklearn.model_selection import StratifiedKFold
+import numpy as np
 
 from model_math_gpt import MathGPTBase, MathGPTLM, MathGPTClassifier
-from model_baseline import GPTBaseline
-from loading import PreTrainDataset, PreTrainDatasetPreloaded, GenTaskDataset, ClassifyTaskDataset, trim_batch, get_data_loader
+from model_baseline import GPTLMBaseline, GPTClassifierBaseline
+from loading import Dataset, PreTrainDataset, PreTrainDatasetPreloaded, GenTaskDataset, AnswerScoringDataset, trim_batch, get_data_loader
 from evaluate import evaluate_lm, evaluate_lm_accuracy, evaluate_cls_task, evaluate_gen_task
 from generate import generate
 from decode import decode_batch
 from utils import TrainOptions, device, is_cls_task, new_neptune_run
-from constants import DownstreamTask, Article, GenTaskSample, Checkpoint, DOWNSTREAM_TASK_TO_NUM_CLASSES, WIKI_DATA, OFEQ_DATA
+from data_types import Article, GenTaskSample, AnswerScoringSample
+from constants import DownstreamTask, Checkpoint, DOWNSTREAM_TASK_TO_NUM_CLASSES, WIKI_DATA, OFEQ_DATA, AS_PROBLEMS, AS_ANSWERS
 
 def get_article_names():
     return [os.path.join(WIKI_DATA, article_filename) for article_filename in os.listdir(WIKI_DATA)]
-
-def load_model(model_name: str, ddp: bool, task: Optional[DownstreamTask] = None):
-    print("Loading model...")
-    with open(f"{model_name}.json", encoding="utf-8") as config_file:
-        options = TrainOptions(json.load(config_file))
-    if is_cls_task(task):
-        model = MathGPTClassifier(options).to(device)
-    else:
-        if options.baseline:
-            model = GPTBaseline().to(device)
-        else:
-            model = MathGPTLM(options).to(device)
-    checkpoint: Checkpoint = torch.load(f"{model_name}.pt", map_location=device)
-    if "model_state_dict" not in checkpoint: # Backward compatability
-        model.load_state_dict(checkpoint)
-        checkpoint = None
-    else:
-        model.load_state_dict(checkpoint["model_state_dict"])
-    if ddp:
-        model = DDP(model, device_ids=[torch.cuda.current_device()], find_unused_parameters=True)
-    return model, checkpoint, options
 
 def get_headline_data(split: str, options: TrainOptions) -> List[GenTaskSample]:
     # Load pre-processed dataset when using the MathGPT model, or using the post_proc option for the baseline model
@@ -56,6 +38,43 @@ def get_headline_data(split: str, options: TrainOptions) -> List[GenTaskSample]:
                     {"prompt": {"text": post, "formulas": {}}, "label": {"text": title, "formulas": {}}}
                     for post, title in zip(post_file, title_file)
                 ]
+
+def get_answer_scoring_data() -> Tuple[Dict[str, Article], List[AnswerScoringSample], List[AnswerScoringSample], List[AnswerScoringSample]]:
+    with open(AS_PROBLEMS, encoding="utf-8") as problem_file:
+        problems: Dict[str, Article] = json.load(problem_file)
+    with open(AS_ANSWERS, encoding="utf-8") as answer_file:
+        answers: List[AnswerScoringSample] = json.load(answer_file)
+    # Stratify on problem id so that samples in the training set can be used during test time for meta learning
+    answers_np = np.array(answers)
+    stratify_labels = np.array([answer["problem_id"] for answer in answers])
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=221)
+    train_data_idx, test_data_idx = next(skf.split(answers_np, stratify_labels))
+    test_len = len(test_data_idx) // 2
+    return problems, answers_np[train_data_idx], answers_np[test_data_idx][:test_len], answers_np[test_data_idx][test_len:]
+
+def load_model(model_name: str, ddp: bool, task: Optional[DownstreamTask] = None):
+    print("Loading model...")
+    with open(f"{model_name}.json", encoding="utf-8") as config_file:
+        options = TrainOptions(json.load(config_file))
+    if is_cls_task(task):
+        if options.baseline:
+            model = GPTClassifierBaseline(options).to(device)
+        else:
+            model = MathGPTClassifier(options).to(device)
+    else:
+        if options.baseline:
+            model = GPTLMBaseline().to(device)
+        else:
+            model = MathGPTLM(options).to(device)
+    checkpoint: Checkpoint = torch.load(f"{model_name}.pt", map_location=device)
+    if "model_state_dict" not in checkpoint: # Backward compatability
+        model.load_state_dict(checkpoint)
+        checkpoint = None
+    else:
+        model.load_state_dict(checkpoint["model_state_dict"])
+    if ddp:
+        model = DDP(model, device_ids=[torch.cuda.current_device()], find_unused_parameters=True)
+    return model, checkpoint, options
 
 def evaluate_model(model: MathGPTBase, dataset: Dataset, task: Optional[DownstreamTask], options: TrainOptions):
     if not task:
@@ -162,7 +181,10 @@ def pretrain(model_name: str, pretrained_name: str, options_dict: dict):
     else:
         checkpoint = None
         options = TrainOptions(options_dict)
-        model = MathGPTLM(options).to(device)
+        if options.baseline:
+            model = GPTLMBaseline().to(device)
+        else:
+            model = MathGPTLM(options).to(device)
         if options.ddp:
             model = DDP(model, device_ids=[torch.cuda.current_device()], find_unused_parameters=True)
 
@@ -235,19 +257,24 @@ def test_lm(model_name: str, test_article: str, test_options: dict):
 def train_downstream_task(model_name: str, pretrained_name: Optional[str], task: DownstreamTask, options: TrainOptions):
     if is_cls_task(task):
         options.num_classes = DOWNSTREAM_TASK_TO_NUM_CLASSES.get(task)
-        dataset = ClassifyTaskDataset([], options, options.max_seq_len)
-        model = MathGPTClassifier(options).to(device)
+        problems, train_samples, val_samples, _ = get_answer_scoring_data()
+        train_data = AnswerScoringDataset(train_samples, problems, options)
+        val_data = AnswerScoringDataset(val_samples, problems, options, train_data.data)
+        if options.baseline:
+            model = GPTClassifierBaseline(options).to(device)
+        else:
+            model = MathGPTClassifier(options).to(device)
     else:
         train_headlines = get_headline_data("train", options)
         val_headlines = get_headline_data("val", options)
         train_data = GenTaskDataset(train_headlines, options, options.max_seq_len)
         val_data = GenTaskDataset(val_headlines, options, options.max_seq_len)
         if options.baseline:
-            model = GPTBaseline().to(device)
+            model = GPTLMBaseline().to(device)
         else:
             model = MathGPTLM(options).to(device)
     if pretrained_name:
-        checkpoint: Checkpoint = torch.load(f"{model_name}.pt", map_location=device)
+        checkpoint: Checkpoint = torch.load(f"{pretrained_name}.pt", map_location=device)
         model.load_pretrained(checkpoint["model_state_dict"] if "model_state_dict" in checkpoint else checkpoint)
     if options.ddp:
         model = DDP(model, device_ids=[torch.cuda.current_device()], find_unused_parameters=True)
@@ -265,8 +292,10 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask, eval_options
     options.update(eval_options)
 
     if is_cls_task(task):
-        dataset = ClassifyTaskDataset([], options, options.max_seq_len)
-        _, results = evaluate_cls_task(model, dataset, task, options)
+        problems, train_samples, _, test_samples = get_answer_scoring_data()
+        train_data = AnswerScoringDataset(train_samples, problems, options)
+        test_data = AnswerScoringDataset(test_samples, problems, options, train_data.data)
+        _, results = evaluate_cls_task(model, test_data, task, options)
     else:
         headlines = get_headline_data("test", options)
         dataset = GenTaskDataset(headlines, options, options.max_seq_len)

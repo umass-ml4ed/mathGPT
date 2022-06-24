@@ -48,7 +48,7 @@ def enum_value_to_member(value, enum):
     return next((member for member in enum if member.value == value), None)
 
 def is_cls_task(task: Optional[DownstreamTask]):
-    return task in (DownstreamTask.GRADING, DownstreamTask.KC_PRED)
+    return task in (DownstreamTask.ANSWER_SCORING, DownstreamTask.KC_PRED)
 
 class TrainOptions:
     def __init__(self, options: dict):

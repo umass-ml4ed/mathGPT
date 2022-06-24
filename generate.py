@@ -7,7 +7,8 @@ from loading import trim_batch
 from model_math_gpt import MathGPTLM
 from math_tokenize import encode_pos
 from utils import device, TrainOptions
-from constants import CollatedBatch, TokenType, Gen, EOS_TOKEN_ID, PADDING_TOKEN_ID, DOLLAR_TOK
+from data_types import CollatedBatch
+from constants import TokenType, Gen, EOS_TOKEN_ID, PADDING_TOKEN_ID, DOLLAR_TOK
 
 def infer_math_pos(prev_pos_vecs: torch.Tensor, prev_pos_levels: torch.Tensor, prev_token_types: torch.Tensor):
     """

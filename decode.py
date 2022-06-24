@@ -4,7 +4,8 @@ from dataclasses import dataclass
 import torch
 from transformers import GPT2TokenizerFast
 
-from constants import CollatedBatch, TokenType, EOS_TOKEN_ID, PADDING_TOKEN_ID
+from data_types import CollatedBatch
+from constants import TokenType, EOS_TOKEN_ID, PADDING_TOKEN_ID
 from vocabulary import Vocabulary
 
 @dataclass
@@ -59,6 +60,8 @@ def tree_to_text(tree_node: DecodeTreeNode) -> str:
 
     if not tree_node.children:
         return symbol
+
+    # TODO: deal with SpecialOpToken.CERR_OP
 
     if symbol == "SpecialOpToken.ANON_OP": # TODO: better check for this
         left = tree_to_text(tree_node.children[0])

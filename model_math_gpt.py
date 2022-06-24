@@ -7,7 +7,8 @@ from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttenti
 
 from vocabulary import Vocabulary
 from math_tokenize import POS_ENCODING_SIZE_FORTE
-from constants import CollatedBatch, TokenType, TPE, EMB_SIZE, PADDING_TOKEN_ID, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH, TEXT_VOCAB_SIZE
+from data_types import CollatedBatch
+from constants import TokenType, TPE, EMB_SIZE, PADDING_TOKEN_ID, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH, TEXT_VOCAB_SIZE
 from utils import device, TrainOptions
 
 # Leverages pre-trained GPT2 from transformers library
@@ -60,12 +61,19 @@ class MathGPTBase(nn.Module):
             self.math_embedding_projection = nn.Linear(POS_ENCODING_SIZE_FORTE, EMB_SIZE, bias=False)
 
     def load_pretrained(self, pretrained_state_dict: Dict[str, torch.Tensor]):
+        """
+        Given a pre-trained model's state_dict, load its parameters that are relevant to the current model
+        """
         state_dict = self.state_dict()
         for param_name, param_val in pretrained_state_dict.items():
-            state_dict[param_name] = param_val
+            if param_name in state_dict:
+                state_dict[param_name] = param_val
         self.load_state_dict(state_dict)
 
     def get_math_embeddings(self, batch: CollatedBatch) -> torch.Tensor:
+        """
+        Get math position encodings for the batch
+        """
         if self.options.tpe == TPE.FORTE.value:
             return self.math_embedding_projection(batch["pos_encodings"])
         return batch["pos_encodings"]
@@ -341,7 +349,6 @@ class MathGPTLM(MathGPTBase):
 class MathGPTClassifier(MathGPTBase):
     def __init__(self, options: TrainOptions):
         super().__init__(options)
-
         self.classifier_head = nn.Linear(EMB_SIZE, options.num_classes)
 
     def forward(self, batch: CollatedBatch):

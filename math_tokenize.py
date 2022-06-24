@@ -5,7 +5,8 @@ import torch
 import numpy as np
 
 from vocabulary import Vocabulary, get_matrix_symbol
-from constants import OPT, TokenType, SpecialOpToken, SpecialVarToken, Sequence, TPE, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH, EMB_SIZE
+from data_types import OPT, Sequence
+from constants import TokenType, SpecialOpToken, SpecialVarToken, TPE, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH, EMB_SIZE
 
 EMPTY_POS_VECTOR = [0] * MAX_FORMULA_DEPTH
 

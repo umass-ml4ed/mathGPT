@@ -1,15 +1,16 @@
 import json
 from typing import List, Optional, Dict
+import random
 from tqdm import tqdm
 import torch
 from torch.utils.data import Dataset as TorchDataset, DataLoader, BatchSampler, distributed
 from transformers import GPT2TokenizerFast
-from mathGPT.utils import TrainOptions
 
 from math_tokenize import tokenize_formula, EMPTY_POS_VECTOR, get_empty_pos_encoding, encode_pos
 from decode import decode_formula
-from constants import Article, GenTaskSample, ClassifyTaskSample, TokenType, Formula, Sequence, CollatedBatch, DownstreamTask, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, CLS_TOKEN, FORMULA_IDENTIFIER, DOLLAR_TOK
-from utils import device, is_cls_task
+from data_types import Article, GenTaskSample, AnswerScoringSample, ClassifyTaskSample, Formula, Sequence, CollatedBatch
+from constants import TokenType, DownstreamTask, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, CLS_TOKEN, FORMULA_IDENTIFIER, DOLLAR_TOK
+from utils import device, is_cls_task, TrainOptions
 
 def split_sequence(sequence: Sequence, max_seq_len: int) -> List[Sequence]:
     """
@@ -46,7 +47,7 @@ def split_sequence(sequence: Sequence, max_seq_len: int) -> List[Sequence]:
     return [pre_split] + split_sequence(post_split, max_seq_len)
 
 def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_tokenizer: GPT2TokenizerFast, options: TrainOptions):
-    decode_formulas = options.baseline and options.post_proc
+    decode_formulas = options.baseline
     sequence = Sequence(name)
     text_chunks = text.split(FORMULA_IDENTIFIER)
     num_missing_formulas = 0
@@ -108,6 +109,8 @@ class Dataset(TorchDataset):
     def __init__(self):
         self.data: List[Sequence] = []
         self.text_tokenizer: GPT2TokenizerFast = GPT2TokenizerFast.from_pretrained("gpt2")
+        self.num_missing_formulas = 0
+        self.trimmed_sequences = 0
         print("Processing data...")
 
     def __len__(self):
@@ -119,54 +122,50 @@ class Dataset(TorchDataset):
 class PreTrainDataset(Dataset):
     def __init__(self, article_filenames: List[str], options: TrainOptions, max_seq_len: Optional[int]):
         super().__init__()
-        num_missing_formulas = 0
         for article_name in tqdm(article_filenames):
             with open(article_name, encoding="utf-8") as article_file:
                 article: Article = json.load(article_file)
 
             article_text = article["text"] + EOS_TOKEN
             sequence, cur_missing_formulas = tokenize_sequence(article_name, article_text, article["formulas"], self.text_tokenizer, options)
-            num_missing_formulas += cur_missing_formulas
+            self.num_missing_formulas += cur_missing_formulas
 
             if max_seq_len:
                 split_sequences = split_sequence(sequence, max_seq_len)
                 self.data += split_sequences
             else:
                 self.data.append(sequence)
-        print("Missing", num_missing_formulas, "formulas")
+        print("Missing", self.num_missing_formulas, "formulas")
 
 class PreTrainDatasetPreloaded(Dataset):
     def __init__(self, articles: List[Article], options: TrainOptions, max_seq_len: Optional[int]):
         super().__init__()
-        num_missing_formulas = 0
         for article in tqdm(articles):
             article_text = article["text"]
             sequence, cur_missing_formulas = tokenize_sequence("", article_text, article["formulas"], self.text_tokenizer, options)
-            num_missing_formulas += cur_missing_formulas
+            self.num_missing_formulas += cur_missing_formulas
 
             if max_seq_len:
                 split_sequences = split_sequence(sequence, max_seq_len)
                 self.data += split_sequences
             else:
                 self.data.append(sequence)
-        print("Missing", num_missing_formulas, "formulas")
+        print("Missing", self.num_missing_formulas, "formulas")
 
 class GenTaskDataset(Dataset):
     def __init__(self, samples: List[GenTaskSample], options: TrainOptions, max_seq_len: int):
         super().__init__()
         test_first_eq = False
-        num_missing_formulas = 0
-        trimmed_sequences = 0
         for sample in tqdm(samples):
             # Tokenize the prompt and label sequences
             prompt_text = "Question: " + sample["prompt"]["text"]
             prompt_sequence, cur_missing_formulas = tokenize_sequence("", prompt_text, sample["prompt"]["formulas"], self.text_tokenizer, options)
-            num_missing_formulas += cur_missing_formulas
+            self.num_missing_formulas += cur_missing_formulas
             intermediate_text = SEP_TOKEN + " Summary: "
             intermediate_sequence, _ = tokenize_sequence("", intermediate_text, [], self.text_tokenizer, options)
             label_text = sample["label"]["text"] + EOS_TOKEN
             label_sequence, cur_missing_formulas = tokenize_sequence("", label_text, sample["label"]["formulas"], self.text_tokenizer, options)
-            num_missing_formulas += cur_missing_formulas
+            self.num_missing_formulas += cur_missing_formulas
             # Sanity check - just generate the first equation of the label with the preceding text given
             if test_first_eq:
                 if options.baseline and options.post_proc:
@@ -185,34 +184,132 @@ class GenTaskDataset(Dataset):
             # Trim the prompt if we go over the max length
             overflow = len(prompt_sequence) + len(intermediate_sequence) + len(label_sequence) - max_seq_len
             if overflow > 0:
-                trimmed_sequences += 1
-                prompt_sequence = prompt_sequence.split_at(len(prompt_sequence) - overflow)[0]
+                self.trimmed_sequences += 1
+                prompt_sequence = split_sequence(prompt_sequence, len(prompt_sequence) - overflow)[0]
             # Concatenate into single sequence, and save the length of the prompt for creating generative labels
             sequence = prompt_sequence + intermediate_sequence + label_sequence
-            sequence.label = len(prompt_sequence) + len(intermediate_sequence)
+            sequence.meta = {
+                "prompt_length": len(prompt_sequence) + len(intermediate_sequence)
+            }
             self.data.append(sequence)
-        print("Missing", num_missing_formulas, "formulas")
-        print("Trimmed", trimmed_sequences, "long sequences")
+        print("Missing", self.num_missing_formulas, "formulas")
+        print("Trimmed", self.trimmed_sequences, "long sequences")
+
+class AnswerScoringDataset(Dataset):
+    def __init__(self, samples: List[AnswerScoringSample], problems: Dict[str, Article], options: TrainOptions,
+                 examples: Optional[List[Sequence]] = None):
+        super().__init__()
+        self.options = options
+        self.problems: Dict[int, Sequence] = {}
+        self.example_bank: Dict[int, Dict[int, List[Sequence]]] = {}
+
+        # Static sequences that get added to each sample
+        self.qs_prefix_seq = tokenize_sequence("", "Question: ", {}, self.text_tokenizer, self.options)[0]
+        self.scores_seq = tokenize_sequence("", " [SEP] Possible scores: Wrong Poor Fair Good Excellent", {}, self.text_tokenizer, self.options)[0]
+        self.example_prefix_seq = tokenize_sequence("", " [SEP] Example: ", {}, self.text_tokenizer, self.options)[0]
+        self.answer_prefix_seq = tokenize_sequence("", " [SEP] Score this answer: ", {}, self.text_tokenizer, self.options)[0]
+        self.cls_seq = tokenize_sequence("", " [CLS]", {}, self.text_tokenizer, self.options)[0]
+        self.grade_to_score_seq = {
+            0: tokenize_sequence("", " Score: Wrong", {}, self.text_tokenizer, self.options)[0],
+            1: tokenize_sequence("", " Score: Poor", {}, self.text_tokenizer, self.options)[0],
+            2: tokenize_sequence("", " Score: Fair", {}, self.text_tokenizer, self.options)[0],
+            3: tokenize_sequence("", " Score: Good", {}, self.text_tokenizer, self.options)[0],
+            4: tokenize_sequence("", " Score: Excellent", {}, self.text_tokenizer, self.options)[0],
+        }
+
+        # To avoid exceeding max len, cap answer and problem seq lens to half the remaining space
+        max_component_len = (options.max_seq_len - (
+            len(self.qs_prefix_seq) + len(self.scores_seq) + len(self.answer_prefix_seq) + len(self.cls_seq)
+        )) // 2
+
+        # Process answers
+        for sample in tqdm(samples):
+            answer_sequence, cur_missing_formulas = tokenize_sequence("", sample["answer"]["text"], sample["answer"]["formulas"], self.text_tokenizer, options)
+            self.num_missing_formulas += cur_missing_formulas
+            if len(answer_sequence) > max_component_len:
+                self.trimmed_sequences += 1
+                answer_sequence = split_sequence(answer_sequence, max_component_len)[0]
+            answer_sequence.meta = {
+                "problem_id": sample["problem_id"],
+                "problem_log_id": sample["problem_log_id"],
+                "label": sample["grade"],
+            }
+            self.data.append(answer_sequence)
+
+        # Process problems
+        for problem_id, problem in problems.items():
+            problem_sequence, cur_missing_formulas = tokenize_sequence("", problem["text"], problem["formulas"], self.text_tokenizer, options)
+            self.num_missing_formulas += cur_missing_formulas
+            if len(problem_sequence) > max_component_len:
+                self.trimmed_sequences += 1
+                problem_sequence = split_sequence(problem_sequence, max_component_len)[0]
+            self.problems[int(problem_id)] = problem_sequence
+
+        # Group examples by problem and grade (take own samples to be examples if none explicitly given)
+        examples = examples or self.data
+        for example in examples:
+            cur_problem_examples = self.example_bank.setdefault(example.meta["problem_id"], {grade: [] for grade in range(options.num_classes)})
+            cur_problem_examples[example.meta["label"]].append(example)
+
+        print("Missing", self.num_missing_formulas, "formulas")
+        print("Trimmed", self.trimmed_sequences, "long sequences")
+
+    def __getitem__(self, index: int):
+        # Get current sample and associated problem
+        sample = self.data[index]
+        problem_id = sample.meta["problem_id"]
+        problem_sequence = self.problems[problem_id]
+
+        # Gather one example from the current question for each possible grade, and then several others across grades
+        initial_examples: List[Sequence] = []
+        additional_examples: List[Sequence] = []
+        if problem_id in self.example_bank:
+            for grade in range(self.options.num_classes):
+                examples = [example for example in self.example_bank[problem_id][grade] if example.meta["problem_log_id"] != sample.meta["problem_log_id"]]
+                if examples:
+                    examples = random.sample(examples, min(len(examples), 5))
+                    initial_examples.append(examples[0])
+                    additional_examples.extend(examples[1:])
+        else:
+            print(problem_id, "not in bank")
+
+        # Shuffle the examples and add them until max_seq_len would be exceeded (keeping the group of one per grade first so no grade is left out)
+        random.shuffle(initial_examples)
+        random.shuffle(additional_examples)
+        example_sequences: List[Sequence] = []
+        base_len = len(self.qs_prefix_seq) + len(problem_sequence) + len(self.scores_seq) + len(self.answer_prefix_seq) + len(sample) + len(self.cls_seq)
+        for example in initial_examples + additional_examples:
+            example_seq = self.example_prefix_seq + example + self.grade_to_score_seq[example.meta["label"]]
+            if base_len + len(example_seq) > self.options.max_seq_len:
+                break
+            example_sequences.append(example_seq)
+            base_len += len(example_seq)
+
+        # Construct the final sequence (question, possible scores, examples, answer to be scored) and assign the grade label
+        sequence = self.qs_prefix_seq + problem_sequence + self.scores_seq
+        for example_seq in example_sequences:
+            sequence += example_seq
+        sequence += self.answer_prefix_seq + sample + self.cls_seq
+        sequence.meta = {"label": sample.meta["label"]}
+        return sequence
 
 class ClassifyTaskDataset(Dataset):
     def __init__(self, samples: List[ClassifyTaskSample], options: TrainOptions, max_seq_len: int):
         super().__init__()
-        num_missing_formulas = 0
-        trimmed_sequences = 0
         for sample in tqdm(samples):
             # Tokenize sequence and save the label
             text = sample["text"] + CLS_TOKEN
             sequence, cur_missing_formulas = tokenize_sequence("", text, sample["formulas"], self.text_tokenizer, options)
-            num_missing_formulas += cur_missing_formulas
-            sequence.label = sample["label"]
+            self.num_missing_formulas += cur_missing_formulas
+            sequence.meta = {"label": sample["label"]}
             # Trim the sequence if we go over the max length
             # TODO: this will remove the CLS token...
             if len(sequence) > max_seq_len:
-                trimmed_sequences += 1
-                sequence = sequence.split_at(max_seq_len)[0]
+                self.trimmed_sequences += 1
+                sequence = split_sequence(sequence, max_seq_len)[0]
             self.data.append(sequence)
-        print("Missing", num_missing_formulas, "formulas")
-        print("Trimmed", trimmed_sequences, "long sequences")
+        print("Missing", self.num_missing_formulas, "formulas")
+        print("Trimmed", self.trimmed_sequences, "long sequences")
 
 def get_data_loader(dataset: Dataset, task: Optional[DownstreamTask], batch_size: int, shuffle: bool, drop_last: bool, options: TrainOptions):
     return DataLoader(
@@ -284,11 +381,11 @@ class Collator:
             sequence_lengths.append(len(sequence))
             if self.task:
                 if is_cls_task(self.task):
-                    cls_labels.append(sequence.label)
+                    cls_labels.append(sequence.meta["label"])
                 else:
-                    prompt_lengths.append(sequence.label)
+                    prompt_lengths.append(sequence.meta["prompt_length"])
                     gen_label = torch.clone(token_ids)
-                    gen_label[:sequence.label] = PADDING_TOKEN_ID
+                    gen_label[:sequence.meta["prompt_length"]] = PADDING_TOKEN_ID
                     gen_label_batches.append(gen_label)
 
         return {
