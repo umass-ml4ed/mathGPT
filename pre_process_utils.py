@@ -26,6 +26,7 @@ def tree_to_serializable(sem_symbol: SemanticSymbol) -> OPT:
     """
     # Tag has form <type>!<symbol>
     sym_type, symbol = sem_symbol.tag[0], sem_symbol.tag[2:]
+    symbol = symbol.replace("normal-", "").replace("sans-serif-", "").replace("bold-", "").replace("italic-", "")
     Vocabulary.add(sym_type, symbol)
     return (
         sym_type,

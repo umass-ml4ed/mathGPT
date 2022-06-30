@@ -36,7 +36,6 @@ def get_tree(token_ids: torch.Tensor, token_types: torch.Tensor) -> DecodeTreeNo
 def tree_to_text(tree_node: DecodeTreeNode) -> str:
     symbol = Vocabulary.get_symbol(tree_node.token_type, tree_node.token_id)
     # TODO: organize these
-    symbol = symbol.replace("normal-", "")
     if symbol == "eq":
         symbol = "="
     if symbol == "minus":

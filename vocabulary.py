@@ -17,6 +17,8 @@ UNK_MAP = {
     TokenType.NUM: SpecialNumToken.UNK.value,
 }
 
+MATH_TYPES = [TokenType.OP, TokenType.VAR, TokenType.NUM]
+
 def get_matrix_symbol(symbol: str):
     """
     Create special symbol for matrix identifiers.
@@ -32,6 +34,8 @@ class Vocabulary:
     _vocab: Vocab = {}
     # Maps TokenType to token ID to symbol
     _vocab_inv: VocabInv = {}
+    # Maps TokenType to number of tokens in that type (at the time of loading)
+    _sizes: Dict[TokenType, int] = {}
     # If the vocab has been loaded for use
     _loaded: bool = False
 
@@ -47,7 +51,7 @@ class Vocabulary:
         symbol_dict[symbol] += 1
 
     @classmethod
-    def get_token(cls, str_type: str, symbol: str) -> Tuple[TokenType, int]:
+    def get_token(cls, str_type: str, symbol: str, assign_new: bool = False) -> Tuple[TokenType, int]:
         """
         Get the type and token id for the associated type and symbol strings
         """
@@ -58,7 +62,14 @@ class Vocabulary:
         # Get token from type mapping
         token_type = TYPE_STR_TO_INT[str_type]
         type_dict = cls._vocab[token_type]
-        symbol_token = type_dict.get(symbol, UNK_MAP[token_type])
+        symbol_token = type_dict.get(symbol)
+        if symbol_token is None:
+            if assign_new:
+                symbol_token = len(cls._vocab[token_type])
+                cls._vocab[token_type][symbol] = symbol_token
+                cls._vocab_inv[token_type][symbol_token] = symbol
+            else:
+                symbol_token = UNK_MAP[token_type]
         return token_type, symbol_token
 
     @classmethod
@@ -86,7 +97,7 @@ class Vocabulary:
         if not cls._loaded:
             cls.load()
 
-        return len(cls._vocab[token_type])
+        return cls._sizes[token_type]
 
     @classmethod
     def dump(cls):
@@ -147,4 +158,9 @@ class Vocabulary:
                 new_token_id = len(type_dict)
                 type_dict[symbol] = new_token_id
                 inv_type_dict[new_token_id] = symbol
+
+        # Save size of each type's vocab
+        for token_type in MATH_TYPES:
+            cls._sizes[token_type] = len(cls._vocab[token_type])
+
         cls._loaded = True

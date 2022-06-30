@@ -2,6 +2,8 @@
 
 Download TangentCFT to directory *above* this one https://github.com/BehroozMansouri/TangentCFT/tree/2b189dff67d6d3b15e323358921bdbca779bfcd9
 
+TODO: note changes made to TangentCFT for pre-processing
+
 Install LaTeXML https://math.nist.gov/~BMiller/LaTeXML/get.html
 
 Install nlg-eval https://github.com/Maluuba/nlg-eval

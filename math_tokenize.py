@@ -119,7 +119,7 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
 
         # Look up symbol's token type and ID from vocab if not already assigned by post-processing rules
         if token_type is None:
-            token_type, token_id = Vocabulary.get_token(type_str, symbol)
+            token_type, token_id = Vocabulary.get_token(type_str, symbol, assign_new=True)
 
     # Set position
     # TODO: to avoid max depth limit, try just concatting to list and then padding in batch

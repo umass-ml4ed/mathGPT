@@ -154,6 +154,7 @@ def analyze_data(formulas: Iterable[Tuple[str, OPT]]):
         if type_str not in ("E", "E_no_more", "+") and Vocabulary.get_token(type_str, token)[1] in (SpecialVarToken.UNK, SpecialNumToken.UNK, SpecialOpToken.UNK)
     )
     print("Num unique tokens converted to UNK:", num_unks)
+    print("Total num unique tokens:", len({token for token_to_freq in stats["type_to_token_to_freq"].values() for token in token_to_freq.keys()}))
 
     # For relevant types, plot n most frequent types against portion of nodes covered by those types
     for type_str in ["N", "T", "V", "-", "O", "F"]:

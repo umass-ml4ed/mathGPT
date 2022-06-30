@@ -1,11 +1,11 @@
 from typing import Dict, List, Optional
 import torch
-from torch import Tensor, nn
+from torch import nn
 import torch.nn.functional as F
 from transformers import GPT2Model, GPT2LMHeadModel
 from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions as GPTOutput
 
-from vocabulary import Vocabulary
+from vocabulary import Vocabulary, UNK_MAP, MATH_TYPES
 from math_tokenize import POS_ENCODING_SIZE_FORTE
 from data_types import CollatedBatch
 from constants import TokenType, TPE, EMB_SIZE, PADDING_TOKEN_ID, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH, TEXT_VOCAB_SIZE
@@ -28,6 +28,28 @@ ALLOWED_TRANSITIONS: Dict[TokenType, List[TokenType]] = {
     TokenType.END: [TokenType.VAR, TokenType.NUM, TokenType.OP, TokenType.END],
     # Note that terminal tokens can only generate END_FORMULA if they are the last in a formula, so these cases are handled manually
 }
+
+def apply_unks(token_ids: torch.Tensor, batch: CollatedBatch):
+    """
+    Convert values that exceed vocab size to UNK
+    """
+    new_token_ids = token_ids.clone()
+    for token_type in MATH_TYPES:
+        new_token_ids[(batch["token_types"] == token_type) & (new_token_ids >= Vocabulary.num_tokens_in_type(token_type))] = UNK_MAP[token_type]
+    return new_token_ids
+
+def get_target_tokens(batch: CollatedBatch, labels: Optional[torch.Tensor]):
+    """
+    Get target tokens for generative task
+    """
+    # Get appropriate targets
+    if batch["gen_labels"] is not None:
+        target_tokens = batch["gen_labels"]
+    elif labels is not None:
+        target_tokens = labels
+    else:
+        target_tokens = batch["token_ids"]
+    return apply_unks(target_tokens, batch)
 
 class MathGPTBase(nn.Module):
     def __init__(self, options: TrainOptions):
@@ -91,9 +113,10 @@ class MathGPTBase(nn.Module):
             input_embeddings = torch.zeros((batch_size, max_seq_len, EMB_SIZE)).to(device)
 
         # Add token embeddings for each type
+        token_ids = apply_unks(batch["token_ids"], batch)
         for token_type in TokenType:
-            type_idxs = (batch["token_types"] == token_type) & (batch["token_ids"] != PADDING_TOKEN_ID)
-            input_embeddings[type_idxs] += self.token_embeddings[str(token_type.value)](batch["token_ids"][type_idxs])
+            type_idxs = (batch["token_types"] == token_type) & (token_ids != PADDING_TOKEN_ID)
+            input_embeddings[type_idxs] += self.token_embeddings[str(token_type.value)](token_ids[type_idxs])
 
         # Add math position encodings
         math_idxs = ~((batch["token_types"] == TokenType.TEXT) | (batch["token_types"] == TokenType.START_FORMULA) | (batch["token_types"] == TokenType.END_FORMULA))
@@ -124,8 +147,7 @@ class MathGPTLM(MathGPTBase):
             # Predictive token layers for generation
             self.type_to_token_pred_layer = nn.ModuleDict({
                 str(token_type.value): nn.Linear(EMB_SIZE, Vocabulary.num_tokens_in_type(token_type))
-                for token_type in TokenType
-                if token_type not in (TokenType.TEXT, TokenType.START_FORMULA, TokenType.END_FORMULA, TokenType.END)
+                for token_type in MATH_TYPES
             })
             # Use pre-trained predictive head for text tokens
             self.type_to_token_pred_layer[str(TokenType.TEXT.value)] = self.gpt2_lm.lm_head
@@ -219,22 +241,17 @@ class MathGPTLM(MathGPTBase):
         return type_to_token_probs
 
     def get_prediction_loss(self, type_to_token_probs: Dict[TokenType, torch.Tensor], type_idxs: Dict[TokenType, torch.Tensor],
-                            batch: CollatedBatch, labels: Optional[torch.Tensor]):
+                            batch: CollatedBatch, target_tokens: torch.Tensor):
         """
         Calculate the cross-entropy prediction loss given the token probabilities
         """
-        losses: List[torch.Tensor] = []
-        if batch["gen_labels"] is not None:
-            shifted_target_tokens = batch["gen_labels"][:, 1:]
-        elif labels is not None:
-            shifted_target_tokens = labels[:, 1:]
-        else:
-            shifted_target_tokens = batch["token_ids"][:, 1:]
-        if shifted_target_tokens.shape[1] == 0 or torch.all(shifted_target_tokens == PADDING_TOKEN_ID):
+        if target_tokens.shape[1] == 1 or torch.all(target_tokens == PADDING_TOKEN_ID):
             # If the sequence has a length of 1, there are no targets to predict, so return a loss of 0
             # If we have a full padding region (this is the case when generating from a prompt) then no loss can be computed
             return torch.tensor(0.0).to(device)
 
+        losses: List[torch.Tensor] = []
+        shifted_target_tokens = target_tokens[:, 1:]
         for token_type in TokenType:
             # Get indices that have a target of this type
             shifted_target_idx = type_idxs[token_type][:, 1:]
@@ -288,14 +305,7 @@ class MathGPTLM(MathGPTBase):
             start_idx += self.type_to_size[token_type]
         return type_to_token_probs
 
-    def get_prediction_loss_from_activations(self, token_activations: torch.Tensor, batch: CollatedBatch, labels: Optional[torch.Tensor]):
-        # Grab the appropriate target tensor
-        if batch["gen_labels"] is not None:
-            target_tokens = batch["gen_labels"]
-        elif labels is not None:
-            target_tokens = labels
-        else:
-            target_tokens = batch["token_ids"]
+    def get_prediction_loss_from_activations(self, token_activations: torch.Tensor, batch: CollatedBatch, target_tokens: torch.Tensor):
         padding_idx = target_tokens == PADDING_TOKEN_ID
         if target_tokens.shape[1] == 1 or torch.all(padding_idx):
             # If the sequence has a length of 1, there are no targets to predict, so return a loss of 0
@@ -334,13 +344,13 @@ class MathGPTLM(MathGPTBase):
             type_to_token_probs = self.get_token_probs(gpt_output, type_probs)
 
             # Calculate cross-entropy loss
-            loss = self.get_prediction_loss(type_to_token_probs, type_idxs, batch, labels)
+            loss = self.get_prediction_loss(type_to_token_probs, type_idxs, batch, get_target_tokens(batch, labels))
         else:
             # Get activations for all text and math tokens
             token_activations = self.get_token_activations(gpt_output, type_mask)
 
             # Calculate cross-entropy loss
-            loss = self.get_prediction_loss_from_activations(token_activations, batch, labels)
+            loss = self.get_prediction_loss_from_activations(token_activations, batch, get_target_tokens(batch, labels))
 
             # Get token probabilities from the activations
             if self.training: # Don't do this in training mode as it will use up excess GPU memory
