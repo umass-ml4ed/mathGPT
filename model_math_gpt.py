@@ -296,7 +296,8 @@ class MathGPTLM(MathGPTBase):
             target_tokens = labels
         else:
             target_tokens = batch["token_ids"]
-        if target_tokens.shape[1] == 1 or torch.all(target_tokens == PADDING_TOKEN_ID):
+        padding_idx = target_tokens == PADDING_TOKEN_ID
+        if target_tokens.shape[1] == 1 or torch.all(padding_idx):
             # If the sequence has a length of 1, there are no targets to predict, so return a loss of 0
             # If we have a full padding region (this is the case when generating from a prompt) then no loss can be computed
             return torch.tensor(0.0).to(device)
@@ -307,7 +308,7 @@ class MathGPTLM(MathGPTBase):
         for token_type in TokenType:
             if token_type == TokenType.TEXT:
                 continue
-            target_tokens[batch["token_types"] == token_type] += start_idx
+            target_tokens[(batch["token_types"] == token_type) & ~padding_idx] += start_idx
             start_idx += self.type_to_size[token_type]
         shifted_target_tokens = target_tokens[:, 1:]
         # Loss function implicitly applies softmax, log, and mean, and ignores padding regions
@@ -342,7 +343,10 @@ class MathGPTLM(MathGPTBase):
             loss = self.get_prediction_loss_from_activations(token_activations, batch, labels)
 
             # Get token probabilities from the activations
-            type_to_token_probs = self.get_token_probs_from_activations(token_activations)
+            if self.training: # Don't do this in training mode as it will use up excess GPU memory
+                type_to_token_probs = None
+            else:
+                type_to_token_probs = self.get_token_probs_from_activations(token_activations)
 
         return loss, type_to_token_probs
 

@@ -132,7 +132,9 @@ def process_probes():
         json.dump(processed_probes, processed_prompt_file, indent=2, ensure_ascii=False)
 
 def process_answer_scoring_data():
-    df = pandas.read_csv("../qc_full_meta_clean.csv", encoding="utf-8")
+    # df = pandas.read_csv("../qc_full_meta_clean.csv", encoding="utf-8")
+    df = pandas.read_csv("../qc_clean.csv", encoding="utf-8")
+    # df = pandas.read_csv("../before_rasch.csv", encoding="utf-8")
 
     # Do some initial analysis on the dataset
     esc_pat = re.compile(r"&[a-z]*;")
@@ -151,6 +153,8 @@ def process_answer_scoring_data():
     print("Grade Range:", df["grade"].min(), "-", df["grade"].max())
     print("Num problems:", df["problem_id"].unique().size)
     print("Num problem logs:", df["problem_log_id"].unique().size)
+    print("Num to keep:", sum(df["keep"]))
+    print("Total size:", df.shape[0])
 
     # Convert problem and answer html to latex, which includes identifying and wrapping formulas
     print("Coverting problem HTML...")

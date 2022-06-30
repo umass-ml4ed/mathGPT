@@ -5,7 +5,7 @@ import torch.multiprocessing as mp
 from pre_process import process_wikipedia_data, process_probes, process_mathsum_data, process_answer_scoring_data
 from analyze_data import analyze_wiki, analyze_mathsum
 from training import pretrain, evaluate_pretrained_lm, test_lm, train_downstream_task, evaluate_downstream_task, test_gen_task
-from utils import TrainOptions, initialize_seeds, device, enum_choices, enum_value_to_member, setup_proc_group, cleanup_proc_group
+from utils import initialize_seeds, device, enum_choices, enum_value_to_member, setup_proc_group, cleanup_proc_group
 from constants import DownstreamTask, TPE, Gen
 
 def bool_type(arg):
@@ -38,7 +38,8 @@ def main():
     parser.add_argument("--test_downstream", help="See downstream model output on test samples", choices=enum_choices(DownstreamTask))
     # Config
     parser.add_argument("--name", help="Name of current model/experiment, used for saving/loading model and config")
-    parser.add_argument("--pretrained_name", help="Name of pre-trained LM for initializing model parameters")
+    parser.add_argument("--checkpoint_name", help="Name of model to resume training for")
+    parser.add_argument("--pretrained_name", help="Name of pre-trained LM for initializing downstream model parameters")
     parser.add_argument("--lr", type=float, help="Learning rate")
     parser.add_argument("--epochs", type=int, help="Maximum number of training epochs")
     parser.add_argument("--batch_size", type=int, help="Maximum number of sequences per batch")
@@ -88,13 +89,13 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
     if args.analyze_mathsum:
         analyze_mathsum()
     if args.pretrain:
-        pretrain(args.name, args.pretrained_name, arg_dict)
+        pretrain(args.name, args.checkpoint_name, arg_dict)
     if args.evaluate_lm:
         evaluate_pretrained_lm(args.name, arg_dict)
     if args.test_lm:
         test_lm(args.name, args.test_lm, arg_dict)
     if args.train_downstream:
-        train_downstream_task(args.name, args.pretrained_name, enum_value_to_member(args.train_downstream, DownstreamTask), TrainOptions(arg_dict))
+        train_downstream_task(args.name, args.checkpoint_name, args.pretrained_name, enum_value_to_member(args.train_downstream, DownstreamTask), arg_dict)
     if args.evaluate_downstream:
         evaluate_downstream_task(args.name, enum_value_to_member(args.evaluate_downstream, DownstreamTask), arg_dict)
     if args.test_downstream:

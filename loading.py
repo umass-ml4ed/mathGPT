@@ -270,8 +270,6 @@ class AnswerScoringDataset(Dataset):
                     examples = random.sample(examples, min(len(examples), 5))
                     initial_examples.append(examples[0])
                     additional_examples.extend(examples[1:])
-        else:
-            print(problem_id, "not in bank")
 
         # Shuffle the examples and add them until max_seq_len would be exceeded (keeping the group of one per grade first so no grade is left out)
         random.shuffle(initial_examples)

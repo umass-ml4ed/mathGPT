@@ -72,6 +72,7 @@ def load_model(model_name: str, ddp: bool, task: Optional[DownstreamTask] = None
         checkpoint = None
     else:
         model.load_state_dict(checkpoint["model_state_dict"])
+        del checkpoint["model_state_dict"] # Free up memory
     if ddp:
         model = DDP(model, device_ids=[torch.cuda.current_device()], find_unused_parameters=True)
     return model, checkpoint, options
@@ -135,7 +136,6 @@ def train(model: Union[MathGPTBase, DDP], model_name: str, train_loader: DataLoa
                     optimizer.step()
                 optimizer.zero_grad()
 
-        model.eval() # Set model to evaluation mode
         avg_train_loss = train_loss / num_batches
         val_loss, results = evaluate_model(model, validation_dataset, task, options)
         if run:
@@ -174,9 +174,9 @@ def train(model: Union[MathGPTBase, DDP], model_name: str, train_loader: DataLoa
 
     return best_stats
 
-def pretrain(model_name: str, pretrained_name: str, options_dict: dict):
-    if pretrained_name:
-        model, checkpoint, options = load_model(pretrained_name, options_dict.get("ddp", False))
+def pretrain(model_name: str, checkpoint_name: Optional[str], options_dict: dict):
+    if checkpoint_name:
+        model, checkpoint, options = load_model(checkpoint_name, options_dict.get("ddp", False))
         options.update(options_dict)
     else:
         checkpoint = None
@@ -254,34 +254,47 @@ def test_lm(model_name: str, test_article: str, test_options: dict):
                 print("Prediction:", pred_text)
                 print("")
 
-def train_downstream_task(model_name: str, pretrained_name: Optional[str], task: DownstreamTask, options: TrainOptions):
+def train_downstream_task(model_name: str, checkpoint_name: Optional[str], pretrained_name: Optional[str], task: DownstreamTask, options_dict: dict):
+    # Create/load model and config
+    if checkpoint_name:
+        model, checkpoint, options = load_model(checkpoint_name, options_dict.get("ddp", False), task)
+        options.update(options_dict)
+    else:
+        checkpoint = None
+        options = TrainOptions(options_dict)
+        if is_cls_task(task):
+            options.num_classes = DOWNSTREAM_TASK_TO_NUM_CLASSES.get(task)
+            if options.baseline:
+                model = GPTClassifierBaseline(options).to(device)
+            else:
+                model = MathGPTClassifier(options).to(device)
+        else:
+            if options.baseline:
+                model = GPTLMBaseline().to(device)
+            else:
+                model = MathGPTLM(options).to(device)
+        if pretrained_name:
+            print("Loading pre-trained model...")
+            checkpoint: Checkpoint = torch.load(f"{pretrained_name}.pt", map_location=device)
+            model.load_pretrained(checkpoint["model_state_dict"] if "model_state_dict" in checkpoint else checkpoint)
+            checkpoint = None
+        if options.ddp:
+            model = DDP(model, device_ids=[torch.cuda.current_device()], find_unused_parameters=True)
+
+    # Load and process data
     if is_cls_task(task):
-        options.num_classes = DOWNSTREAM_TASK_TO_NUM_CLASSES.get(task)
         problems, train_samples, val_samples, _ = get_answer_scoring_data()
         train_data = AnswerScoringDataset(train_samples, problems, options)
         val_data = AnswerScoringDataset(val_samples, problems, options, train_data.data)
-        if options.baseline:
-            model = GPTClassifierBaseline(options).to(device)
-        else:
-            model = MathGPTClassifier(options).to(device)
     else:
-        train_headlines = get_headline_data("train", options)
-        val_headlines = get_headline_data("val", options)
-        train_data = GenTaskDataset(train_headlines, options, options.max_seq_len)
-        val_data = GenTaskDataset(val_headlines, options, options.max_seq_len)
-        if options.baseline:
-            model = GPTLMBaseline().to(device)
-        else:
-            model = MathGPTLM(options).to(device)
-    if pretrained_name:
-        checkpoint: Checkpoint = torch.load(f"{pretrained_name}.pt", map_location=device)
-        model.load_pretrained(checkpoint["model_state_dict"] if "model_state_dict" in checkpoint else checkpoint)
-    if options.ddp:
-        model = DDP(model, device_ids=[torch.cuda.current_device()], find_unused_parameters=True)
+        train_data = GenTaskDataset(get_headline_data("train", options), options, options.max_seq_len)
+        val_data = GenTaskDataset(get_headline_data("val", options), options, options.max_seq_len)
     train_loader = get_data_loader(train_data, task, options.batch_size, True, True, options)
+
+    # Start training
     main_proc = not options.ddp or torch.cuda.current_device() == 0
     run = new_neptune_run() if main_proc else None
-    train(model, model_name, train_loader, val_data, options, run, task)
+    train(model, model_name, train_loader, val_data, options, run, task, checkpoint=checkpoint)
     results = evaluate_downstream_task(model_name, task, options.as_dict())
     if run:
         run["results"] = results

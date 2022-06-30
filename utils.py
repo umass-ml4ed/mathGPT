@@ -21,10 +21,11 @@ def initialize_seeds(seed_num: int):
         torch.cuda.manual_seed_all(seed_num)
 
 def new_neptune_run():
-    return neptune.init(
-        project="ajscarlatos/MGPT",
-        api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiIwNDhjNTZiYS04YTU2LTQ2MTQtOWMxNy1jOTliYTZlNTJlYmEifQ==",
-    )
+    # return neptune.init(
+    #     project="ajscarlatos/MGPT",
+    #     api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiIwNDhjNTZiYS04YTU2LTQ2MTQtOWMxNy1jOTliYTZlNTJlYmEifQ==",
+    # )
+    return None
 
 def setup_proc_group(rank: int, world_size: int):
     global device

@@ -20,6 +20,7 @@ def evaluate_lm(model: MathGPTLM, dataset: Dataset, options: TrainOptions):
     Calculate perplexity: e ^ ((1/n) * nll)
     Algorithm from https://huggingface.co/docs/transformers/perplexity
     """
+    model.eval()
     # Only 1 sequence can be processed at a time to recover NLL from the cross-entropy loss (because of padding complications)
     data_loader = get_data_loader(dataset, None, 1, False, False, options)
     total_loss = 0.0
@@ -70,7 +71,6 @@ def process_model_output(model: MathGPTBase, dataset: Dataset, task: Optional[Do
     data_loader = get_data_loader(dataset, task, options.batch_size, False, False, options)
     total_loss = 0.0
     num_batches = 0
-    model.eval()
     with torch.no_grad():
         for batch in tqdm(data_loader):
             model_output = model(batch)
@@ -83,6 +83,7 @@ def evaluate_lm_accuracy(model: MathGPTLM, dataset: Dataset, task: Optional[Down
     """
     Calculate per-token prediction accuracy
     """
+    model.eval()
     all_predictions = []
     all_labels = []
     def accumulate_predictions(model_output, batch: CollatedBatch):
@@ -120,6 +121,7 @@ def evaluate_lm_accuracy(model: MathGPTLM, dataset: Dataset, task: Optional[Down
     return loss, f"Accuracy: {accuracy:.3f}"
 
 def evaluate_gen_task(model: MathGPTLM, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
+    model.eval()
     # Only process one sequence at a time since prompts may have different lengths
     data_loader = get_data_loader(dataset, task, 1, False, False, options)
     all_labels: List[CollatedBatch] = []
@@ -158,6 +160,7 @@ def evaluate_gen_task(model: MathGPTLM, dataset: Dataset, task: DownstreamTask, 
     return 0, f"Exact Match Accuracy: {accuracy:.3f}, BLEU-4: {metrics['Bleu_4']:.3f}, ROUGE-L: {metrics['ROUGE_L']:.3f}, METEOR: {metrics['METEOR']:.3f}"
 
 def evaluate_cls_task(model: MathGPTClassifier, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
+    model.eval()
     all_predictions = []
     all_labels = []
     def accumulate_predictions(model_output, batch: CollatedBatch):
