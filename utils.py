@@ -67,13 +67,14 @@ class TrainOptions:
         self.beam_width: int = options.get("beam_width", 3)
         self.stride: Optional[int] = options.get("stride", None)
         self.ddp: bool = options.get("ddp", False)
-        # Model config
+        # Model/data config
         self.baseline: bool = options.get("baseline", False)
         self.post_proc: bool = options.get("post_proc", False)
         self.joint: bool = options.get("joint", True)
         self.use_type_embs: bool = options.get("use_type_embs", True)
         self.tpe: str = options.get("tpe", TPE.FORTE.value)
         self.num_classes: Optional[int] = options.get("num_classes", None)
+        self.num_to_tree: bool = options.get("num_to_tree", False)
 
     def as_dict(self):
         self_dict = self.__dict__

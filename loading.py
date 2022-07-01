@@ -70,7 +70,7 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_t
             continue
 
         # Tokenize the formula
-        formula_sequence = tokenize_formula(formulas[str(text_chunk_idx)]["opt"], options.tpe)
+        formula_sequence = tokenize_formula(formulas[str(text_chunk_idx)]["opt"], options)
 
         if decode_formulas:
             # Decode formula back into text, with start and stop latex tokens, and add to the sequence

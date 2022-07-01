@@ -5,7 +5,7 @@ import torch
 from transformers import GPT2TokenizerFast
 
 from data_types import CollatedBatch
-from constants import TokenType, EOS_TOKEN_ID, PADDING_TOKEN_ID
+from constants import TokenType, SpecialOpToken, EOS_TOKEN_ID, PADDING_TOKEN_ID
 from vocabulary import Vocabulary
 
 @dataclass
@@ -60,9 +60,10 @@ def tree_to_text(tree_node: DecodeTreeNode) -> str:
     if not tree_node.children:
         return symbol
 
-    # TODO: deal with SpecialOpToken.CERR_OP
+    if symbol in (str(SpecialOpToken.CERR_OP), str(SpecialOpToken.NUM_SUB_TREE_HEAD)):
+        return "".join(tree_to_text(child) for child in tree_node.children[1:])
 
-    if symbol == "SpecialOpToken.ANON_OP": # TODO: better check for this
+    if symbol == str(SpecialOpToken.ANON_OP):
         left = tree_to_text(tree_node.children[0])
         return left + " { " + "".join(tree_to_text(child) for child in tree_node.children[1:]) + " } "
 

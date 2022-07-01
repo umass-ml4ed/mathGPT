@@ -6,6 +6,7 @@ import numpy as np
 
 from vocabulary import Vocabulary, get_matrix_symbol
 from data_types import OPT, Sequence
+from utils import TrainOptions
 from constants import TokenType, SpecialOpToken, SpecialVarToken, TPE, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH, EMB_SIZE
 
 EMPTY_POS_VECTOR = [0] * MAX_FORMULA_DEPTH
@@ -76,7 +77,7 @@ def encode_pos(pos_vec: Union[List[int], torch.Tensor], pos_level: int, tpe: str
     if tpe == TPE.SIN_ADD.value:
         return encode_pos_sin_add(pos_vec, pos_level)
 
-def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_level: int, cur_child_num: int, tpe: str,
+def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_level: int, cur_child_num: int, options: TrainOptions,
                          sequence: Sequence) -> bool:
     """
     Recursive helper for OPT tokenization, add info for current head and then process children.
@@ -85,7 +86,7 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
     Returns if the provided node got added to the running list (was not skipped).
     """
 
-    drop_first_child = False
+    children = formula and formula[2]
 
     # First resolve token type and ID - check for end token, then try post-processing rules, then retrieve from vocab
     token_type = None
@@ -95,18 +96,25 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
         # Resolve type and token id from symbol, post-processing rules follow
         type_str, symbol = formula[:2]
 
-        if type_str == "+":
+        # TODO: should single-character numbers still have the OP head?
+        if options.num_to_tree and type_str == "N" and len(symbol) > 1:
+            # Convert numbers to sub-trees:
+            # Insert a special num op token and set its children to the digits of the number
+            token_type, token_id = TokenType.OP, SpecialOpToken.NUM_SUB_TREE_HEAD.value
+            children = [["N", char, None] for char in symbol][:MAX_FORMULA_WIDTH - 1]
+
+        elif type_str == "+":
             # Convert all "+" symbols to anonymous operator.
             # TangentCFT will assign the left grandchild, with a sub-type, as the symbol.
             # We'll assume the model doesn't need this hint and can discover the relation via attention.
             token_type, token_id = TokenType.OP, SpecialOpToken.ANON_OP.value
 
         elif type_str == "E":
-            if formula[2]:
+            if children:
                 # An "E" type with children indicates a cerror tag from the MathML source, which represents a semantic error.
                 # Its first child is an identifier for the type of error.
-                # Remove this identifier, and convert the E tag to special operator and keep its children.
-                drop_first_child = True
+                # Remove this identifier, convert the E tag to special operator, and keep its remaining children.
+                children = children[1:]
                 token_type, token_id = TokenType.OP, SpecialOpToken.CERR_OP.value
             else:
                 # An "E" type with no children indicates a padding value inserted by TangentCFT to make matrices rectangular.
@@ -136,22 +144,21 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
 
     # Process children
     child_idx = 0
-    if formula and formula[2]:
-        children = formula[2][1:] if drop_first_child else formula[2]
+    if children:
         for child in children:
-            if tokenize_formula_rec(child, pos_vec, cur_level + 1, child_idx, tpe, sequence):
+            if tokenize_formula_rec(child, pos_vec, cur_level + 1, child_idx, options, sequence):
                 child_idx += 1
 
     # Append END token as last child for all OP tokens
     if token_type == TokenType.OP:
-        tokenize_formula_rec(None, pos_vec, cur_level + 1, child_idx, tpe, sequence)
+        tokenize_formula_rec(None, pos_vec, cur_level + 1, child_idx, options, sequence)
 
     return True
 
-def tokenize_formula(formula: OPT, tpe: str):
+def tokenize_formula(formula: OPT, options: TrainOptions):
     """
     Given a formula OPT, return in DFS order the token ids, types, and position encodings
     """
     sequence = Sequence("")
-    tokenize_formula_rec(formula, EMPTY_POS_VECTOR, 0, 0, tpe, sequence)
+    tokenize_formula_rec(formula, EMPTY_POS_VECTOR, 0, 0, options, sequence)
     return sequence

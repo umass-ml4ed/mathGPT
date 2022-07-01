@@ -15,6 +15,7 @@ class SpecialOpToken(IntEnum):
     UNK = 0
     ANON_OP = 1
     CERR_OP = 2
+    NUM_SUB_TREE_HEAD = 3
 
 class SpecialVarToken(IntEnum):
     UNK = 0

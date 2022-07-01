@@ -19,6 +19,8 @@ UNK_MAP = {
 
 MATH_TYPES = [TokenType.OP, TokenType.VAR, TokenType.NUM]
 
+NUM_SYMBOLS = [str(digit) for digit in range(10)] + ["."]
+
 def get_matrix_symbol(symbol: str):
     """
     Create special symbol for matrix identifiers.
@@ -36,8 +38,14 @@ class Vocabulary:
     _vocab_inv: VocabInv = {}
     # Maps TokenType to number of tokens in that type (at the time of loading)
     _sizes: Dict[TokenType, int] = {}
+    # If number tokens should be expanded into subtrees
+    _num_to_tree: bool = False
     # If the vocab has been loaded for use
     _loaded: bool = False
+
+    @classmethod
+    def set_num_to_tree(cls, num_to_tree: bool):
+        cls._num_to_tree = num_to_tree
 
     @classmethod
     def add(cls, str_type: str, symbol: str):
@@ -114,12 +122,12 @@ class Vocabulary:
         """
         # Initially fill vocab with special tokens - even if not looked up directly, need to assign token IDs from base vocab above special token IDs
         cls._vocab = {
-            TokenType.OP: {str(token): token.value for token in SpecialOpToken},
+            TokenType.OP: {str(token): token.value for token in SpecialOpToken if cls._num_to_tree or token != SpecialOpToken.NUM_SUB_TREE_HEAD},
             TokenType.VAR: {str(token): token.value for token in SpecialVarToken},
             TokenType.NUM: {str(token): token.value for token in SpecialNumToken},
         }
         cls._vocab_inv = {
-            TokenType.OP: {token.value: str(token) for token in SpecialOpToken},
+            TokenType.OP: {token.value: str(token) for token in SpecialOpToken if cls._num_to_tree or token != SpecialOpToken.NUM_SUB_TREE_HEAD},
             TokenType.VAR: {token.value: str(token) for token in SpecialVarToken},
             TokenType.NUM: {token.value: str(token) for token in SpecialNumToken},
         }
@@ -140,6 +148,10 @@ class Vocabulary:
             type_dict = cls._vocab.setdefault(token_type, {})
             inv_type_dict = cls._vocab_inv.setdefault(token_type, {})
 
+            # If expanding numbers to trees, no need to save individual numbers in the vocab
+            if token_type == TokenType.NUM and cls._num_to_tree:
+                continue
+
             # For specified types, only keep most frequent symbols
             if str_type in TYPE_STR_TO_MAX_NUM_TOKENS:
                 most_freq_symbols = sorted(symbols.items(), key=lambda symbol: symbol[1], reverse=True)
@@ -158,6 +170,13 @@ class Vocabulary:
                 new_token_id = len(type_dict)
                 type_dict[symbol] = new_token_id
                 inv_type_dict[new_token_id] = symbol
+
+        # If expanding numbers to trees, just assign token IDs for each digit and the period character
+        if cls._num_to_tree:
+            for num_symb in NUM_SYMBOLS:
+                token_id = len(cls._vocab[TokenType.NUM])
+                cls._vocab[TokenType.NUM][num_symb] = token_id
+                cls._vocab_inv[TokenType.NUM][token_id] = num_symb
 
         # Save size of each type's vocab
         for token_type in MATH_TYPES:

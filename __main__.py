@@ -6,6 +6,7 @@ from pre_process import process_wikipedia_data, process_probes, process_mathsum_
 from analyze_data import analyze_wiki, analyze_mathsum
 from training import pretrain, evaluate_pretrained_lm, test_lm, train_downstream_task, evaluate_downstream_task, test_gen_task
 from utils import initialize_seeds, device, enum_choices, enum_value_to_member, setup_proc_group, cleanup_proc_group
+from vocabulary import Vocabulary
 from constants import DownstreamTask, TPE, Gen
 
 def bool_type(arg):
@@ -56,6 +57,7 @@ def main():
     parser.add_argument("--use_type_embs", type=bool_type, help="Add type-specific embeddings to input token embeddings")
     parser.add_argument("--tpe", help="Scheme to use for tree position encodings", choices=enum_choices(TPE))
     parser.add_argument("--ddp", type=bool_type, help="Use DistributedDataParallel")
+    parser.add_argument("--num_to_tree", type=bool_type, help="Convert numeric symbols into sub-trees")
 
     args = parser.parse_args()
 
@@ -75,6 +77,10 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
         setup_proc_group(rank, world_size)
 
     arg_dict = {arg: val for arg, val in vars(args).items() if val is not None}
+
+    # Set this asap since it needs to be known before the vocab is loaded
+    if "num_to_tree" in arg_dict:
+        Vocabulary.set_num_to_tree(arg_dict["num_to_tree"])
 
     if args.preprocess_wiki:
         process_wikipedia_data()

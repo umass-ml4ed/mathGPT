@@ -241,7 +241,7 @@ class MathGPTLM(MathGPTBase):
         return type_to_token_probs
 
     def get_prediction_loss(self, type_to_token_probs: Dict[TokenType, torch.Tensor], type_idxs: Dict[TokenType, torch.Tensor],
-                            batch: CollatedBatch, target_tokens: torch.Tensor):
+                            target_tokens: torch.Tensor):
         """
         Calculate the cross-entropy prediction loss given the token probabilities
         """
@@ -268,11 +268,6 @@ class MathGPTLM(MathGPTBase):
             log_probs = torch.log(selected_probs)
             loss_fn = nn.NLLLoss(reduction="none")
             loss: torch.Tensor = loss_fn(log_probs, shifted_target_tokens[shifted_target_idx])
-            if any(torch.isinf(l) for l in loss):
-                print("inf loss!")
-                with open("debug.txt", "a") as debug_file:
-                    debug_file.write(f"{batch}\n\n{token_type}\n\n{loss.isinf().nonzero()}\n\n{selected_probs}\n\n{type_to_token_probs}\n\n{type_idxs}\n\n")
-                loss = loss[~loss.isinf()]
             losses.append(loss)
         return torch.concat(losses, dim=0).mean()
 
@@ -305,7 +300,8 @@ class MathGPTLM(MathGPTBase):
             start_idx += self.type_to_size[token_type]
         return type_to_token_probs
 
-    def get_prediction_loss_from_activations(self, token_activations: torch.Tensor, batch: CollatedBatch, target_tokens: torch.Tensor):
+    def get_prediction_loss_from_activations(self, token_activations: torch.Tensor, type_idxs: Dict[TokenType, torch.Tensor],
+                                             target_tokens: torch.Tensor):
         padding_idx = target_tokens == PADDING_TOKEN_ID
         if target_tokens.shape[1] == 1 or torch.all(padding_idx):
             # If the sequence has a length of 1, there are no targets to predict, so return a loss of 0
@@ -318,7 +314,7 @@ class MathGPTLM(MathGPTBase):
         for token_type in TokenType:
             if token_type == TokenType.TEXT:
                 continue
-            target_tokens[(batch["token_types"] == token_type) & ~padding_idx] += start_idx
+            target_tokens[type_idxs[token_type] & ~padding_idx] += start_idx
             start_idx += self.type_to_size[token_type]
         shifted_target_tokens = target_tokens[:, 1:]
         # Loss function implicitly applies softmax, log, and mean, and ignores padding regions
@@ -344,13 +340,13 @@ class MathGPTLM(MathGPTBase):
             type_to_token_probs = self.get_token_probs(gpt_output, type_probs)
 
             # Calculate cross-entropy loss
-            loss = self.get_prediction_loss(type_to_token_probs, type_idxs, batch, get_target_tokens(batch, labels))
+            loss = self.get_prediction_loss(type_to_token_probs, type_idxs, get_target_tokens(batch, labels))
         else:
             # Get activations for all text and math tokens
             token_activations = self.get_token_activations(gpt_output, type_mask)
 
             # Calculate cross-entropy loss
-            loss = self.get_prediction_loss_from_activations(token_activations, batch, get_target_tokens(batch, labels))
+            loss = self.get_prediction_loss_from_activations(token_activations, type_idxs, get_target_tokens(batch, labels))
 
             # Get token probabilities from the activations
             if self.training: # Don't do this in training mode as it will use up excess GPU memory
