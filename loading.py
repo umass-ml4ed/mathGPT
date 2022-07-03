@@ -9,7 +9,7 @@ from transformers import GPT2TokenizerFast
 from math_tokenize import tokenize_formula, EMPTY_POS_VECTOR, get_empty_pos_encoding, encode_pos
 from decode import decode_formula
 from data_types import Article, GenTaskSample, AnswerScoringSample, ClassifyTaskSample, Formula, Sequence, CollatedBatch
-from constants import TokenType, DownstreamTask, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, CLS_TOKEN, FORMULA_IDENTIFIER, DOLLAR_TOK
+from constants import TokenType, DownstreamTask, TPE, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, CLS_TOKEN, FORMULA_IDENTIFIER, DOLLAR_TOK
 from utils import device, is_cls_task, TrainOptions
 
 def split_sequence(sequence: Sequence, max_seq_len: int) -> List[Sequence]:
@@ -337,7 +337,7 @@ def trim_batch(batch: CollatedBatch, trim_start: int, trim_end: int) -> Collated
         "token_types": batch["token_types"][:, trim_start : trim_end],
         "pos_vecs": batch["pos_vecs"][:, trim_start : trim_end],
         "pos_levels": batch["pos_levels"][:, trim_start : trim_end],
-        "pos_encodings": batch["pos_encodings"][:, trim_start : trim_end],
+        "pos_encodings": batch["pos_encodings"][:, trim_start : trim_end] if batch["pos_encodings"] is not None else None,
         "attention_mask": batch["attention_mask"][:, trim_start : trim_end],
         "sequence_lengths": torch.tensor([min(trim_end - trim_start, max(seq_len - trim_start, 0)) for seq_len in batch["sequence_lengths"]]),
         "prompt_lengths": batch["prompt_lengths"],
@@ -368,13 +368,14 @@ class Collator:
             token_type_batches.append(torch.LongTensor(sequence.token_types))
             pos_vec_batches.append(torch.LongTensor(sequence.pos_vecs))
             pos_level_batches.append(torch.LongTensor(sequence.pos_levels))
-            pos_encodings = [
-                encode_pos(pos_vec, pos_level, self.tpe)
-                    if token_type not in (TokenType.TEXT, TokenType.START_FORMULA, TokenType.END_FORMULA)
-                    else get_empty_pos_encoding(self.tpe)
-                for token_type, pos_vec, pos_level in zip(sequence.token_types, sequence.pos_vecs, sequence.pos_levels)
-            ]
-            pos_encoding_batches.append(torch.FloatTensor(pos_encodings))
+            if self.tpe != TPE.NONE.value:
+                pos_encodings = [
+                    encode_pos(pos_vec, pos_level, self.tpe)
+                        if token_type not in (TokenType.TEXT, TokenType.START_FORMULA, TokenType.END_FORMULA)
+                        else get_empty_pos_encoding(self.tpe)
+                    for token_type, pos_vec, pos_level in zip(sequence.token_types, sequence.pos_vecs, sequence.pos_levels)
+                ]
+                pos_encoding_batches.append(torch.FloatTensor(pos_encodings))
             attention_mask.append(torch.ones(len(sequence.token_ids)))
             sequence_lengths.append(len(sequence))
             if self.task:
@@ -393,7 +394,7 @@ class Collator:
             "token_types": torch.nn.utils.rnn.pad_sequence(token_type_batches, batch_first=True, padding_value=TokenType.TEXT.value).to(device),
             "pos_vecs": torch.nn.utils.rnn.pad_sequence(pos_vec_batches, batch_first=True).to(device),
             "pos_levels": torch.nn.utils.rnn.pad_sequence(pos_level_batches, batch_first=True).to(device),
-            "pos_encodings": torch.nn.utils.rnn.pad_sequence(pos_encoding_batches, batch_first=True).to(device),
+            "pos_encodings": torch.nn.utils.rnn.pad_sequence(pos_encoding_batches, batch_first=True).to(device) if pos_encoding_batches else None,
             "attention_mask": torch.nn.utils.rnn.pad_sequence(attention_mask, batch_first=True).to(device),
             "sequence_lengths": torch.tensor(sequence_lengths), # Must be on CPU
             "prompt_lengths": torch.tensor(prompt_lengths) if prompt_lengths else None, # Must be on CPU

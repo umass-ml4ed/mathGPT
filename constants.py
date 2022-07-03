@@ -69,9 +69,11 @@ DOWNSTREAM_TASK_TO_NUM_CLASSES = {
 }
 
 class TPE(Enum):
+    NONE = "none"
     FORTE = "forte"
     SIN_PART = "sin_part"
     SIN_ADD = "sin_add"
+    RNN = "rnn"
 
 class Gen(Enum):
     GREEDY = "greedy"

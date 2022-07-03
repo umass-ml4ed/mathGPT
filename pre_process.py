@@ -52,6 +52,7 @@ def process_wikipedia_data():
     with open("wiki_errs.json", "w") as err_file:
         json.dump({
             **err_data,
+            "all_latexml_errs": all_latexml_errs,
             "all_tangent_cft_errs": all_tangent_cft_errs,
         }, err_file, indent=2)
 

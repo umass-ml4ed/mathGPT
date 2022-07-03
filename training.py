@@ -52,10 +52,13 @@ def get_answer_scoring_data() -> Tuple[Dict[str, Article], List[AnswerScoringSam
     test_len = len(test_data_idx) // 2
     return problems, answers_np[train_data_idx], answers_np[test_data_idx][:test_len], answers_np[test_data_idx][test_len:]
 
+def load_options(model_name: str):
+    with open(f"{model_name}.json", encoding="utf-8") as config_file:
+        return TrainOptions(json.load(config_file))
+
 def load_model(model_name: str, ddp: bool, task: Optional[DownstreamTask] = None):
     print("Loading model...")
-    with open(f"{model_name}.json", encoding="utf-8") as config_file:
-        options = TrainOptions(json.load(config_file))
+    options = load_options(model_name)
     if is_cls_task(task):
         if options.baseline:
             model = GPTClassifierBaseline(options).to(device)
@@ -261,7 +264,11 @@ def train_downstream_task(model_name: str, checkpoint_name: Optional[str], pretr
         options.update(options_dict)
     else:
         checkpoint = None
-        options = TrainOptions(options_dict)
+        if pretrained_name:
+            options = load_options(pretrained_name)
+            options.update(options_dict)
+        else:
+            options = TrainOptions(options_dict)
         if is_cls_task(task):
             options.num_classes = DOWNSTREAM_TASK_TO_NUM_CLASSES.get(task)
             if options.baseline:

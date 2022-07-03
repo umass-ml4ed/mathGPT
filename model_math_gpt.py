@@ -81,6 +81,8 @@ class MathGPTBase(nn.Module):
         # Linear projection to convert raw math pos encoding into one that can be added to the input embeddings
         if options.tpe == TPE.FORTE.value:
             self.math_embedding_projection = nn.Linear(POS_ENCODING_SIZE_FORTE, EMB_SIZE, bias=False)
+        elif options.tpe == TPE.RNN.value:
+            self.math_embedding_model = RNNPosEncoder()
 
     def load_pretrained(self, pretrained_state_dict: Dict[str, torch.Tensor]):
         """
@@ -92,12 +94,14 @@ class MathGPTBase(nn.Module):
                 state_dict[param_name] = param_val
         self.load_state_dict(state_dict)
 
-    def get_math_embeddings(self, batch: CollatedBatch) -> torch.Tensor:
+    def get_math_embeddings(self, batch: CollatedBatch, math_idxs: torch.Tensor) -> torch.Tensor:
         """
         Get math position encodings for the batch
         """
         if self.options.tpe == TPE.FORTE.value:
-            return self.math_embedding_projection(batch["pos_encodings"])
+            return self.math_embedding_projection(batch["pos_encodings"][math_idxs])
+        if self.options.tpe == TPE.RNN.value:
+            return self.math_embedding_model(batch, math_idxs)
         return batch["pos_encodings"]
 
     def get_input_embeddings(self, batch: CollatedBatch) -> torch.Tensor:
@@ -119,8 +123,10 @@ class MathGPTBase(nn.Module):
             input_embeddings[type_idxs] += self.token_embeddings[str(token_type.value)](token_ids[type_idxs])
 
         # Add math position encodings
-        math_idxs = ~((batch["token_types"] == TokenType.TEXT) | (batch["token_types"] == TokenType.START_FORMULA) | (batch["token_types"] == TokenType.END_FORMULA))
-        input_embeddings[math_idxs] += self.get_math_embeddings(batch)[math_idxs]
+        if self.options.tpe != TPE.NONE.value:
+            math_idxs = ~((batch["token_types"] == TokenType.TEXT) | (batch["token_types"] == TokenType.START_FORMULA) | (batch["token_types"] == TokenType.END_FORMULA))
+            if torch.any(math_idxs):
+                input_embeddings[math_idxs] += self.get_math_embeddings(batch, math_idxs)
 
         return input_embeddings
 
@@ -374,3 +380,28 @@ class MathGPTClassifier(MathGPTBase):
         loss: torch.Tensor = loss_fn(predictions, batch["cls_labels"])
 
         return loss, predictions
+
+class RNNPosEncoder(nn.Module):
+    hidden_size = 50
+
+    def __init__(self):
+        super().__init__()
+        self.rnn = nn.GRU(
+            input_size=MAX_FORMULA_WIDTH,
+            hidden_size=self.hidden_size,
+            batch_first=True
+        )
+        self.output_layer = nn.Linear(self.hidden_size, EMB_SIZE)
+
+    def forward(self, batch: CollatedBatch, math_idxs: torch.Tensor):
+        # Unroll the batch's position encodings, and only process math tokens
+        rnn_input = batch["pos_encodings"][math_idxs].view(-1, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH)
+        sequence_lengths = batch["pos_levels"][math_idxs] + 1
+
+        # Run through RNN
+        packed_input = torch.nn.utils.rnn.pack_padded_sequence(
+            rnn_input, lengths=sequence_lengths, batch_first=True, enforce_sorted=False)
+        _, final_hidden_state = self.rnn(packed_input)
+
+        # Pproject to embedding size
+        return self.output_layer(final_hidden_state.view(-1, self.hidden_size))

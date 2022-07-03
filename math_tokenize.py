@@ -16,11 +16,14 @@ POS_ENCODING_SIZE_FORTE = MAX_FORMULA_DEPTH * POS_ENCODING_REGION_NUM_BITS * 2
 
 _EMPTY_POS_ENCODING_FORTE = [0] * POS_ENCODING_SIZE_FORTE
 _EMPTY_POS_ENCODING_SIN = [0] * EMB_SIZE
+_EMPTY_POS_ENCODING_RNN = [[0] * MAX_FORMULA_WIDTH] * MAX_FORMULA_DEPTH
 
 def get_empty_pos_encoding(tpe: str):
     if tpe == TPE.FORTE.value:
         return _EMPTY_POS_ENCODING_FORTE
-    return _EMPTY_POS_ENCODING_SIN
+    if tpe in (TPE.SIN_ADD.value, TPE.SIN_PART.value):
+        return _EMPTY_POS_ENCODING_SIN
+    return _EMPTY_POS_ENCODING_RNN
 
 def encode_pos_forte(pos_vec: Union[List[int], torch.Tensor], pos_level: int):
     """
@@ -69,13 +72,32 @@ def encode_pos_sin_add(pos_vec: Union[List[int], torch.Tensor], pos_level: int):
     encoding_mat = sin_encoding_mat(EMB_SIZE, 1024) # TODO: use options for max_seq_len
     return np.sum([encoding_mat[pos_vec[level]] for level in range(pos_level + 1)], axis=0).tolist()
 
+@lru_cache
+def one_hot_matrix():
+    """
+    A matrix containing one-hot encodings up to the max formula width
+    """
+    return np.eye(MAX_FORMULA_WIDTH).tolist()
+
+def encode_pos_rnn(pos_vec: Union[List[int], torch.Tensor], pos_level: int):
+    """
+    Return a 2D matrix where each row is a one-hot encoding of the child position at that level, padded with 0 vectors
+    """
+    one_hot_mat = one_hot_matrix()
+    return [one_hot_mat[pos_vec[level]] for level in range(pos_level + 1)] + [[0] * MAX_FORMULA_WIDTH] * (MAX_FORMULA_DEPTH - pos_level - 1)
+
 def encode_pos(pos_vec: Union[List[int], torch.Tensor], pos_level: int, tpe: str):
+    """
+    Return the position encoding of a single tree node
+    """
     if tpe == TPE.FORTE.value:
         return encode_pos_forte(pos_vec, pos_level)
     if tpe == TPE.SIN_PART.value:
         return encode_pos_sin_part(pos_vec, pos_level)
     if tpe == TPE.SIN_ADD.value:
         return encode_pos_sin_add(pos_vec, pos_level)
+    if tpe == TPE.RNN.value:
+        return encode_pos_rnn(pos_vec, pos_level)
 
 def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_level: int, cur_child_num: int, options: TrainOptions,
                          sequence: Sequence) -> bool:

@@ -8,7 +8,7 @@ from model_math_gpt import MathGPTLM
 from math_tokenize import encode_pos
 from utils import device, TrainOptions
 from data_types import CollatedBatch
-from constants import TokenType, Gen, EOS_TOKEN_ID, PADDING_TOKEN_ID, DOLLAR_TOK
+from constants import TokenType, TPE, Gen, EOS_TOKEN_ID, PADDING_TOKEN_ID, DOLLAR_TOK
 
 def infer_math_pos(prev_pos_vecs: torch.Tensor, prev_pos_levels: torch.Tensor, prev_token_types: torch.Tensor):
     """
@@ -114,7 +114,8 @@ def add_to_batch(batch: CollatedBatch, token_preds: torch.Tensor, type_preds: to
     batch["token_types"] = torch.concat([batch["token_types"], type_preds.unsqueeze(1)], dim=1)
     batch["pos_vecs"] = torch.concat([batch["pos_vecs"], new_pos_vecs.unsqueeze(1)], dim=1)
     batch["pos_levels"] = torch.concat([batch["pos_levels"], new_pos_levels.unsqueeze(1)], dim=1)
-    batch["pos_encodings"] = torch.concat([batch["pos_encodings"], new_pos_encodings.unsqueeze(1)], dim=1)
+    if options.tpe != TPE.NONE.value:
+        batch["pos_encodings"] = torch.concat([batch["pos_encodings"], new_pos_encodings.unsqueeze(1)], dim=1)
     batch["attention_mask"] = torch.concat([batch["attention_mask"], new_attention_mask.unsqueeze(1)], dim=1)
     if batch["gen_labels"] is not None:
         batch["gen_labels"] = torch.concat([batch["gen_labels"], token_preds.unsqueeze(1)], dim=1)
