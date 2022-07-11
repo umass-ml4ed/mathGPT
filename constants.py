@@ -10,12 +10,14 @@ class TokenType(IntEnum):
     NUM = 4
     OP = 5
     END = 6
+    MATH_TEXT = 7
 
 class SpecialOpToken(IntEnum):
     UNK = 0
     ANON_OP = 1
     CERR_OP = 2
     NUM_SUB_TREE_HEAD = 3
+    MATH_TEXT_HEAD = 4
 
 class SpecialVarToken(IntEnum):
     UNK = 0

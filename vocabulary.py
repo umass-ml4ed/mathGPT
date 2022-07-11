@@ -40,12 +40,22 @@ class Vocabulary:
     _sizes: Dict[TokenType, int] = {}
     # If number tokens should be expanded into subtrees
     _num_to_tree: bool = False
+    # If UNKs will be converted to sub-trees
+    _math_text: bool = False
     # If the vocab has been loaded for use
     _loaded: bool = False
 
     @classmethod
     def set_num_to_tree(cls, num_to_tree: bool):
         cls._num_to_tree = num_to_tree
+
+    @classmethod
+    def set_math_text(cls, math_text: bool):
+        cls._math_text = math_text
+
+    @classmethod
+    def math_text(cls):
+        return cls._math_text
 
     @classmethod
     def add(cls, str_type: str, symbol: str):
@@ -121,13 +131,16 @@ class Vocabulary:
         Load vocab from file and mark as loaded
         """
         # Initially fill vocab with special tokens - even if not looked up directly, need to assign token IDs from base vocab above special token IDs
+        op_tokens = [token for token in SpecialOpToken
+            # Include option-specific special tokens, always include NUM_SUB_TREE_HEAD if math_text is set to not leave gap in token IDs
+            if (cls._num_to_tree or cls._math_text or token != SpecialOpToken.NUM_SUB_TREE_HEAD) and (cls._math_text or token != SpecialOpToken.MATH_TEXT_HEAD)]
         cls._vocab = {
-            TokenType.OP: {str(token): token.value for token in SpecialOpToken if cls._num_to_tree or token != SpecialOpToken.NUM_SUB_TREE_HEAD},
+            TokenType.OP: {str(token): token.value for token in op_tokens},
             TokenType.VAR: {str(token): token.value for token in SpecialVarToken},
             TokenType.NUM: {str(token): token.value for token in SpecialNumToken},
         }
         cls._vocab_inv = {
-            TokenType.OP: {token.value: str(token) for token in SpecialOpToken if cls._num_to_tree or token != SpecialOpToken.NUM_SUB_TREE_HEAD},
+            TokenType.OP: {token.value: str(token) for token in op_tokens},
             TokenType.VAR: {token.value: str(token) for token in SpecialVarToken},
             TokenType.NUM: {token.value: str(token) for token in SpecialNumToken},
         }

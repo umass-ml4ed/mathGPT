@@ -3,7 +3,7 @@ import torch
 import torch.multiprocessing as mp
 
 from pre_process import process_wikipedia_data, process_probes, process_mathsum_data, process_answer_scoring_data
-from analyze_data import analyze_wiki, analyze_mathsum
+from analyze_data import analyze_wiki, analyze_mathsum, analyze_answer_scoring
 from training import pretrain, evaluate_pretrained_lm, test_lm, train_downstream_task, evaluate_downstream_task, test_gen_task
 from utils import initialize_seeds, device, enum_choices, enum_value_to_member, setup_proc_group, cleanup_proc_group
 from vocabulary import Vocabulary
@@ -31,6 +31,7 @@ def main():
     parser.add_argument("--process_probes", action="store_true", help="Process LM probes and save to JSON files")
     parser.add_argument("--analyze_wiki", action="store_true", help="Produce stats on pre-processed Wikipedia dataset")
     parser.add_argument("--analyze_mathsum", action="store_true", help="Produce stats on pre-processed MathSum dataset")
+    parser.add_argument("--analyze_answer_scoring", action="store_true", help="Produce stats on pre-processed answer scoring dataset")
     parser.add_argument("--pretrain", action="store_true", help="Pre-train LM")
     parser.add_argument("--evaluate_lm", action="store_true", help="Evaluate LM performance on test set")
     parser.add_argument("--test_lm", help="Run language generation using given article")
@@ -58,6 +59,7 @@ def main():
     parser.add_argument("--tpe", help="Scheme to use for tree position encodings", choices=enum_choices(TPE))
     parser.add_argument("--ddp", type=bool_type, help="Use DistributedDataParallel")
     parser.add_argument("--num_to_tree", type=bool_type, help="Convert numeric symbols into sub-trees")
+    parser.add_argument("--math_text", type=bool_type, help="Convert unseen math tokens to sub-trees with tokens from GPT encoder")
 
     args = parser.parse_args()
 
@@ -78,9 +80,11 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
 
     arg_dict = {arg: val for arg, val in vars(args).items() if val is not None}
 
-    # Set this asap since it needs to be known before the vocab is loaded
+    # Set these now since need to be known before vocab is loaded
     if "num_to_tree" in arg_dict:
         Vocabulary.set_num_to_tree(arg_dict["num_to_tree"])
+    if "math_text" in arg_dict:
+        Vocabulary.set_math_text(arg_dict["math_text"])
 
     if args.preprocess_wiki:
         process_wikipedia_data()
@@ -94,6 +98,8 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
         analyze_wiki()
     if args.analyze_mathsum:
         analyze_mathsum()
+    if args.analyze_answer_scoring:
+        analyze_answer_scoring()
     if args.pretrain:
         pretrain(args.name, args.checkpoint_name, arg_dict)
     if args.evaluate_lm:

@@ -3,11 +3,12 @@ import math
 from functools import lru_cache
 import torch
 import numpy as np
+from transformers import GPT2TokenizerFast
 
 from vocabulary import Vocabulary, get_matrix_symbol
 from data_types import OPT, Sequence
 from utils import TrainOptions
-from constants import TokenType, SpecialOpToken, SpecialVarToken, TPE, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH, EMB_SIZE
+from constants import TokenType, SpecialOpToken, SpecialVarToken, SpecialNumToken, TPE, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH, EMB_SIZE
 
 EMPTY_POS_VECTOR = [0] * MAX_FORMULA_DEPTH
 
@@ -100,7 +101,7 @@ def encode_pos(pos_vec: Union[List[int], torch.Tensor], pos_level: int, tpe: str
         return encode_pos_rnn(pos_vec, pos_level)
 
 def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_level: int, cur_child_num: int, options: TrainOptions,
-                         sequence: Sequence) -> bool:
+                         text_tokenizer: GPT2TokenizerFast, sequence: Sequence) -> bool:
     """
     Recursive helper for OPT tokenization, add info for current head and then process children.
     Also do data post-processing.
@@ -109,11 +110,13 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
     """
 
     children = formula and formula[2]
-
-    # First resolve token type and ID - check for end token, then try post-processing rules, then retrieve from vocab
     token_type = None
     if not formula:
+        # None formula indicates end token
         token_type, token_id = TokenType.END, 0
+    elif isinstance(formula[0], TokenType):
+        # Copy type and ID if directly set
+        token_type, token_id = formula[:2]
     else:
         # Resolve type and token id from symbol, post-processing rules follow
         type_str, symbol = formula[:2]
@@ -149,7 +152,29 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
 
         # Look up symbol's token type and ID from vocab if not already assigned by post-processing rules
         if token_type is None:
-            token_type, token_id = Vocabulary.get_token(type_str, symbol, assign_new=True)
+            token_type, token_id = Vocabulary.get_token(type_str, symbol, assign_new=not options.math_text)
+
+            # Convert UNKs to subtrees with GPT-tokenized symbol as children
+            if options.math_text:
+                unks = [(TokenType.VAR, SpecialVarToken.UNK), (TokenType.NUM, SpecialNumToken.UNK), (TokenType.OP, SpecialOpToken.UNK)]
+                if (token_type, token_id) in unks:
+                    # Tokenize symbol
+                    math_text: List[OPT] = [
+                        [TokenType.MATH_TEXT, sym_token_id, None]
+                        for sym_token_id in text_tokenizer(symbol)["input_ids"]
+                    ][:MAX_FORMULA_WIDTH - 1]
+
+                    # Create node for tokenized symbol
+                    if token_type == TokenType.OP:
+                        # Convert UNK ops to anon op where leftmost child is tokenized symbol sub-tree and remaining children are original children
+                        token_id = SpecialOpToken.ANON_OP.value
+                        children: List[OPT] = [
+                            [TokenType.OP, SpecialOpToken.MATH_TEXT_HEAD.value, math_text]
+                        ] + (children or [])
+                    else:
+                        # Convert UNK vars and nums to sub-tree where children are tokenized symbol
+                        token_type, token_id = TokenType.OP, SpecialOpToken.MATH_TEXT_HEAD.value
+                        children = math_text
 
     # Set position
     # TODO: to avoid max depth limit, try just concatting to list and then padding in batch
@@ -168,19 +193,19 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
     child_idx = 0
     if children:
         for child in children:
-            if tokenize_formula_rec(child, pos_vec, cur_level + 1, child_idx, options, sequence):
+            if tokenize_formula_rec(child, pos_vec, cur_level + 1, child_idx, options, text_tokenizer, sequence):
                 child_idx += 1
 
     # Append END token as last child for all OP tokens
     if token_type == TokenType.OP:
-        tokenize_formula_rec(None, pos_vec, cur_level + 1, child_idx, options, sequence)
+        tokenize_formula_rec(None, pos_vec, cur_level + 1, child_idx, options, text_tokenizer, sequence)
 
     return True
 
-def tokenize_formula(formula: OPT, options: TrainOptions):
+def tokenize_formula(formula: OPT, options: TrainOptions, text_tokenizer: GPT2TokenizerFast):
     """
     Given a formula OPT, return in DFS order the token ids, types, and position encodings
     """
     sequence = Sequence("")
-    tokenize_formula_rec(formula, EMPTY_POS_VECTOR, 0, 0, options, sequence)
+    tokenize_formula_rec(formula, EMPTY_POS_VECTOR, 0, 0, options, text_tokenizer, sequence)
     return sequence

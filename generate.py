@@ -27,7 +27,9 @@ def infer_math_pos(prev_pos_vecs: torch.Tensor, prev_pos_levels: torch.Tensor, p
     new_pos_levels[op_idx] += 1
 
     # A non-END terminal token is always followed by a sibling (or formula ends)
-    term_idx = ((prev_token_types == TokenType.VAR) | (prev_token_types == TokenType.NUM)) & (new_pos_levels != 0)
+    term_idx = (
+        (prev_token_types == TokenType.VAR) | (prev_token_types == TokenType.NUM) | (prev_token_types == TokenType.MATH_TEXT)
+    ) & (new_pos_levels != 0)
     # Increment sibling; level doesn't change
     term_level_mask = level_mask * term_idx.unsqueeze(1)
     new_pos_vecs[term_level_mask] += 1
@@ -51,7 +53,7 @@ def get_most_likely_predictions(type_to_token_probs: Dict[TokenType, torch.Tenso
     predicted_types = torch.zeros((batch_size, max_seq_len), dtype=torch.long).to(device)
     predicted_tokens = torch.zeros((batch_size, max_seq_len), dtype=torch.long).to(device)
     max_token_probs = torch.zeros((batch_size, max_seq_len)).to(device)
-    for token_type in TokenType:
+    for token_type in range(len(type_to_token_probs)):
         # Get most likely token for this type
         max_values, max_indices = torch.max(type_to_token_probs[token_type], dim=-1)
         # Find indices where most likely token is higher than previously most likely token
@@ -67,10 +69,10 @@ def collapse_token_probs(type_to_token_probs: Dict[TokenType, torch.Tensor]):
     """
     Convert dictionary to single tensor with concatenated token probabilites across types
     """
-    type_to_start_idx = [0] * len(TokenType)
+    type_to_start_idx = [0] * len(type_to_token_probs)
     cur_start_idx = 0
     token_prob_tensors = []
-    for token_type in TokenType:
+    for token_type in range(len(type_to_start_idx)):
         type_to_start_idx[token_type] = cur_start_idx
         cur_start_idx += type_to_token_probs[token_type].shape[2]
         token_prob_tensors.append(type_to_token_probs[token_type][:, -1])

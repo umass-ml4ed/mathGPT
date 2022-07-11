@@ -8,14 +8,12 @@ from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttenti
 from vocabulary import Vocabulary, UNK_MAP, MATH_TYPES
 from math_tokenize import POS_ENCODING_SIZE_FORTE
 from data_types import CollatedBatch
-from constants import TokenType, TPE, EMB_SIZE, PADDING_TOKEN_ID, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH, TEXT_VOCAB_SIZE
+from constants import TokenType, TPE, SpecialOpToken, EMB_SIZE, PADDING_TOKEN_ID, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH, TEXT_VOCAB_SIZE
 from utils import device, TrainOptions
 
 # Leverages pre-trained GPT2 from transformers library
 # https://huggingface.co/docs/transformers/model_doc/gpt2
 # https://github.com/huggingface/transformers/blob/v4.18.0/src/transformers/models/gpt2/modeling_gpt2.py
-
-NUM_TYPES = len(TokenType)
 
 # Map of type to allowed types for next token
 ALLOWED_TRANSITIONS: Dict[TokenType, List[TokenType]] = {
@@ -26,7 +24,8 @@ ALLOWED_TRANSITIONS: Dict[TokenType, List[TokenType]] = {
     TokenType.NUM: [TokenType.VAR, TokenType.NUM, TokenType.OP, TokenType.END],
     TokenType.OP: [TokenType.VAR, TokenType.NUM, TokenType.OP, TokenType.END],
     TokenType.END: [TokenType.VAR, TokenType.NUM, TokenType.OP, TokenType.END],
-    # Note that terminal tokens can only generate END_FORMULA if they are the last in a formula, so these cases are handled manually
+    TokenType.MATH_TEXT: [TokenType.MATH_TEXT, TokenType.END],
+    # Some transitions are not just based on preceding type, so those are handled with additional rules
 }
 
 def apply_unks(token_ids: torch.Tensor, batch: CollatedBatch):
@@ -55,6 +54,7 @@ class MathGPTBase(nn.Module):
     def __init__(self, options: TrainOptions):
         super().__init__()
         self.options = options
+        self.num_types = len(TokenType) if options.math_text else len(TokenType) - 1
 
         # Extract pre-trained GPT2 transformer and text prediction head
         self.gpt2_lm: GPT2LMHeadModel = GPT2LMHeadModel.from_pretrained("gpt2")
@@ -62,17 +62,18 @@ class MathGPTBase(nn.Module):
 
         # Create type embeddings
         # TODO: ensure these are sufficiently small (magnitude) to avoid confusing the pre-trained model
-        self.type_embeddings = nn.Embedding(NUM_TYPES, EMB_SIZE) # TODO: also try just have text, math, and transition type embeddings
+        self.type_embeddings = nn.Embedding(self.num_types, EMB_SIZE) # TODO: also try just have text, math, and transition type embeddings
 
         # TODO: not great that we gotta assign str(Type.value)... see if ModuleList fixes this
         # Create token embedding matrix for each type
         self.token_embeddings = nn.ModuleDict({
             str(token_type.value): nn.Embedding(Vocabulary.num_tokens_in_type(token_type), EMB_SIZE)
-            for token_type in TokenType
-            if token_type not in (TokenType.TEXT, TokenType.START_FORMULA, TokenType.END_FORMULA, TokenType.END)
+            for token_type in MATH_TYPES
         })
         # Use pre-trained text token embeddings
         self.token_embeddings[str(TokenType.TEXT.value)] = self.transformer.wte
+        if self.options.math_text:
+            self.token_embeddings[str(TokenType.MATH_TEXT.value)] = self.transformer.wte
         # Single embedding each for special single-tokens types
         self.token_embeddings[str(TokenType.START_FORMULA.value)] = nn.Embedding(1, EMB_SIZE)
         self.token_embeddings[str(TokenType.END_FORMULA.value)] = nn.Embedding(1, EMB_SIZE)
@@ -102,7 +103,7 @@ class MathGPTBase(nn.Module):
             return self.math_embedding_projection(batch["pos_encodings"][math_idxs])
         if self.options.tpe == TPE.RNN.value:
             return self.math_embedding_model(batch, math_idxs)
-        return batch["pos_encodings"]
+        return batch["pos_encodings"][math_idxs]
 
     def get_input_embeddings(self, batch: CollatedBatch) -> torch.Tensor:
         """
@@ -119,12 +120,18 @@ class MathGPTBase(nn.Module):
         # Add token embeddings for each type
         token_ids = apply_unks(batch["token_ids"], batch)
         for token_type in TokenType:
+            if not self.options.math_text and token_type == TokenType.MATH_TEXT:
+                continue
             type_idxs = (batch["token_types"] == token_type) & (token_ids != PADDING_TOKEN_ID)
             input_embeddings[type_idxs] += self.token_embeddings[str(token_type.value)](token_ids[type_idxs])
 
         # Add math position encodings
         if self.options.tpe != TPE.NONE.value:
-            math_idxs = ~((batch["token_types"] == TokenType.TEXT) | (batch["token_types"] == TokenType.START_FORMULA) | (batch["token_types"] == TokenType.END_FORMULA))
+            math_idxs = ~(
+                (batch["token_types"] == TokenType.TEXT) |\
+                (batch["token_types"] == TokenType.START_FORMULA) |\
+                (batch["token_types"] == TokenType.END_FORMULA)
+            )
             if torch.any(math_idxs):
                 input_embeddings[math_idxs] += self.get_math_embeddings(batch, math_idxs)
 
@@ -148,7 +155,7 @@ class MathGPTLM(MathGPTBase):
 
         if options.joint:
             # Predictive type layer for generation
-            self.type_pred_layer = nn.Linear(EMB_SIZE, NUM_TYPES)
+            self.type_pred_layer = nn.Linear(EMB_SIZE, self.num_types)
 
             # Predictive token layers for generation
             self.type_to_token_pred_layer = nn.ModuleDict({
@@ -157,6 +164,8 @@ class MathGPTLM(MathGPTBase):
             })
             # Use pre-trained predictive head for text tokens
             self.type_to_token_pred_layer[str(TokenType.TEXT.value)] = self.gpt2_lm.lm_head
+            if self.options.math_text:
+                self.type_to_token_pred_layer[str(TokenType.MATH_TEXT.value)] = self.gpt2_lm.lm_head
             # For joint probability modeling, single-token types only rely on the probability of their corresponding type
         else:
             self.text_pred_layer = self.gpt2_lm.lm_head
@@ -193,12 +202,19 @@ class MathGPTLM(MathGPTBase):
         Create mask with allowed (False) and unallowed (True) types for the following token at each index
         """
         batch_size, max_seq_len = batch["token_ids"].shape
-        type_mask = torch.full((batch_size, max_seq_len, NUM_TYPES), True).to(device)
+        type_mask = torch.full((batch_size, max_seq_len, self.num_types), True).to(device)
         for token_type, allowed_types in ALLOWED_TRANSITIONS.items():
+            if not self.options.math_text and token_type == TokenType.MATH_TEXT:
+                continue
             for allowed_type in allowed_types:
                 type_mask[:, :, allowed_type][type_idxs[token_type]] = False
         # Tokens that finish a formula can only generate END_FORMULA
-        type_mask[final_formula_token_idx] = ~F.one_hot(torch.tensor(TokenType.END_FORMULA), num_classes=len(TokenType)).type(torch.bool).to(device)
+        type_mask[final_formula_token_idx] = ~F.one_hot(torch.tensor(TokenType.END_FORMULA), num_classes=self.num_types).type(torch.bool).to(device)
+        # Math text head must produce a math text token
+        if self.options.math_text:
+            mth_idx = (batch["token_ids"] == SpecialOpToken.MATH_TEXT_HEAD) & type_idxs[TokenType.OP]
+            type_mask[mth_idx] = ~F.one_hot(torch.tensor(TokenType.MATH_TEXT), num_classes=self.num_types).type(torch.bool).to(device)
+        # NOTE: We are not enforcing that NUM_SUB_TREE_HEAD must only generate NUM tokens, since if math_text is also set then OP children can also occur
         # Prevent nodes from exceeding max depth, which happens if an OP token is produced in the maximum level
         op_unallowed_idx = ((batch["pos_levels"] == MAX_FORMULA_DEPTH - 1) & ~type_idxs[TokenType.END]) |\
                            ((batch["pos_levels"] == MAX_FORMULA_DEPTH - 2) & type_idxs[TokenType.OP])
@@ -209,13 +225,13 @@ class MathGPTLM(MathGPTBase):
         cur_level_mask = F.one_hot(batch["pos_levels"], num_classes=batch["pos_vecs"].shape[2]).type(torch.bool)
         upper_level_mask = F.one_hot(torch.clamp(batch["pos_levels"] - 1, min=0), num_classes=batch["pos_vecs"].shape[2]).type(torch.bool)
         must_end_idx = (
-            (type_idxs[TokenType.VAR] | type_idxs[TokenType.NUM]) &\
+            (type_idxs[TokenType.VAR] | type_idxs[TokenType.NUM] | type_idxs[TokenType.MATH_TEXT]) &\
             (batch["pos_vecs"][cur_level_mask].view(batch_size, -1) == MAX_FORMULA_WIDTH - 2)
         ) | (
             type_idxs[TokenType.END] &\
             (batch["pos_vecs"][upper_level_mask].view(batch_size, -1) == MAX_FORMULA_WIDTH - 2)
         )
-        type_mask[must_end_idx] = ~F.one_hot(torch.tensor(TokenType.END), num_classes=len(TokenType)).type(torch.bool).to(device)
+        type_mask[must_end_idx] = ~F.one_hot(torch.tensor(TokenType.END), num_classes=self.num_types).type(torch.bool).to(device)
         return type_mask
 
     def get_type_probs(self, gpt_output: GPTOutput, type_mask: torch.Tensor) -> torch.Tensor:
@@ -236,6 +252,9 @@ class MathGPTLM(MathGPTBase):
         batch_size, max_seq_len = type_probs.shape[:2]
         type_to_token_probs: Dict[TokenType, torch.Tensor] = {}
         for token_type in TokenType:
+            if not self.options.math_text and token_type == TokenType.MATH_TEXT:
+                continue
+
             # Get predicted probability of tokens in the type, i.e. P(token|type)
             if token_type in (TokenType.START_FORMULA, TokenType.END_FORMULA, TokenType.END):
                 token_probs = torch.ones((batch_size, max_seq_len, 1)).to(device)
@@ -259,6 +278,9 @@ class MathGPTLM(MathGPTBase):
         losses: List[torch.Tensor] = []
         shifted_target_tokens = target_tokens[:, 1:]
         for token_type in TokenType:
+            if not self.options.math_text and token_type == TokenType.MATH_TEXT:
+                continue
+
             # Get indices that have a target of this type
             shifted_target_idx = type_idxs[token_type][:, 1:]
             # Exclude padding regions, including them would add extra length to the vector that we get the mean of
@@ -281,12 +303,16 @@ class MathGPTLM(MathGPTBase):
         # Get activations from linear layers
         text_activations = self.text_pred_layer(gpt_output.last_hidden_state)
         math_activations = self.math_pred_layer(gpt_output.last_hidden_state)
+        # Apply text transition mask
+        if self.options.math_text:
+            text_activations[type_mask[:, :, TokenType.TEXT] & type_mask[:, :, TokenType.MATH_TEXT]] = -torch.inf
+        else:
+            text_activations[type_mask[:, :, TokenType.TEXT]] = -torch.inf
         # Apply type-specific transition mask
-        text_activations[type_mask[:, :, TokenType.TEXT]] = -torch.inf
         math_activation_parts: List[torch.Tensor] = []
         start_idx = 0
         for token_type in TokenType:
-            if token_type == TokenType.TEXT:
+            if token_type in (TokenType.TEXT, TokenType.MATH_TEXT):
                 continue
             activation = math_activations[:, :, start_idx : start_idx + self.type_to_size[token_type]]
             activation[type_mask[:, :, token_type]] = -torch.inf
@@ -294,13 +320,18 @@ class MathGPTLM(MathGPTBase):
             start_idx += self.type_to_size[token_type]
         return torch.concat([text_activations] + math_activation_parts, dim=-1)
 
-    def get_token_probs_from_activations(self, token_activations: torch.Tensor):
+    def get_token_probs_from_activations(self, token_activations: torch.Tensor, type_mask: torch.Tensor):
         type_to_token_probs: Dict[TokenType, torch.Tensor] = {}
         token_probs = nn.Softmax(dim=-1)(token_activations)
         type_to_token_probs[TokenType.TEXT] = token_probs[:, :, :TEXT_VOCAB_SIZE]
+        if self.options.math_text:
+            type_to_token_probs[TokenType.MATH_TEXT] = type_to_token_probs[TokenType.TEXT].clone()
+            # Re-apply type mask since text and math text types share activation vector
+            type_to_token_probs[TokenType.TEXT][type_mask[:, :, TokenType.TEXT]] = 0
+            type_to_token_probs[TokenType.MATH_TEXT][type_mask[:, :, TokenType.MATH_TEXT]] = 0
         start_idx = TEXT_VOCAB_SIZE
         for token_type in TokenType:
-            if token_type == TokenType.TEXT:
+            if token_type in (TokenType.TEXT, TokenType.MATH_TEXT):
                 continue
             type_to_token_probs[token_type] = token_probs[:, :, start_idx : start_idx + self.type_to_size[token_type]]
             start_idx += self.type_to_size[token_type]
@@ -318,7 +349,7 @@ class MathGPTLM(MathGPTBase):
         target_tokens = target_tokens.clone()
         start_idx = TEXT_VOCAB_SIZE
         for token_type in TokenType:
-            if token_type == TokenType.TEXT:
+            if token_type in (TokenType.TEXT, TokenType.MATH_TEXT):
                 continue
             target_tokens[type_idxs[token_type] & ~padding_idx] += start_idx
             start_idx += self.type_to_size[token_type]
@@ -358,7 +389,7 @@ class MathGPTLM(MathGPTBase):
             if self.training: # Don't do this in training mode as it will use up excess GPU memory
                 type_to_token_probs = None
             else:
-                type_to_token_probs = self.get_token_probs_from_activations(token_activations)
+                type_to_token_probs = self.get_token_probs_from_activations(token_activations, type_mask)
 
         return loss, type_to_token_probs
 
@@ -396,7 +427,7 @@ class RNNPosEncoder(nn.Module):
     def forward(self, batch: CollatedBatch, math_idxs: torch.Tensor):
         # Unroll the batch's position encodings, and only process math tokens
         rnn_input = batch["pos_encodings"][math_idxs].view(-1, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH)
-        sequence_lengths = batch["pos_levels"][math_idxs] + 1
+        sequence_lengths = batch["pos_levels"][math_idxs].cpu() + 1
 
         # Run through RNN
         packed_input = torch.nn.utils.rnn.pack_padded_sequence(

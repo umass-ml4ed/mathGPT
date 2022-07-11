@@ -1,9 +1,9 @@
-from typing import Any, Dict, Tuple, List, Optional, TypedDict
+from typing import Any, Dict, Tuple, List, Optional, Union, TypedDict
 import torch
 
 from constants import TokenType
 
-OPT = Tuple[str, str, Optional[List['OPT']]] # Type, token, children
+OPT = Tuple[Union[str, TokenType], Union[str, int], Optional[List['OPT']]] # Type, token, children
 
 class Formula(TypedDict):
     opt: OPT

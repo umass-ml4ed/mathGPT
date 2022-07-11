@@ -26,15 +26,19 @@ def get_tree(token_ids: torch.Tensor, token_types: torch.Tensor) -> DecodeTreeNo
             root.children.append(new_root)
             ancestors.append(root)
             root = new_root
-        elif token_type in (TokenType.VAR, TokenType.NUM):
+        elif token_type in (TokenType.VAR, TokenType.NUM, TokenType.MATH_TEXT):
             root.children.append(DecodeTreeNode(int(token_type), int(token_id), []))
         elif token_type == TokenType.END and ancestors:
             root = ancestors.pop()
     # Return root of formula, may need to look in ancestors in case we're decoding a partial tree
     return ancestors[0] if ancestors else root
 
-def tree_to_text(tree_node: DecodeTreeNode) -> str:
+def tree_to_text(tree_node: DecodeTreeNode, text_tokenizer: GPT2TokenizerFast) -> str:
+    if Vocabulary.math_text() and tree_node.token_type == TokenType.OP and tree_node.token_id == SpecialOpToken.MATH_TEXT_HEAD:
+        return text_tokenizer.decode([child.token_id for child in tree_node.children])
+
     symbol = Vocabulary.get_symbol(tree_node.token_type, tree_node.token_id)
+
     # TODO: organize these
     if symbol == "eq":
         symbol = "="
@@ -56,34 +60,39 @@ def tree_to_text(tree_node: DecodeTreeNode) -> str:
         symbol = "\\leq"
     if symbol == "geq":
         symbol = "\\geq"
+    if symbol == "injective-limit":
+        symbol = "\\varinjlim"
 
     if not tree_node.children:
         return symbol
 
-    if symbol in (str(SpecialOpToken.CERR_OP), str(SpecialOpToken.NUM_SUB_TREE_HEAD)):
-        return "".join(tree_to_text(child) for child in tree_node.children[1:])
+    if symbol == str(SpecialOpToken.CERR_OP):
+        return "".join(tree_to_text(child, text_tokenizer) for child in tree_node.children[1:])
+
+    if symbol == str(SpecialOpToken.NUM_SUB_TREE_HEAD):
+        return "".join(tree_to_text(child, text_tokenizer) for child in tree_node.children)
 
     if symbol == str(SpecialOpToken.ANON_OP):
-        left = tree_to_text(tree_node.children[0])
-        return left + " { " + "".join(tree_to_text(child) for child in tree_node.children[1:]) + " } "
+        left = tree_to_text(tree_node.children[0], text_tokenizer)
+        return left + " { " + "".join(tree_to_text(child, text_tokenizer) for child in tree_node.children[1:]) + " } "
 
     if symbol == "abs":
-        return " | " + "".join(tree_to_text(child) for child in tree_node.children) + " | "
+        return " | " + "".join(tree_to_text(child, text_tokenizer) for child in tree_node.children) + " | "
 
     if symbol.startswith("interval("):
         return (" ( " if symbol[9] == "O" else " [ ") +\
-            " , ".join(tree_to_text(child) for child in tree_node.children) +\
+            " , ".join(tree_to_text(child, text_tokenizer) for child in tree_node.children) +\
             (" ) " if symbol[11] == "O" else " ] ")
 
     if symbol == "differential-d":
-        return " \\,d " + "".join(tree_to_text(child) for child in tree_node.children)
+        return " \\,d " + "".join(tree_to_text(child, text_tokenizer) for child in tree_node.children)
 
     if len(tree_node.children) >= 2:
         if symbol in ("\\times", "<", ">", "\\leq", "\\geq"):
-            return f" {symbol} ".join(tree_to_text(child) for child in tree_node.children)
+            return f" {symbol} ".join(tree_to_text(child, text_tokenizer) for child in tree_node.children)
     if len(tree_node.children) == 2:
-        left = tree_to_text(tree_node.children[0])
-        right = tree_to_text(tree_node.children[1])
+        left = tree_to_text(tree_node.children[0], text_tokenizer)
+        right = tree_to_text(tree_node.children[1], text_tokenizer)
         if symbol == "SUB":
             return f" {left} _ {{ {right} }} "
         if symbol == "SUP":
@@ -92,9 +101,9 @@ def tree_to_text(tree_node: DecodeTreeNode) -> str:
             return f" \\frac {{ {left} }} {{ {right} }}"
         return f" {left} {symbol} {right} "
     # TODO: handle matrices and matrix rows
-    return f" {symbol} " + "".join(tree_to_text(child) for child in tree_node.children)
+    return f" {symbol} " + "".join(tree_to_text(child, text_tokenizer) for child in tree_node.children)
 
-def decode_formula(token_ids: torch.Tensor, token_types: torch.Tensor):
+def decode_formula(token_ids: torch.Tensor, token_types: torch.Tensor, text_tokenizer: GPT2TokenizerFast):
     """
     Convert a raw OPT sequence into a readable formula string
     """
@@ -109,7 +118,7 @@ def decode_formula(token_ids: torch.Tensor, token_types: torch.Tensor):
 
     if scheme == "tree":
         tree = get_tree(token_ids, token_types)
-        return tree_to_text(tree)
+        return tree_to_text(tree, text_tokenizer)
 
     return ""
 
@@ -136,7 +145,11 @@ def decode_batch(batch: CollatedBatch, text_tokenizer: GPT2TokenizerFast) -> Lis
             # At end formula, switch to text context
             if token_type == TokenType.END_FORMULA:
                 if sub_seq_start != sub_seq_end:
-                    result += decode_formula(batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end], batch["token_types"][seq_idx][sub_seq_start : sub_seq_end])
+                    result += decode_formula(
+                        batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end],
+                        batch["token_types"][seq_idx][sub_seq_start : sub_seq_end],
+                        text_tokenizer
+                    )
                 result += " $ "
                 sub_seq_start = sub_seq_end = tok_idx + 1
                 is_text = True
@@ -156,7 +169,11 @@ def decode_batch(batch: CollatedBatch, text_tokenizer: GPT2TokenizerFast) -> Lis
                 if is_text:
                     result += text_tokenizer.decode(token_ids[non_padding_idx])
                 else:
-                    result += decode_formula(token_ids[non_padding_idx], batch["token_types"][seq_idx][sub_seq_start : sub_seq_end][non_padding_idx])
+                    result += decode_formula(
+                        token_ids[non_padding_idx],
+                        batch["token_types"][seq_idx][sub_seq_start : sub_seq_end][non_padding_idx],
+                        text_tokenizer
+                    )
 
         result = re.sub(r" +", " ", result)
         all_decoded_sequences.append(result)

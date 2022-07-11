@@ -327,9 +327,10 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask, eval_options
 def test_gen_task(model_name: str, task: DownstreamTask, test_options: dict):
     model, _, options = load_model(model_name, test_options.get("ddp", False), task)
     options.update(test_options)
+    start_idx = 10
     samples_to_try = 5
 
-    headlines = get_headline_data("test", options)[:samples_to_try]
+    headlines = get_headline_data("test", options)[start_idx : start_idx + samples_to_try]
     dataset = GenTaskDataset(headlines, options, options.max_seq_len)
     data_loader = get_data_loader(dataset, task, 1, False, False, options)
     with torch.no_grad():

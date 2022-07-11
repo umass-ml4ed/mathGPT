@@ -70,11 +70,11 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_t
             continue
 
         # Tokenize the formula
-        formula_sequence = tokenize_formula(formulas[str(text_chunk_idx)]["opt"], options)
+        formula_sequence = tokenize_formula(formulas[str(text_chunk_idx)]["opt"], options, text_tokenizer)
 
         if decode_formulas:
             # Decode formula back into text, with start and stop latex tokens, and add to the sequence
-            formula_text = " $ " + decode_formula(formula_sequence.token_ids, formula_sequence.token_types) + " $ "
+            formula_text = " $ " + decode_formula(formula_sequence.token_ids, formula_sequence.token_types, text_tokenizer) + " $ "
             formula_token_ids = text_tokenizer(formula_text)["input_ids"]
             sequence.token_ids += formula_token_ids
             sequence.token_types += [TokenType.TEXT] * len(formula_token_ids)
@@ -156,6 +156,7 @@ class GenTaskDataset(Dataset):
     def __init__(self, samples: List[GenTaskSample], options: TrainOptions, max_seq_len: int):
         super().__init__()
         test_first_eq = False
+        min_label_len = 2**31
         for sample in tqdm(samples):
             # Tokenize the prompt and label sequences
             prompt_text = "Question: " + sample["prompt"]["text"]
@@ -166,6 +167,7 @@ class GenTaskDataset(Dataset):
             label_text = sample["label"]["text"] + EOS_TOKEN
             label_sequence, cur_missing_formulas = tokenize_sequence("", label_text, sample["label"]["formulas"], self.text_tokenizer, options)
             self.num_missing_formulas += cur_missing_formulas
+            min_label_len = min(min_label_len, len(label_sequence))
             # Sanity check - just generate the first equation of the label with the preceding text given
             if test_first_eq:
                 if options.baseline and options.post_proc:
@@ -194,6 +196,7 @@ class GenTaskDataset(Dataset):
             self.data.append(sequence)
         print("Missing", self.num_missing_formulas, "formulas")
         print("Trimmed", self.trimmed_sequences, "long sequences")
+        print("Min label length:", min_label_len)
 
 class AnswerScoringDataset(Dataset):
     def __init__(self, samples: List[AnswerScoringSample], problems: Dict[str, Article], options: TrainOptions,

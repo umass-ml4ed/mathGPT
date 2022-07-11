@@ -1,13 +1,13 @@
 import os
 import json
-from typing import Iterable, Tuple, List
+from typing import Iterable, Tuple, List, Dict
 from tqdm import tqdm
 from matplotlib import pyplot as plt
 import numpy as np
 
 from vocabulary import Vocabulary
-from data_types import Article, GenTaskSample, OPT
-from constants import TYPE_STR_TO_INT, WIKI_DATA, OFEQ_DATA, SpecialNumToken, SpecialOpToken, SpecialVarToken
+from data_types import Article, GenTaskSample, AnswerScoringSample, OPT
+from constants import TYPE_STR_TO_INT, WIKI_DATA, OFEQ_DATA, AS_ANSWERS, AS_PROBLEMS, SpecialNumToken, SpecialOpToken, SpecialVarToken
 
 START_PARENS = ("normal-(", "normal-[", "normal-{")
 END_PARENS = ("normal-)", "normal-]", "normal-}")
@@ -149,19 +149,25 @@ def analyze_data(formulas: Iterable[Tuple[str, OPT]]):
     print("Num text tokens:", stats["num_text"], "with children:", stats["num_text_ops"])
     print("Max depth:", stats["max_depth"], "Max width:", stats["max_width"])
 
-    num_unks = sum(
-        1 for type_str, token_to_freq in stats["type_to_token_to_freq"].items() for token in token_to_freq.keys()
-        if type_str not in ("E", "E_no_more", "+") and Vocabulary.get_token(type_str, token)[1] in (SpecialVarToken.UNK, SpecialNumToken.UNK, SpecialOpToken.UNK)
-    )
-    print("Num unique tokens converted to UNK:", num_unks)
-    print("Total num unique tokens:", len({token for token_to_freq in stats["type_to_token_to_freq"].values() for token in token_to_freq.keys()}))
+    num_unk_tokens = {
+        token for type_str, token_to_freq in stats["type_to_token_to_freq"].items() for token in token_to_freq.keys()
+        if type_str == "N" and Vocabulary.get_token(type_str, token)[1] == SpecialNumToken.UNK
+    }
+    other_unk_tokens = {
+        token for type_str, token_to_freq in stats["type_to_token_to_freq"].items() for token in token_to_freq.keys()
+        if type_str not in ("E", "E_no_more", "+", "N") and Vocabulary.get_token(type_str, token)[1] in (SpecialVarToken.UNK, SpecialOpToken.UNK)
+    }
+    print("Unique num tokens converted to UNK:", len(num_unk_tokens))
+    print("Unique other tokens converted to UNK:", len(other_unk_tokens))
+    unique_tokens = {token for token_to_freq in stats["type_to_token_to_freq"].values() for token in token_to_freq.keys()}
+    print("Total num unique tokens:", len(unique_tokens))
 
     # For relevant types, plot n most frequent types against portion of nodes covered by those types
-    for type_str in ["N", "T", "V", "-", "O", "F"]:
-        frequencies = sorted(stats["type_to_token_to_freq"][type_str].values(), reverse=True)
-        plt.plot(list(range(len(frequencies))), np.cumsum(frequencies) / sum(frequencies))
-        plt.title(f"Frequency CDF for {type_str} type")
-        plt.show()
+    # for type_str in ["N", "T", "V", "-", "O", "F"]:
+    #     frequencies = sorted(stats["type_to_token_to_freq"][type_str].values(), reverse=True)
+    #     plt.plot(list(range(len(frequencies))), np.cumsum(frequencies) / sum(frequencies))
+    #     plt.title(f"Frequency CDF for {type_str} type")
+    #     plt.show()
 
 def get_wiki_formulas():
     for article_name in tqdm(os.listdir(WIKI_DATA)):
@@ -174,7 +180,7 @@ def get_wiki_formulas():
 def analyze_wiki():
     analyze_data(get_wiki_formulas())
 
-def get_mathsum_formulas():
+def analyze_mathsum():
     with open(os.path.join(OFEQ_DATA, "train.json"), encoding="utf-8") as train_file:
         train_data: List[GenTaskSample] = json.load(train_file)
     with open(os.path.join(OFEQ_DATA, "val.json"), encoding="utf-8") as val_file:
@@ -185,7 +191,15 @@ def get_mathsum_formulas():
     for src in [train_data, val_data, test_data]:
         for part in ["prompt", "label"]:
             all_formulas += [("", formula) for sample in src for formula in sample[part]["formulas"].values()]
+    analyze_data(tqdm(all_formulas))
+
+def get_answer_scoring_formulas():
+    with open(AS_PROBLEMS, encoding="utf-8") as problem_file:
+        problems: Dict[str, Article] = json.load(problem_file)
+    with open(AS_ANSWERS, encoding="utf-8") as answer_file:
+        answers: List[AnswerScoringSample] = json.load(answer_file)
+    all_formulas = list(problems.values()) + [sample["answer"] for sample in answers]
     return tqdm(all_formulas)
 
-def analyze_mathsum():
-    analyze_data(get_mathsum_formulas())
+def analyze_answer_scoring():
+    analyze_data(get_answer_scoring_formulas())
