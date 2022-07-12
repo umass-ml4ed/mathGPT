@@ -52,6 +52,7 @@ def main():
     parser.add_argument("--gen", help="Algorithm to use for generation", choices=enum_choices(Gen))
     parser.add_argument("--ns_p", type=float, help="P parameter for nucleus sampling")
     parser.add_argument("--beam_width", type=int, help="Width to use in beam search decoding")
+    parser.add_argument("--min_gen_len", type=int, help="Minimum length for generated sequences")
     parser.add_argument("--baseline", type=bool_type, help="Use baseline GPT-2 model")
     parser.add_argument("--post_proc", type=bool_type, help="For baseline - if true, train on post-processed and decoded formulas, else train on original formulas")
     parser.add_argument("--joint", type=bool_type, help="When true, model type/token probability jointly, otherwise model token probability directly")

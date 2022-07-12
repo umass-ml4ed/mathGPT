@@ -8,7 +8,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 from torch.cuda.amp.grad_scaler import GradScaler
 from tqdm import tqdm
-from neptune.new.run import Run
+# from neptune.new.run import Run
 from sklearn.model_selection import StratifiedKFold
 import numpy as np
 
@@ -88,7 +88,7 @@ def evaluate_model(model: MathGPTBase, dataset: Dataset, task: Optional[Downstre
     return evaluate_lm_accuracy(model, dataset, task, options)
 
 def train(model: Union[MathGPTBase, DDP], model_name: str, train_loader: DataLoader, validation_dataset: Dataset, options: TrainOptions,
-          run: Optional[Run] = None, task: Optional[DownstreamTask] = None, checkpoint: Optional[Checkpoint] = None):
+          run = None, task: Optional[DownstreamTask] = None, checkpoint: Optional[Checkpoint] = None):
     optimizer = torch.optim.AdamW(model.parameters(), lr=options.lr, weight_decay=options.weight_decay)
     if checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -327,7 +327,7 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask, eval_options
 def test_gen_task(model_name: str, task: DownstreamTask, test_options: dict):
     model, _, options = load_model(model_name, test_options.get("ddp", False), task)
     options.update(test_options)
-    start_idx = 10
+    start_idx = 0
     samples_to_try = 5
 
     headlines = get_headline_data("test", options)[start_idx : start_idx + samples_to_try]

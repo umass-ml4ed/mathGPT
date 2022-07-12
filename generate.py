@@ -164,7 +164,7 @@ def generate_beam(model: MathGPTLM, start_batch: CollatedBatch, options: TrainOp
     batch_size, starting_len = start_batch["token_ids"].shape
     assert batch_size == 1 # It's just easier this way...
     candidate_batches = [(0., trim_batch(start_batch, 0, options.max_seq_len))]
-    for _ in range(starting_len, options.max_seq_len):
+    for cur_idx in range(starting_len, options.max_seq_len):
         # For each candidate batch, get the n most likely continuations
         top_candidate_info: List[Tuple[float, int, int, int]] = []
         for batch_idx, (nll, batch) in enumerate(candidate_batches):
@@ -178,6 +178,8 @@ def generate_beam(model: MathGPTLM, start_batch: CollatedBatch, options: TrainOp
                 ))
                 continue
             loss, type_to_token_probs = model(batch)
+            if cur_idx - starting_len < options.min_gen_len:
+                type_to_token_probs[TokenType.TEXT][:, :, EOS_TOKEN_ID] = 0
             token_probs, type_to_start_idx = collapse_token_probs(type_to_token_probs)
             sorted_probs, sorted_indices = torch.sort(token_probs[0], descending=True)
             labels = batch["token_ids"] if batch["gen_labels"] is None else batch["gen_labels"]

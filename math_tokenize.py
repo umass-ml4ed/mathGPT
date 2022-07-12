@@ -121,14 +121,16 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
         # Resolve type and token id from symbol, post-processing rules follow
         type_str, symbol = formula[:2]
 
-        # TODO: should single-character numbers still have the OP head?
-        if options.num_to_tree and type_str == "N" and len(symbol) > 1:
-            # Convert numbers to sub-trees:
-            # Insert a special num op token and set its children to the digits of the number
-            token_type, token_id = TokenType.OP, SpecialOpToken.NUM_SUB_TREE_HEAD.value
-            children = [["N", char, None] for char in symbol][:MAX_FORMULA_WIDTH - 1]
+        if options.num_to_tree:
+            # Convert numbers to sub-trees
+            if type_str == "N":
+                # Insert a special num op token and set its children to the digits of the number
+                token_type, token_id = TokenType.OP, SpecialOpToken.NUM_SUB_TREE_HEAD.value
+                children = [["NC", char, None] for char in symbol][:MAX_FORMULA_WIDTH - 1]
+            elif type_str == "NC":
+                type_str = "N"
 
-        elif type_str == "+":
+        if type_str == "+":
             # Convert all "+" symbols to anonymous operator.
             # TangentCFT will assign the left grandchild, with a sub-type, as the symbol.
             # We'll assume the model doesn't need this hint and can discover the relation via attention.

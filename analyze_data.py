@@ -2,7 +2,7 @@ import os
 import json
 from typing import Iterable, Tuple, List, Dict
 from tqdm import tqdm
-from matplotlib import pyplot as plt
+# from matplotlib import pyplot as plt
 import numpy as np
 
 from vocabulary import Vocabulary

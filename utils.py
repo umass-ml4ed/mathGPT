@@ -4,7 +4,7 @@ from typing import Optional
 import numpy as np
 import torch
 import torch.distributed as dist
-import neptune.new as neptune
+# import neptune.new as neptune
 
 from constants import DownstreamTask, TPE, Gen
 
@@ -65,6 +65,7 @@ class TrainOptions:
         self.gen: str = options.get("gen", Gen.BEAM.value)
         self.ns_p: float = options.get("ns_p", 0.90)
         self.beam_width: int = options.get("beam_width", 3)
+        self.min_gen_len: int = options.get("min_gen_len", 5)
         self.stride: Optional[int] = options.get("stride", None)
         self.ddp: bool = options.get("ddp", False)
         # Model/data config
