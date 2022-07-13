@@ -2,6 +2,7 @@ import time
 import os
 import json
 from typing import Optional, List, Tuple, Union, Dict
+import random
 import torch
 from torch.utils.data import DataLoader
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -14,13 +15,13 @@ import numpy as np
 
 from model_math_gpt import MathGPTBase, MathGPTLM, MathGPTClassifier
 from model_baseline import GPTLMBaseline, GPTClassifierBaseline
-from loading import Dataset, PreTrainDataset, PreTrainDatasetPreloaded, GenTaskDataset, AnswerScoringDataset, trim_batch, get_data_loader
+from loading import Dataset, PreTrainDataset, PreTrainDatasetPreloaded, GenTaskDataset, AnswerScoringDataset, FeedbackDataset, trim_batch, get_data_loader
 from evaluate import evaluate_lm, evaluate_lm_accuracy, evaluate_cls_task, evaluate_gen_task
 from generate import generate
 from decode import decode_batch
 from utils import TrainOptions, device, is_cls_task, new_neptune_run
-from data_types import Article, GenTaskSample, AnswerScoringSample
-from constants import DownstreamTask, Checkpoint, DOWNSTREAM_TASK_TO_NUM_CLASSES, WIKI_DATA, OFEQ_DATA, AS_PROBLEMS, AS_ANSWERS
+from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample
+from constants import DownstreamTask, Checkpoint, DOWNSTREAM_TASK_TO_NUM_CLASSES, WIKI_DATA, OFEQ_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_DATA
 
 def get_article_names():
     return [os.path.join(WIKI_DATA, article_filename) for article_filename in os.listdir(WIKI_DATA)]
@@ -51,6 +52,14 @@ def get_answer_scoring_data() -> Tuple[Dict[str, Article], List[AnswerScoringSam
     train_data_idx, test_data_idx = next(skf.split(answers_np, stratify_labels))
     test_len = len(test_data_idx) // 2
     return problems, answers_np[train_data_idx], answers_np[test_data_idx][:test_len], answers_np[test_data_idx][test_len:]
+
+def get_feedback_data():
+    with open(FEEDBACK_DATA, encoding="utf-8") as feedback_file:
+        samples: List[FeedbackTaskSample] = json.load(feedback_file)
+    random.Random(221).shuffle(samples)
+    train_len = int(.8 * len(samples))
+    test_len = int(.1 * len(samples))
+    return samples[:train_len], samples[train_len : -test_len], samples[-test_len:]
 
 def load_options(model_name: str):
     with open(f"{model_name}.json", encoding="utf-8") as config_file:
@@ -92,12 +101,14 @@ def train(model: Union[MathGPTBase, DDP], model_name: str, train_loader: DataLoa
     optimizer = torch.optim.AdamW(model.parameters(), lr=options.lr, weight_decay=options.weight_decay)
     if checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        del checkpoint["optimizer_state_dict"]
     if not options.amp:
         torch.autograd.set_detect_anomaly(True) # Pause exectuion and get stack trace if something weird happens (ex: NaN grads)
     # Scaler prevents gradient underflow when using fp16 precision
     scaler = GradScaler() if options.amp else None
     if checkpoint and scaler is not None:
         scaler.load_state_dict(checkpoint["scaler_state_dict"])
+        del checkpoint["scaler_state_dict"]
 
     if run:
         run["name"] = model_name
@@ -209,15 +220,12 @@ def evaluate_pretrained_lm(model_name: str, test_options: dict):
     model, _, options = load_model(model_name, test_options.get("ddp", False))
     options.update(test_options)
 
-    # TODO: get test split from a file
-    # TODO: try excluding test articles that contain UNKs, see how many are left out
     articles = get_article_names()
     split_point = int(len(articles) * .90)
     test_articles = articles[split_point:]
     dataset = PreTrainDataset(test_articles, options, max_seq_len=None)
     loss, results = evaluate_lm(model, dataset, options)
     print(f"Loss: {loss:.3f}, {results}")
-    # TODO: record to run
     return results
 
 def test_lm(model_name: str, test_article: str, test_options: dict):
@@ -289,13 +297,19 @@ def train_downstream_task(model_name: str, checkpoint_name: Optional[str], pretr
             model = DDP(model, device_ids=[torch.cuda.current_device()], find_unused_parameters=True)
 
     # Load and process data
-    if is_cls_task(task):
+    if task == DownstreamTask.HEADLINES:
+        train_data = GenTaskDataset(get_headline_data("train", options), options)
+        val_data = GenTaskDataset(get_headline_data("val", options), options)
+    elif task == DownstreamTask.ANSWER_SCORING:
         problems, train_samples, val_samples, _ = get_answer_scoring_data()
         train_data = AnswerScoringDataset(train_samples, problems, options)
         val_data = AnswerScoringDataset(val_samples, problems, options, train_data.data)
+    elif task == DownstreamTask.FEEDBACK:
+        train_samples, val_samples, _ = get_feedback_data()
+        train_data = FeedbackDataset(train_samples, options)
+        val_data = FeedbackDataset(val_samples, options)
     else:
-        train_data = GenTaskDataset(get_headline_data("train", options), options, options.max_seq_len)
-        val_data = GenTaskDataset(get_headline_data("val", options), options, options.max_seq_len)
+        raise Exception(f"Unsupported task {task}")
     train_loader = get_data_loader(train_data, task, options.batch_size, True, True, options)
 
     # Start training
@@ -311,17 +325,23 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask, eval_options
     model, _, options = load_model(model_name, eval_options.get("ddp", False), task)
     options.update(eval_options)
 
-    if is_cls_task(task):
+    if task == DownstreamTask.HEADLINES:
+        headlines = get_headline_data("test", options)
+        test_data = GenTaskDataset(headlines, options)
+        _, results = evaluate_gen_task(model, test_data, task, options)
+    elif task == DownstreamTask.ANSWER_SCORING:
         problems, train_samples, _, test_samples = get_answer_scoring_data()
         train_data = AnswerScoringDataset(train_samples, problems, options)
         test_data = AnswerScoringDataset(test_samples, problems, options, train_data.data)
         _, results = evaluate_cls_task(model, test_data, task, options)
+    elif task == DownstreamTask.FEEDBACK:
+        _, _, test_samples = get_feedback_data()
+        test_data = FeedbackDataset(test_samples, options)
+        _, results = evaluate_gen_task(model, test_data, task, options)
     else:
-        headlines = get_headline_data("test", options)
-        dataset = GenTaskDataset(headlines, options, options.max_seq_len)
-        _, results = evaluate_gen_task(model, dataset, task, options)
+        raise Exception(f"Unsupported task {task}")
+
     print(results)
-    # TODO: record to run
     return results
 
 def test_gen_task(model_name: str, task: DownstreamTask, test_options: dict):
@@ -330,8 +350,14 @@ def test_gen_task(model_name: str, task: DownstreamTask, test_options: dict):
     start_idx = 0
     samples_to_try = 5
 
-    headlines = get_headline_data("test", options)[start_idx : start_idx + samples_to_try]
-    dataset = GenTaskDataset(headlines, options, options.max_seq_len)
+    if task == DownstreamTask.HEADLINES:
+        samples = get_headline_data("test", options)
+        dataset = GenTaskDataset(samples[start_idx : start_idx + samples_to_try], options)
+    elif task == DownstreamTask.FEEDBACK:
+         _, _, samples = get_feedback_data()
+         dataset = FeedbackDataset(samples[start_idx : start_idx + samples_to_try], options)
+    else:
+        raise Exception(f"Unsupported task {task}")
     data_loader = get_data_loader(dataset, task, 1, False, False, options)
     with torch.no_grad():
         for batch in data_loader:

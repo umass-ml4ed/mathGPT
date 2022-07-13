@@ -6,7 +6,7 @@ from transformers import GPT2TokenizerFast
 
 from data_types import CollatedBatch
 from constants import TokenType, SpecialOpToken, EOS_TOKEN_ID, PADDING_TOKEN_ID
-from vocabulary import Vocabulary
+from vocabulary import Vocabulary, get_matrix_symbol
 
 @dataclass
 class DecodeTreeNode:
@@ -76,6 +76,9 @@ def tree_to_text(tree_node: DecodeTreeNode, text_tokenizer: GPT2TokenizerFast) -
         left = tree_to_text(tree_node.children[0], text_tokenizer)
         return left + " { " + "".join(tree_to_text(child, text_tokenizer) for child in tree_node.children[1:]) + " } "
 
+    if symbol == get_matrix_symbol("L"):
+        return " , ".join(tree_to_text(child, text_tokenizer) for child in tree_node.children)
+
     if symbol == "abs":
         return " | " + "".join(tree_to_text(child, text_tokenizer) for child in tree_node.children) + " | "
 
@@ -88,7 +91,7 @@ def tree_to_text(tree_node: DecodeTreeNode, text_tokenizer: GPT2TokenizerFast) -
         return " \\,d " + "".join(tree_to_text(child, text_tokenizer) for child in tree_node.children)
 
     if len(tree_node.children) >= 2:
-        if symbol in ("\\times", "<", ">", "\\leq", "\\geq"):
+        if symbol in ("\\times", "<", ">", "\\leq", "\\geq", "+", "-"):
             return f" {symbol} ".join(tree_to_text(child, text_tokenizer) for child in tree_node.children)
     if len(tree_node.children) == 2:
         left = tree_to_text(tree_node.children[0], text_tokenizer)
@@ -101,7 +104,7 @@ def tree_to_text(tree_node: DecodeTreeNode, text_tokenizer: GPT2TokenizerFast) -
             return f" \\frac {{ {left} }} {{ {right} }}"
         return f" {left} {symbol} {right} "
     # TODO: handle matrices and matrix rows
-    return f" {symbol} " + "".join(tree_to_text(child, text_tokenizer) for child in tree_node.children)
+    return f" {symbol} " + " ".join(tree_to_text(child, text_tokenizer) for child in tree_node.children)
 
 def decode_formula(token_ids: torch.Tensor, token_types: torch.Tensor, text_tokenizer: GPT2TokenizerFast):
     """

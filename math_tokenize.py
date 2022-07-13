@@ -123,12 +123,19 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
 
         if options.num_to_tree:
             # Convert numbers to sub-trees
-            if type_str == "N":
-                # Insert a special num op token and set its children to the digits of the number
-                token_type, token_id = TokenType.OP, SpecialOpToken.NUM_SUB_TREE_HEAD.value
-                children = [["NC", char, None] for char in symbol][:MAX_FORMULA_WIDTH - 1]
-            elif type_str == "NC":
-                type_str = "N"
+            sd_to_tree = False
+            if sd_to_tree:
+                if type_str == "N":
+                    # Insert a special num op token and set its children to the digits of the number
+                    token_type, token_id = TokenType.OP, SpecialOpToken.NUM_SUB_TREE_HEAD.value
+                    children = [["NC", char, None] for char in symbol][:MAX_FORMULA_WIDTH - 1]
+                elif type_str == "NC":
+                    type_str = "N"
+            else:
+                if type_str == "N" and len(symbol) > 1:
+                    # Insert a special num op token and set its children to the digits of the number
+                    token_type, token_id = TokenType.OP, SpecialOpToken.NUM_SUB_TREE_HEAD.value
+                    children = [["N", char, None] for char in symbol][:MAX_FORMULA_WIDTH - 1]
 
         if type_str == "+":
             # Convert all "+" symbols to anonymous operator.

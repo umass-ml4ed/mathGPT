@@ -6,12 +6,11 @@ from tqdm import tqdm
 import pandas
 
 from TangentCFT.TangentS.math_tan.math_document import MathDocument
-from mathGPT.data_types import Article
 
 from pre_process_utils import process_article, process_raw_text, html_to_latex, wrap_formulas, all_latexml_errs, all_tangent_cft_errs
 from vocabulary import Vocabulary
-from data_types import GenTaskSample, AnswerScoringSample
-from constants import FORMULA_IDENTIFIER, DATA, WIKI_DATA, AS_PROBLEMS, AS_ANSWERS
+from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample
+from constants import FORMULA_IDENTIFIER, DATA, WIKI_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_DATA
 
 def process_wikipedia_data():
     """
@@ -219,6 +218,45 @@ def process_answer_scoring_data():
 
     # Dump errors
     with open("answer_scoring_errs.json", "w", encoding="utf-8") as err_file:
+        json.dump({
+            **err_data,
+            "all_latexml_errs": all_latexml_errs,
+            "all_tangent_cft_errs": all_tangent_cft_errs,
+        }, err_file, indent=2, ensure_ascii=False)
+
+def process_feedback_data():
+    df = pandas.read_csv("../cwafs_in_production (1).csv", encoding="utf-8")
+
+    err_data = {
+        "articles_missing_formulas": 0,
+        "formulas_missing_from_latexml_failure": 0,
+        "formulas_missing_from_latexml_randomly": 0,
+        "formulas_missing_from_tangentcft": 0,
+    }
+    samples: List[FeedbackTaskSample] = []
+    for _, row in tqdm(df.iterrows(), total=df.shape[0]):
+        batched_text = []
+        raw_problem = str(row["problem_body"]).replace("\\n", " ").replace("\\r", " ")
+        batched_text.append(raw_problem)
+        for cwa_field in ["cwa1", "cwa2", "cwa3"]:
+            raw_answer = str(row[cwa_field]).replace("\\n", " ").replace("\\r", " ")
+            raw_feedback = str(row[cwa_field + "_feedback"]).replace("\\n", " ").replace("\\r", " ")
+            if raw_answer in ("null", "nan", "#ERROR!") or raw_feedback == "nan":
+                continue
+            batched_text.append(raw_answer)
+            batched_text.append(raw_feedback)
+        processed_batch = process_raw_text([wrap_formulas(html_to_latex(raw_text)) for raw_text in batched_text], err_data)
+        for idx in range(1, len(processed_batch), 2):
+            samples.append({
+                "problem": processed_batch[0],
+                "answer": processed_batch[idx],
+                "feedback": processed_batch[idx + 1],
+            })
+    with open(FEEDBACK_DATA, "w", encoding="utf-8") as feedback_file:
+        json.dump(samples, feedback_file, indent=2, ensure_ascii=False)
+
+    # Dump errors
+    with open("feedback_errs.json", "w", encoding="utf-8") as err_file:
         json.dump({
             **err_data,
             "all_latexml_errs": all_latexml_errs,

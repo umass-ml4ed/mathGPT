@@ -8,7 +8,7 @@ from transformers import GPT2TokenizerFast
 
 from math_tokenize import tokenize_formula, EMPTY_POS_VECTOR, get_empty_pos_encoding, encode_pos
 from decode import decode_formula
-from data_types import Article, GenTaskSample, AnswerScoringSample, ClassifyTaskSample, Formula, Sequence, CollatedBatch
+from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, Formula, Sequence, CollatedBatch
 from constants import TokenType, DownstreamTask, TPE, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, CLS_TOKEN, FORMULA_IDENTIFIER, DOLLAR_TOK
 from utils import device, is_cls_task, TrainOptions
 
@@ -153,7 +153,7 @@ class PreTrainDatasetPreloaded(Dataset):
         print("Missing", self.num_missing_formulas, "formulas")
 
 class GenTaskDataset(Dataset):
-    def __init__(self, samples: List[GenTaskSample], options: TrainOptions, max_seq_len: int):
+    def __init__(self, samples: List[GenTaskSample], options: TrainOptions):
         super().__init__()
         test_first_eq = False
         min_label_len = 2**31
@@ -184,7 +184,7 @@ class GenTaskDataset(Dataset):
                     end_idx = next((idx for idx, token_type in enumerate(headline_end.token_types) if token_type == TokenType.END_FORMULA), None)
                 label_sequence = headline_end.split_at(end_idx + 1)[0]
             # Trim the prompt if we go over the max length
-            overflow = len(prompt_sequence) + len(intermediate_sequence) + len(label_sequence) - max_seq_len
+            overflow = len(prompt_sequence) + len(intermediate_sequence) + len(label_sequence) - options.max_seq_len
             if overflow > 0:
                 self.trimmed_sequences += 1
                 prompt_sequence = split_sequence(prompt_sequence, len(prompt_sequence) - overflow)[0]
@@ -294,23 +294,37 @@ class AnswerScoringDataset(Dataset):
         sequence.meta = {"label": sample.meta["label"]}
         return sequence
 
-class ClassifyTaskDataset(Dataset):
-    def __init__(self, samples: List[ClassifyTaskSample], options: TrainOptions, max_seq_len: int):
+class FeedbackDataset(Dataset):
+    def __init__(self, samples: List[FeedbackTaskSample], options: TrainOptions):
         super().__init__()
+        shortest_feedback = 2**31
+        longest_feedback = 0
         for sample in tqdm(samples):
-            # Tokenize sequence and save the label
-            text = sample["text"] + CLS_TOKEN
-            sequence, cur_missing_formulas = tokenize_sequence("", text, sample["formulas"], self.text_tokenizer, options)
+            problem_text = "Question: " + sample["problem"]["text"]
+            problem_sequence, cur_missing_formulas = tokenize_sequence("", problem_text, sample["problem"]["formulas"], self.text_tokenizer, options)
             self.num_missing_formulas += cur_missing_formulas
-            sequence.meta = {"label": sample["label"]}
-            # Trim the sequence if we go over the max length
-            # TODO: this will remove the CLS token...
-            if len(sequence) > max_seq_len:
+            answer_text = " [SEP] Answer: " + sample["answer"]["text"] + " [SEP] Feedback: "
+            answer_sequence, cur_missing_formulas = tokenize_sequence("", answer_text, sample["answer"]["formulas"], self.text_tokenizer, options)
+            self.num_missing_formulas += cur_missing_formulas
+            feedback_text = sample["feedback"]["text"] + EOS_TOKEN
+            feedback_sequence, cur_missing_formulas = tokenize_sequence("", feedback_text, sample["feedback"]["formulas"], self.text_tokenizer, options)
+            self.num_missing_formulas += cur_missing_formulas
+            shortest_feedback = min(shortest_feedback, len(feedback_sequence))
+            longest_feedback = max(longest_feedback, len(feedback_sequence))
+            # Trim the problem if we go over the max length
+            overflow = len(problem_sequence) + len(answer_sequence) + len(feedback_sequence) - options.max_seq_len
+            if overflow > 0:
                 self.trimmed_sequences += 1
-                sequence = split_sequence(sequence, max_seq_len)[0]
+                problem_sequence = split_sequence(problem_sequence, len(problem_sequence) - overflow)[0]
+            # Concatenate into single sequence, and save the length of the prompt for creating generative labels
+            sequence = problem_sequence + answer_sequence + feedback_sequence
+            sequence.meta = {
+                "prompt_length": len(problem_sequence) + len(answer_sequence)
+            }
             self.data.append(sequence)
         print("Missing", self.num_missing_formulas, "formulas")
         print("Trimmed", self.trimmed_sequences, "long sequences")
+        print("Shortest feedback:", shortest_feedback, "Longest feedback:", longest_feedback)
 
 def get_data_loader(dataset: Dataset, task: Optional[DownstreamTask], batch_size: int, shuffle: bool, drop_last: bool, options: TrainOptions):
     return DataLoader(

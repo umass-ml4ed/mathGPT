@@ -326,21 +326,24 @@ esc_to_latex = [
 
 latex_math_macros = {latex[1] for latex in esc_to_latex if latex[2]}.union({"^", "_"})
 
-math_word_re = re.compile(r"^([0-9]+([\.,][0-9]+)?|\.[0-9]+|(\\_)+|[0-9\.]*[a-zA-Z][0-9\.]*)$")
-
-punctuation_re = re.compile(r"(\s[0-9a-zA-Z\\_]*)([\.,!?:;]+)([a-zA-Z\\_]*(\s|$))")
-
-math_ops = {"=", "<", ">", "+", "-", "*", "/", "(", ")", "\\{", "\\}", "[", "]"}
+math_ops = {"=", "<", ">", "+", "-", "*", "/", ":", "(", ")", "\\{", "\\}", "[", "]"}
 
 latex_ops = {"\\times", "\\ne", "\\ge", "\\le", "\\angle", "\\forall", "\\equiv", "\\exists", "\\notin", "\\in", "\\prod", "\\cdot", "\\degree", "\\approx", "\\surd", "\\vee"}
 
-times_re = re.compile(r"\s([0-9]+([\.,][0-9]+)?|\.[0-9]+|\)|[a-zA-Z])\s*x\s*([0-9]+([\.,][0-9]+)?|\.[0-9]+|\(|[a-zA-Z])\s")
+math_word_re = re.compile(r"^([0-9]+([\.,][0-9]+)*|\.[0-9]+|(\\_)+|[0-9\.]*[a-zA-Z][0-9\.]*)$")
+
+punctuation_re = re.compile(r"(\s([0-9a-zA-Z\\_]*|[0-9]+([\.,][0-9]+)*[a-zA-Z]?))([\.,!?;]+)([a-zA-Z\\_]*(\s|$))")
+
+times_re = re.compile(r"\s([0-9]+([\.,][0-9]+)*|\.[0-9]+|\)|[a-zA-Z])\s*x\s*([0-9]+([\.,][0-9]+)*|\.[0-9]+|\(|[a-zA-Z])\s")
+
+standalone_math_re = re.compile(r"^(([0-9]+([\.,][0-9]+)*|\.[0-9]+)[a-zA-Z]?|[kxyz])$")
 
 @lru_cache(maxsize=1024) # Cache because many entries have the same question text
 def html_to_latex(text: str):
     """
     Convert html text to latex, and do additional cleaning
     """
+
     # Whoever put this as an answer is a genius hacker who knew how to cause latexml to completely freeze up
     if text == "<p>:(((((((((((((((((((((((((((((((((((((((((((((((</p>":
         return ""
@@ -349,10 +352,10 @@ def html_to_latex(text: str):
     for tok in broken_tokens:
         text = text.replace(tok, " ")
     # Escape special latex characters
-    text = text.replace("\\", "\\textbackslash")
-    text = text.replace("$", "\\$")
-    text = text.replace("{", "\\{")
-    text = text.replace("}", "\\}")
+    text = text.replace("\\", " \\textbackslash ")
+    text = text.replace("$", " \\$ ")
+    text = text.replace("{", " \\{ ")
+    text = text.replace("}", " \\} ")
     text = re.sub(r"_+", "\\_", text) # Multiple underscores are often used to represent blanks - just collapse to one
     # Convert html math tags to latex
     text = re.sub(r"<sup>([^<]*)</sup>", r" ^ { \g<1> } ", text)
@@ -367,7 +370,7 @@ def html_to_latex(text: str):
     for math_op in math_ops:
         text = text.replace(math_op, f" {math_op} ")
     # Put spaces around punctuation
-    text = punctuation_re.sub(r"\g<1> \g<2> \g<3>", text)
+    text = punctuation_re.sub(r"\g<1> \g<4> \g<5>", text)
     # Handle cases where "x" is used for multiplication
     text = times_re.sub(r" \g<1> \\times \g<3> ", text)
     # Collapse whitespace
@@ -390,6 +393,15 @@ def wrap_formulas(text: str):
     curly_brace_level = 0
 
     def try_add_formula(start_idx: int, end_idx: int, words: List[str], final_text: List[str]):
+        # Deal with accidentally grabbing ) at the start and ( at the end
+        to_append = []
+        if words[start_idx] == ")":
+            final_text.append(words[start_idx])
+            start_idx += 1
+        if words[end_idx - 1] == "(":
+            to_append.append(words[end_idx - 1])
+            end_idx -= 1
+
         # We have a valid formula if the length is > 1 or if the single word is a latex math macro
         # Also account for common false positive cases
         false_positive = end_idx - start_idx == 2 and ((
@@ -397,12 +409,13 @@ def wrap_formulas(text: str):
         ) or (
             words[start_idx] in ("(", ")") and math_word_re.match(words[start_idx + 1])
         ))
-        if (end_idx > start_idx + 1 or words[start_idx] in latex_math_macros) and not false_positive:
+        if (end_idx > start_idx + 1 or words[start_idx] in latex_math_macros or standalone_math_re.match(words[start_idx])) and not false_positive:
             final_text.append("<m>")
             final_text.extend(words[start_idx : end_idx])
             final_text.append("</m>")
         else:
             final_text.extend(words[start_idx : end_idx])
+        final_text.extend(to_append)
 
     for word_idx, word in enumerate(words):
         var_candidate = math_word_re.match(word)

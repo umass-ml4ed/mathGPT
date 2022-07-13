@@ -23,8 +23,10 @@ class AnswerScoringSample(TypedDict):
     problem_log_id: int
     grade: int
 
-class ClassifyTaskSample(Article):
-    label: Any
+class FeedbackTaskSample(TypedDict):
+    problem: Article
+    answer: Article
+    feedback: Article
 
 class SequenceMetaData(TypedDict):
     # For gen tasks

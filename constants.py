@@ -60,14 +60,11 @@ class Checkpoint(TypedDict):
 
 class DownstreamTask(Enum):
     HEADLINES = "headlines"
-    SOLVING = "solving"
     ANSWER_SCORING = "answer_scoring"
-    FEEDBACK_GEN = "feedback"
-    KC_PRED = "kc_pred"
+    FEEDBACK = "feedback"
 
 DOWNSTREAM_TASK_TO_NUM_CLASSES = {
     DownstreamTask.ANSWER_SCORING: 5,
-    DownstreamTask.KC_PRED: 10,
 }
 
 class TPE(Enum):
@@ -103,3 +100,4 @@ EXEQ_DATA = "data/EXEQ-300k"
 OFEQ_DATA = "data/OFEQ-10k"
 AS_PROBLEMS = "data/answer_scoring/problems.json"
 AS_ANSWERS = "data/answer_scoring/answers.json"
+FEEDBACK_DATA = "data/feedback.json"

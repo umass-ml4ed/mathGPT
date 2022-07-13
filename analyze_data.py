@@ -6,8 +6,8 @@ from tqdm import tqdm
 import numpy as np
 
 from vocabulary import Vocabulary
-from data_types import Article, GenTaskSample, AnswerScoringSample, OPT
-from constants import TYPE_STR_TO_INT, WIKI_DATA, OFEQ_DATA, AS_ANSWERS, AS_PROBLEMS, SpecialNumToken, SpecialOpToken, SpecialVarToken
+from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, Formula, OPT
+from constants import TYPE_STR_TO_INT, WIKI_DATA, OFEQ_DATA, AS_ANSWERS, AS_PROBLEMS, FEEDBACK_DATA, SpecialNumToken, SpecialOpToken, SpecialVarToken
 
 START_PARENS = ("normal-(", "normal-[", "normal-{")
 END_PARENS = ("normal-)", "normal-]", "normal-}")
@@ -97,7 +97,7 @@ def process_tree(article_name: str, tree_node: OPT, depth: int, err_found: bool,
 
     return err_found, cat_err_found
 
-def analyze_data(formulas: Iterable[Tuple[str, OPT]]):
+def analyze_data(formulas: Iterable[Tuple[str, Formula]]):
     """
     Gather high-level info on pre-processed data
     """
@@ -193,13 +193,22 @@ def analyze_mathsum():
             all_formulas += [("", formula) for sample in src for formula in sample[part]["formulas"].values()]
     analyze_data(tqdm(all_formulas))
 
-def get_answer_scoring_formulas():
+def analyze_answer_scoring():
     with open(AS_PROBLEMS, encoding="utf-8") as problem_file:
         problems: Dict[str, Article] = json.load(problem_file)
     with open(AS_ANSWERS, encoding="utf-8") as answer_file:
         answers: List[AnswerScoringSample] = json.load(answer_file)
-    all_formulas = list(problems.values()) + [sample["answer"] for sample in answers]
-    return tqdm(all_formulas)
+    all_formulas = [
+        ("", formula) for problem in problems.values() for formula in problem["formulas"].values()
+    ] + [
+        ("", formula) for answer in answers for formula in answer["answer"]["formulas"].values()
+    ]
+    analyze_data(tqdm(all_formulas))
 
-def analyze_answer_scoring():
-    analyze_data(get_answer_scoring_formulas())
+def analyze_feedback():
+    with open(FEEDBACK_DATA, encoding="utf-8") as feedback_file:
+        samples: List[FeedbackTaskSample] = json.load(feedback_file)
+    all_formulas = []
+    for field in ["problem", "answer", "feedback"]:
+        all_formulas += [("", formula) for sample in samples for formula in sample[field]["formulas"].values()]
+    analyze_data(tqdm(all_formulas))
