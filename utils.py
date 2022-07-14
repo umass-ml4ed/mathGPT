@@ -77,6 +77,7 @@ class TrainOptions:
         self.num_classes: Optional[int] = options.get("num_classes", None)
         self.num_to_tree: bool = options.get("num_to_tree", False)
         self.math_text: bool = options.get("math_text", False)
+        self.shared_emb: bool = options.get("shared_emb", False)
 
     def as_dict(self):
         self_dict = self.__dict__

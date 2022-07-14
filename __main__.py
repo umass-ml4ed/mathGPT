@@ -3,7 +3,7 @@ import torch
 import torch.multiprocessing as mp
 
 from pre_process import process_wikipedia_data, process_probes, process_mathsum_data, process_answer_scoring_data, process_feedback_data
-from analyze_data import analyze_wiki, analyze_mathsum, analyze_answer_scoring, analyze_feedback
+from analyze_data import analyze_wiki, analyze_mathsum, analyze_answer_scoring, analyze_feedback, analyze_vocab
 from training import pretrain, evaluate_pretrained_lm, test_lm, train_downstream_task, evaluate_downstream_task, test_gen_task
 from utils import initialize_seeds, device, enum_choices, enum_value_to_member, setup_proc_group, cleanup_proc_group
 from vocabulary import Vocabulary
@@ -34,6 +34,7 @@ def main():
     parser.add_argument("--analyze_mathsum", action="store_true", help="Produce stats on pre-processed MathSum dataset")
     parser.add_argument("--analyze_answer_scoring", action="store_true", help="Produce stats on pre-processed answer scoring dataset")
     parser.add_argument("--analyze_feedback", action="store_true", help="Produce stats on pre-processed feedback dataset")
+    parser.add_argument("--analyze_vocab", action="store_true", help="Produce stats on the math vocab")
     parser.add_argument("--pretrain", action="store_true", help="Pre-train LM")
     parser.add_argument("--evaluate_lm", action="store_true", help="Evaluate LM performance on test set")
     parser.add_argument("--test_lm", help="Run language generation using given article")
@@ -63,6 +64,7 @@ def main():
     parser.add_argument("--ddp", type=bool_type, help="Use DistributedDataParallel")
     parser.add_argument("--num_to_tree", type=bool_type, help="Convert numeric symbols into sub-trees")
     parser.add_argument("--math_text", type=bool_type, help="Convert unseen math tokens to sub-trees with tokens from GPT encoder")
+    parser.add_argument("--shared_emb", type=bool_type, help="Math token embeddings derived from corresponding text embeddings")
 
     args = parser.parse_args()
 
@@ -107,6 +109,8 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
         analyze_answer_scoring()
     if args.analyze_feedback:
         analyze_feedback()
+    if args.analyze_vocab:
+        analyze_vocab()
     if args.pretrain:
         pretrain(args.name, args.checkpoint_name, arg_dict)
     if args.evaluate_lm:

@@ -126,7 +126,7 @@ class Vocabulary:
             json.dump(cls._base_vocab, out_file, indent=2, ensure_ascii=False)
 
     @classmethod
-    def load(cls):
+    def load(cls, infreq_to_unk: bool = True):
         """
         Load vocab from file and mark as loaded
         """
@@ -166,7 +166,7 @@ class Vocabulary:
                 continue
 
             # For specified types, only keep most frequent symbols
-            if str_type in TYPE_STR_TO_MAX_NUM_TOKENS:
+            if infreq_to_unk and str_type in TYPE_STR_TO_MAX_NUM_TOKENS:
                 most_freq_symbols = sorted(symbols.items(), key=lambda symbol: symbol[1], reverse=True)
                 symbols_to_keep = most_freq_symbols[:TYPE_STR_TO_MAX_NUM_TOKENS[str_type]]
             else:

@@ -132,13 +132,13 @@ def process_probes():
         json.dump(processed_probes, processed_prompt_file, indent=2, ensure_ascii=False)
 
 def process_answer_scoring_data():
-    # df = pandas.read_csv("../qc_full_meta_clean.csv", encoding="utf-8")
-    df = pandas.read_csv("../qc_clean.csv", encoding="utf-8")
+    df = pandas.read_csv("../qc_full_meta_clean.csv", encoding="utf-8")
+    # df = pandas.read_csv("../qc_clean.csv", encoding="utf-8")
     # df = pandas.read_csv("../before_rasch.csv", encoding="utf-8")
 
     # Do some initial analysis on the dataset
-    esc_pat = re.compile(r"&[a-z]*;")
-    tag_pat = re.compile(r"<[a-z]*[> /]")
+    esc_pat = re.compile(r"&[#a-z0-9]*;")
+    tag_pat = re.compile(r"<[a-z0-9]*[> /]")
     found_escs = set()
     found_tags = set()
     def match(text):
@@ -227,6 +227,23 @@ def process_answer_scoring_data():
 def process_feedback_data():
     df = pandas.read_csv("../cwafs_in_production (1).csv", encoding="utf-8")
 
+    # Do some initial analysis on the dataset
+    esc_pat = re.compile(r"&[#a-z0-9]*;")
+    tag_pat = re.compile(r"<[a-z0-9]*[> /]")
+    found_escs = set()
+    found_tags = set()
+    def match(text):
+        text_str = str(text)
+        for match in esc_pat.findall(text_str):
+            found_escs.add(match)
+        for match in tag_pat.findall(text_str):
+            found_tags.add(match)
+    for field in ["problem_body", "cwa1", "cwa1_feedback", "cwa2", "cwa2_feedback", "cwa3", "cwa3_feedback"]:
+        df[field].apply(match)
+    print("All escs:", found_escs)
+    print("All tags:", found_tags)
+
+    # Do HTML to LaTeX conversion, wrap formulas, and run through LaTeXML/TangentCFT
     err_data = {
         "articles_missing_formulas": 0,
         "formulas_missing_from_latexml_failure": 0,

@@ -48,6 +48,8 @@ def tree_to_text(tree_node: DecodeTreeNode, text_tokenizer: GPT2TokenizerFast) -
         symbol = "+"
     if symbol == "times":
         symbol = "\\times"
+    if symbol == "divide":
+        symbol = "/"
     if symbol == "partialdiff":
         symbol = "\\partial"
     if symbol == "product":
@@ -67,20 +69,21 @@ def tree_to_text(tree_node: DecodeTreeNode, text_tokenizer: GPT2TokenizerFast) -
         return symbol
 
     if symbol == str(SpecialOpToken.CERR_OP):
-        return "".join(tree_to_text(child, text_tokenizer) for child in tree_node.children[1:])
+        return " ".join(tree_to_text(child, text_tokenizer) for child in tree_node.children[1:])
 
     if symbol == str(SpecialOpToken.NUM_SUB_TREE_HEAD):
         return "".join(tree_to_text(child, text_tokenizer) for child in tree_node.children)
 
     if symbol == str(SpecialOpToken.ANON_OP):
         left = tree_to_text(tree_node.children[0], text_tokenizer)
-        return left + " { " + "".join(tree_to_text(child, text_tokenizer) for child in tree_node.children[1:]) + " } "
+        # TODO: handle when math_text is left child
+        return left + " { " + " ".join(tree_to_text(child, text_tokenizer) for child in tree_node.children[1:]) + " } "
 
     if symbol == get_matrix_symbol("L"):
         return " , ".join(tree_to_text(child, text_tokenizer) for child in tree_node.children)
 
     if symbol == "abs":
-        return " | " + "".join(tree_to_text(child, text_tokenizer) for child in tree_node.children) + " | "
+        return " | " + " ".join(tree_to_text(child, text_tokenizer) for child in tree_node.children) + " | "
 
     if symbol.startswith("interval("):
         return (" ( " if symbol[9] == "O" else " [ ") +\
@@ -88,10 +91,10 @@ def tree_to_text(tree_node: DecodeTreeNode, text_tokenizer: GPT2TokenizerFast) -
             (" ) " if symbol[11] == "O" else " ] ")
 
     if symbol == "differential-d":
-        return " \\,d " + "".join(tree_to_text(child, text_tokenizer) for child in tree_node.children)
+        return " \\,d " + " ".join(tree_to_text(child, text_tokenizer) for child in tree_node.children)
 
     if len(tree_node.children) >= 2:
-        if symbol in ("\\times", "<", ">", "\\leq", "\\geq", "+", "-"):
+        if symbol in ("\\times", "/", "<", ">", "\\leq", "\\geq", "+", "-"):
             return f" {symbol} ".join(tree_to_text(child, text_tokenizer) for child in tree_node.children)
     if len(tree_node.children) == 2:
         left = tree_to_text(tree_node.children[0], text_tokenizer)
@@ -100,8 +103,6 @@ def tree_to_text(tree_node: DecodeTreeNode, text_tokenizer: GPT2TokenizerFast) -
             return f" {left} _ {{ {right} }} "
         if symbol == "SUP":
             return f" {left} ^ {{ {right} }} "
-        if symbol == "divide":
-            return f" \\frac {{ {left} }} {{ {right} }}"
         return f" {left} {symbol} {right} "
     # TODO: handle matrices and matrix rows
     return f" {symbol} " + " ".join(tree_to_text(child, text_tokenizer) for child in tree_node.children)

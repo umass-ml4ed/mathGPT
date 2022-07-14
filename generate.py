@@ -110,13 +110,13 @@ def get_nucleus_sample_predictions(type_to_token_probs: Dict[TokenType, torch.Te
 def add_to_batch(batch: CollatedBatch, token_preds: torch.Tensor, type_preds: torch.Tensor, options: TrainOptions):
     batch_size = batch["token_ids"].shape[0]
     new_pos_vecs, new_pos_levels = infer_math_pos(batch["pos_vecs"][:, -1], batch["pos_levels"][:, -1], batch["token_types"][:, -1])
-    new_pos_encodings = torch.LongTensor([encode_pos(pos_vec, pos_level, options.tpe) for pos_vec, pos_level in zip(new_pos_vecs, new_pos_levels)]).to(device)
     new_attention_mask = torch.ones(batch_size).to(device)
     batch["token_ids"] = torch.concat([batch["token_ids"], token_preds.unsqueeze(1)], dim=1)
     batch["token_types"] = torch.concat([batch["token_types"], type_preds.unsqueeze(1)], dim=1)
     batch["pos_vecs"] = torch.concat([batch["pos_vecs"], new_pos_vecs.unsqueeze(1)], dim=1)
     batch["pos_levels"] = torch.concat([batch["pos_levels"], new_pos_levels.unsqueeze(1)], dim=1)
     if options.tpe != TPE.NONE.value:
+        new_pos_encodings = torch.LongTensor([encode_pos(pos_vec, pos_level, options.tpe) for pos_vec, pos_level in zip(new_pos_vecs, new_pos_levels)]).to(device)
         batch["pos_encodings"] = torch.concat([batch["pos_encodings"], new_pos_encodings.unsqueeze(1)], dim=1)
     batch["attention_mask"] = torch.concat([batch["attention_mask"], new_attention_mask.unsqueeze(1)], dim=1)
     if batch["gen_labels"] is not None:

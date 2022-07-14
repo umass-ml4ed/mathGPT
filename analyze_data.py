@@ -1,9 +1,12 @@
+from collections import Counter
 import os
 import json
 from typing import Iterable, Tuple, List, Dict
+from collections import Counter
 from tqdm import tqdm
-# from matplotlib import pyplot as plt
+from matplotlib import pyplot as plt
 import numpy as np
+from transformers import GPT2TokenizerFast
 
 from vocabulary import Vocabulary
 from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, Formula, OPT
@@ -149,6 +152,16 @@ def analyze_data(formulas: Iterable[Tuple[str, Formula]]):
     print("Num text tokens:", stats["num_text"], "with children:", stats["num_text_ops"])
     print("Max depth:", stats["max_depth"], "Max width:", stats["max_width"])
 
+    print("Frequencies of math symbols by number of GPT tokens...")
+    text_tokenizer: GPT2TokenizerFast = GPT2TokenizerFast.from_pretrained("gpt2")
+    for type_str, token_to_freq in stats["type_to_token_to_freq"].items():
+        token_len_to_freq = {}
+        for token, freq in token_to_freq.items():
+            token_len = len(text_tokenizer(token)["input_ids"])
+            token_len_to_freq.setdefault(token_len, 0)
+            token_len_to_freq[token_len] += freq
+        print(type_str, sorted(token_len_to_freq.items()))
+
     num_unk_tokens = {
         token for type_str, token_to_freq in stats["type_to_token_to_freq"].items() for token in token_to_freq.keys()
         if type_str == "N" and Vocabulary.get_token(type_str, token)[1] == SpecialNumToken.UNK
@@ -212,3 +225,13 @@ def analyze_feedback():
     for field in ["problem", "answer", "feedback"]:
         all_formulas += [("", formula) for sample in samples for formula in sample[field]["formulas"].values()]
     analyze_data(tqdm(all_formulas))
+
+def analyze_vocab():
+    print("Number of GPT tokens in each vocab symbol...")
+    text_tokenizer: GPT2TokenizerFast = GPT2TokenizerFast.from_pretrained("gpt2")
+    for infreq_to_unk in [True, False]:
+        print("Converting infrequent tokens to UNK:", infreq_to_unk)
+        Vocabulary.load(infreq_to_unk=infreq_to_unk)
+        for token_type, symbol_to_token_id in Vocabulary._vocab.items():
+            freq_counter = Counter(len(text_tokenizer(symbol)["input_ids"]) for symbol in symbol_to_token_id)
+            print(token_type, freq_counter.most_common())

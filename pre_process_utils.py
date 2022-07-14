@@ -252,6 +252,18 @@ def process_raw_text(src_text_batch: List[str], err_data: Optional[dict] = None)
     raise Exception("LaTeXML failed!")
 
 esc_to_latex = [
+    ("&#215;", "\\times", True),
+    ("&#183;", "\\cdot", True),
+    ("&#60;", "<", False),
+    ("&#8736;", "\\angle", True),
+    ("&#8201;", " ", False),
+    ("&#160;", " ", False),
+    ("&#8805;", "\\ge", True),
+    ("&#62;", ">", False),
+    ("&#960;", "\\pi", True),
+    ("&#247;", "\\div", True),
+    ("&#176;", "\\degree", True),
+    ("&#8208;", "-", False),
     ("&times;", "\\times", True),
     ("&minus;", "-", False),
     ("&amp;", "\\&", False),
@@ -263,7 +275,7 @@ esc_to_latex = [
     ("&pi;", "\\pi", True),
     ("&ge;", "\\ge", True),
     ("&le;", "\\le", True),
-    ("&divide;", "/", False),
+    ("&divide;", "\\div", True),
     ("&ang;", "\\angle", True),
     ("&nbsp;", " ", False),
     ("&oacute;", "\\'o", False),
@@ -275,10 +287,12 @@ esc_to_latex = [
     ("&loz;", "\\lozenge", True),
     ("&forall;", "\\forall", True),
     ("&bull;", "\\textbullet", False),
-    ("&ordm;", " ", False),
+    ("&middot;", "\\cdot", True),
+    ("&ordm;", "^ o", False),
+    ("&ordf;", "^ a", False),
     ("&spades;", "\\spadesuit", True),
     ("$diamondsuit;", "\\blacklozenge", True),
-    ("&sect;", "", False),
+    ("&sect;", "§", False),
     ("&dagger;", "\\textdagger", False),
     ("&empty;", "\\emptyset", True),
     ("&frasl;", "\\textfraction", False),
@@ -322,13 +336,15 @@ esc_to_latex = [
     ("&radic;", "\\surd", True),
     ("&or;", "\\vee", True),
     ("&diams;", "\\blacklozenge", True),
+    ("&sup2;", "^ 2", False),
+    ("&sup3;", "^ 3", False),
 ]
 
 latex_math_macros = {latex[1] for latex in esc_to_latex if latex[2]}.union({"^", "_"})
 
 math_ops = {"=", "<", ">", "+", "-", "*", "/", ":", "(", ")", "\\{", "\\}", "[", "]"}
 
-latex_ops = {"\\times", "\\ne", "\\ge", "\\le", "\\angle", "\\forall", "\\equiv", "\\exists", "\\notin", "\\in", "\\prod", "\\cdot", "\\degree", "\\approx", "\\surd", "\\vee"}
+latex_ops = {"\\times", "\\div", "\\ne", "\\ge", "\\le", "\\angle", "\\forall", "\\equiv", "\\exists", "\\notin", "\\in", "\\prod", "\\cdot", "\\degree", "\\approx", "\\surd", "\\vee"}
 
 math_word_re = re.compile(r"^([0-9]+([\.,][0-9]+)*|\.[0-9]+|(\\_)+|[0-9\.]*[a-zA-Z][0-9\.]*)$")
 
@@ -337,6 +353,14 @@ punctuation_re = re.compile(r"(\s([0-9a-zA-Z\\_]*|[0-9]+([\.,][0-9]+)*[a-zA-Z]?)
 times_re = re.compile(r"\s([0-9]+([\.,][0-9]+)*|\.[0-9]+|\)|[a-zA-Z])\s*x\s*([0-9]+([\.,][0-9]+)*|\.[0-9]+|\(|[a-zA-Z])\s")
 
 standalone_math_re = re.compile(r"^(([0-9]+([\.,][0-9]+)*|\.[0-9]+)[a-zA-Z]?|[kxyz])$")
+
+def convert_mathml(mathml: BeautifulSoup):
+    # Handle the most common/important tags, there are more but we're not trying to write a whole parser here
+    for tag, op in [("mfrac", "/"), ("msub", "_"), ("msup", "^"), ("sup", "^")]:
+        for el in mathml.find_all(tag):
+            children = list(el.children)
+            el.replace_with(f" {children[0].text} {op} {{ {children[1].text} }} ")
+    return mathml.get_text(separator=" ")
 
 @lru_cache(maxsize=1024) # Cache because many entries have the same question text
 def html_to_latex(text: str):
@@ -356,16 +380,36 @@ def html_to_latex(text: str):
     text = text.replace("$", " \\$ ")
     text = text.replace("{", " \\{ ")
     text = text.replace("}", " \\} ")
+    text = text.replace("%", " % ") # Not escaping this here because done in process_raw_text, but still needs surrounding spaces
+    text = text.replace("&sect;#", "&#") # For some reason this happens in the embedded mathml
     text = re.sub(r"_+", "\\_", text) # Multiple underscores are often used to represent blanks - just collapse to one
     # Convert html math tags to latex
     text = re.sub(r"<sup>([^<]*)</sup>", r" ^ { \g<1> } ", text)
     text = re.sub(r"<sub>([^<]*)</sub>", r" _ { \g<1> } ", text)
-    # TODO: convert table to matrix
     # Convert html escape codes to latex macros
     for esc, latex, _ in esc_to_latex:
         text = text.replace(esc, f" {latex} ")
     # Remove remaining html tags
-    text = BeautifulSoup(text, "lxml").get_text()
+    soup = BeautifulSoup(text, "lxml")
+    # Convert embeddied mathtml to latex, sometimes in img tags
+    for img in soup.find_all("img"):
+        if img.get("data-mathml"):
+            mathml_text = img["data-mathml"].replace(" \\guillemotright ", ">").replace(" \\guillemotleft ", "<")
+            mathml_soup = BeautifulSoup(mathml_text, "lxml").body.math
+            if mathml_soup: # Some edge cases where there's invalid data in the attr
+                img.replace_with(convert_mathml(mathml_soup))
+    for mathml in soup.find_all("math"):
+        mathml.replace_with(convert_mathml(mathml))
+    # Convert tables to matrices
+    # Not doing this since if not wrapped in a formula then redundant, but if wrapped then might contain text entries
+    # for table in soup.find_all("table"):
+    #     table_body = " \\\\ ".join([
+    #         " & ".join([child.text for child in tr.children if not child.text.isspace()])
+    #         for tr in table.find_all("tr")
+    #     ])
+    #     table.replace_with(f"\\begin{{matrix}} {table_body} \\end{{matrix}}")
+    # Extract text from HTML
+    text = soup.get_text()
     # Put spaces around math operators
     for math_op in math_ops:
         text = text.replace(math_op, f" {math_op} ")
@@ -393,12 +437,12 @@ def wrap_formulas(text: str):
     curly_brace_level = 0
 
     def try_add_formula(start_idx: int, end_idx: int, words: List[str], final_text: List[str]):
-        # Deal with accidentally grabbing ) at the start and ( at the end
+        # Deal with invalid starting/ending operators
         to_append = []
-        if words[start_idx] == ")":
+        if words[start_idx] in (")", ":"):
             final_text.append(words[start_idx])
             start_idx += 1
-        if words[end_idx - 1] == "(":
+        if words[end_idx - 1] in ("(", ":"):
             to_append.append(words[end_idx - 1])
             end_idx -= 1
 

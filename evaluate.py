@@ -130,8 +130,8 @@ def evaluate_gen_task(model: MathGPTLM, dataset: Dataset, task: DownstreamTask, 
         for batch in tqdm(data_loader):
             split_point = batch["prompt_lengths"][0]
             gen_batch = generate(model, trim_batch(batch, 0, split_point), options)
-            all_predictions.append(trim_batch(gen_batch, split_point, options.max_seq_len))
-            all_labels.append(trim_batch(batch, split_point, options.max_seq_len))
+            all_predictions.append(decode_batch(trim_batch(gen_batch, split_point, options.max_seq_len), dataset.text_tokenizer)[0].replace("\n", " "))
+            all_labels.append(decode_batch(trim_batch(batch, split_point, options.max_seq_len), dataset.text_tokenizer)[0].replace("\n", " "))
 
     if options.ddp:
         all_results = [None] * dist.get_world_size()
@@ -142,20 +142,14 @@ def evaluate_gen_task(model: MathGPTLM, dataset: Dataset, task: DownstreamTask, 
         all_predictions = list(chain(*[result["all_predictions"] for result in all_results]))
         all_labels = list(chain(*[result["all_labels"] for result in all_results]))
 
-    # TODO: compare decoded text for exact match
-    num_exact_match = sum(
-        1 for pred, label in zip(all_predictions, all_labels)
-        if pred["token_ids"].shape == label["token_ids"].shape and torch.all(pred["token_ids"] == label["token_ids"]) and torch.all(pred["token_types"] == label["token_types"])
-    )
+    num_exact_match = sum(pred == label for pred, label in zip(all_predictions, all_labels))
     accuracy = num_exact_match / len(all_labels)
-    pred_text_batch = [decode_batch(pred, dataset.text_tokenizer)[0].replace("\n", " ") for pred in all_predictions]
-    label_text_batch = [decode_batch(label, dataset.text_tokenizer)[0].replace("\n", " ") for label in all_labels]
     pred_filename = "preds.txt"
     label_filename = "labels.txt"
     with open(pred_filename, "w", encoding="utf-8") as pred_file:
-        pred_file.write("\n".join(pred_text_batch))
+        pred_file.write("\n".join(all_predictions))
     with open(label_filename, "w", encoding="utf-8") as label_file:
-        label_file.write("\n".join(label_text_batch))
+        label_file.write("\n".join(all_labels))
     metrics = compute_metrics(hypothesis=pred_filename, references=[label_filename], no_skipthoughts=True, no_glove=True)
     return 0, f"Exact Match Accuracy: {accuracy:.3f}, BLEU-4: {metrics['Bleu_4']:.3f}, ROUGE-L: {metrics['ROUGE_L']:.3f}, METEOR: {metrics['METEOR']:.3f}"
 
