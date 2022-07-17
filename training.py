@@ -23,8 +23,9 @@ from utils import TrainOptions, device, is_cls_task, new_neptune_run
 from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample
 from constants import DownstreamTask, Checkpoint, DOWNSTREAM_TASK_TO_NUM_CLASSES, WIKI_DATA, OFEQ_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_DATA
 
-def get_article_names():
-    return [os.path.join(WIKI_DATA, article_filename) for article_filename in os.listdir(WIKI_DATA)]
+def get_article_names(data_dir_override: Optional[str]):
+    data_dir = data_dir_override or WIKI_DATA
+    return [os.path.join(data_dir, article_filename) for article_filename in os.listdir(data_dir)]
 
 def get_headline_data(split: str, options: TrainOptions) -> List[GenTaskSample]:
     # Load pre-processed dataset when using the MathGPT model, or using the post_proc option for the baseline model
@@ -202,8 +203,8 @@ def pretrain(model_name: str, checkpoint_name: Optional[str], options_dict: dict
         if options.ddp:
             model = DDP(model, device_ids=[torch.cuda.current_device()], find_unused_parameters=True)
 
-    articles = get_article_names()
-    split_point = int(len(articles) * .90)
+    articles = get_article_names(options.data_dir)
+    split_point = int(len(articles) * options.split)
     train_data = PreTrainDataset(articles[:split_point], options, options.max_seq_len)
     val_data = PreTrainDataset(articles[split_point:], options, max_seq_len=None)
     train_loader = get_data_loader(train_data, None, options.batch_size, True, True, options)
@@ -220,8 +221,8 @@ def evaluate_pretrained_lm(model_name: str, test_options: dict):
     model, _, options = load_model(model_name, test_options.get("ddp", False))
     options.update(test_options)
 
-    articles = get_article_names()
-    split_point = int(len(articles) * .90)
+    articles = get_article_names(options.data_dir)
+    split_point = int(len(articles) * options.split)
     test_articles = articles[split_point:]
     dataset = PreTrainDataset(test_articles, options, max_seq_len=None)
     loss, results = evaluate_lm(model, dataset, options)

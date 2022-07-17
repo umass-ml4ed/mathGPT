@@ -30,12 +30,16 @@ def get_matrix_symbol(symbol: str):
     return "matrix-" + symbol[0]
 
 class Vocabulary:
+    # Path to base vocab
+    _vocab_file_path = VOCAB_FILE_PATH
     # Maps type to symbol to occurrence frequency in dataset
     _base_vocab: BaseVocab = {}
     # Maps TokenType to symbol to token ID
     _vocab: Vocab = {}
     # Maps TokenType to token ID to symbol
     _vocab_inv: VocabInv = {}
+    # Subset of the full vocab that just contains tokens with special meaning
+    _special_tokens: VocabInv = {}
     # Maps TokenType to number of tokens in that type (at the time of loading)
     _sizes: Dict[TokenType, int] = {}
     # If number tokens should be expanded into subtrees
@@ -44,6 +48,10 @@ class Vocabulary:
     _math_text: bool = False
     # If the vocab has been loaded for use
     _loaded: bool = False
+
+    @classmethod
+    def override_vocab_file(cls, vocab_file_path: bool):
+        cls._vocab_file_path = vocab_file_path
 
     @classmethod
     def set_num_to_tree(cls, num_to_tree: bool):
@@ -107,6 +115,15 @@ class Vocabulary:
         return symbol
 
     @classmethod
+    def is_special_token(cls, token_type: TokenType, token_id: int):
+        """
+        Get if the given token has special meaning, i.e. does not direclty map to a symbol in the data
+        """
+        if token_type not in cls._special_tokens:
+            return False
+        return token_id in cls._special_tokens[token_type]
+
+    @classmethod
     def num_tokens_in_type(cls, token_type: TokenType) -> int:
         """
         Get the number of tokens associated with the given type enum
@@ -122,7 +139,7 @@ class Vocabulary:
         """
         Dump vocab to file
         """
-        with open(VOCAB_FILE_PATH, "w", encoding="utf-8") as out_file:
+        with open(cls._vocab_file_path, "w", encoding="utf-8") as out_file:
             json.dump(cls._base_vocab, out_file, indent=2, ensure_ascii=False)
 
     @classmethod
@@ -144,9 +161,10 @@ class Vocabulary:
             TokenType.VAR: {token.value: str(token) for token in SpecialVarToken},
             TokenType.NUM: {token.value: str(token) for token in SpecialNumToken},
         }
+        cls._special_tokens = {key: value.copy() for key, value in cls._vocab_inv.items()}
 
         # Load base vocab from file
-        with open(VOCAB_FILE_PATH, encoding="utf-8") as vocab_file:
+        with open(cls._vocab_file_path, encoding="utf-8") as vocab_file:
             base_vocab: BaseVocab = json.load(vocab_file)
 
         # Compute vocab and inverted vocab by collapsing types and assigning new token IDs from base vocab

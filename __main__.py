@@ -45,6 +45,9 @@ def main():
     parser.add_argument("--name", help="Name of current model/experiment, used for saving/loading model and config")
     parser.add_argument("--checkpoint_name", help="Name of model to resume training for")
     parser.add_argument("--pretrained_name", help="Name of pre-trained LM for initializing downstream model parameters")
+    parser.add_argument("--data_dir", help="Override default data directory for pre-training")
+    parser.add_argument("--vocab_file", help="Override default vocab file")
+    parser.add_argument("--split", type=float, help="Portion of data to use in train set during pre-training")
     parser.add_argument("--lr", type=float, help="Learning rate")
     parser.add_argument("--epochs", type=int, help="Maximum number of training epochs")
     parser.add_argument("--batch_size", type=int, help="Maximum number of sequences per batch")
@@ -63,6 +66,7 @@ def main():
     parser.add_argument("--tpe", help="Scheme to use for tree position encodings", choices=enum_choices(TPE))
     parser.add_argument("--ddp", type=bool_type, help="Use DistributedDataParallel")
     parser.add_argument("--num_to_tree", type=bool_type, help="Convert numeric symbols into sub-trees")
+    parser.add_argument("--sd_to_tree", type=bool_type, help="When using num_to_tree, if single digits should convert to sub-trees, otherwise be single tokens")
     parser.add_argument("--math_text", type=bool_type, help="Convert unseen math tokens to sub-trees with tokens from GPT encoder")
     parser.add_argument("--shared_emb", type=bool_type, help="Math token embeddings derived from corresponding text embeddings")
 
@@ -86,6 +90,8 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
     arg_dict = {arg: val for arg, val in vars(args).items() if val is not None}
 
     # Set these now since need to be known before vocab is loaded
+    if "vocab_file" in arg_dict:
+        Vocabulary.override_vocab_file(arg_dict["vocab_file"])
     if "num_to_tree" in arg_dict:
         Vocabulary.set_num_to_tree(arg_dict["num_to_tree"])
     if "math_text" in arg_dict:

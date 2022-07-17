@@ -44,7 +44,7 @@ class Sequence:
         self.token_types: List[TokenType] = []
         self.pos_vecs: List[List[int]] = []
         self.pos_levels: List[int] = []
-        self.pos_encodings: List[List[int]] = []
+        self.gpt_tokens: List[List[int]] = []
         self.meta: SequenceMetaData = {}
 
     def split_at(self, split_point):
@@ -53,13 +53,13 @@ class Sequence:
         pre_split.token_types = self.token_types[:split_point]
         pre_split.pos_vecs = self.pos_vecs[:split_point]
         pre_split.pos_levels = self.pos_levels[:split_point]
-        pre_split.pos_encodings = self.pos_encodings[:split_point]
+        pre_split.gpt_tokens = self.gpt_tokens[:split_point]
         post_split = Sequence(self.name)
         post_split.token_ids = self.token_ids[split_point:]
         post_split.token_types = self.token_types[split_point:]
         post_split.pos_vecs = self.pos_vecs[split_point:]
         post_split.pos_levels = self.pos_levels[split_point:]
-        post_split.pos_encodings = self.pos_encodings[split_point:]
+        post_split.gpt_tokens = self.gpt_tokens[split_point:]
         return pre_split, post_split
 
     def __add__(self, seq_2: 'Sequence'):
@@ -68,7 +68,7 @@ class Sequence:
         new_seq.token_types = self.token_types + seq_2.token_types
         new_seq.pos_vecs = self.pos_vecs + seq_2.pos_vecs
         new_seq.pos_levels = self.pos_levels + seq_2.pos_levels
-        new_seq.pos_encodings = self.pos_encodings + seq_2.pos_encodings
+        new_seq.gpt_tokens = self.gpt_tokens + seq_2.gpt_tokens
         return new_seq
 
     def __len__(self):
@@ -81,6 +81,8 @@ class CollatedBatch(TypedDict):
     pos_vecs: torch.Tensor
     pos_levels: torch.Tensor
     pos_encodings: torch.Tensor
+    gpt_tokens: Optional[torch.Tensor]
+    use_shared_emb: Optional[torch.Tensor]
     attention_mask: torch.Tensor
     sequence_lengths: torch.Tensor
     prompt_lengths: Optional[torch.Tensor]

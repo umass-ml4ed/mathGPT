@@ -5,7 +5,7 @@ import torch
 import numpy as np
 from transformers import GPT2TokenizerFast
 
-from vocabulary import Vocabulary, get_matrix_symbol
+from vocabulary import Vocabulary, get_matrix_symbol, MATH_TYPES
 from data_types import OPT, Sequence
 from utils import TrainOptions
 from constants import TokenType, SpecialOpToken, SpecialVarToken, SpecialNumToken, TPE, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH, EMB_SIZE
@@ -123,8 +123,7 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
 
         if options.num_to_tree:
             # Convert numbers to sub-trees
-            sd_to_tree = False
-            if sd_to_tree:
+            if options.sd_to_tree:
                 if type_str == "N":
                     # Insert a special num op token and set its children to the digits of the number
                     token_type, token_id = TokenType.OP, SpecialOpToken.NUM_SUB_TREE_HEAD.value
@@ -186,8 +185,6 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
                         children = math_text
 
     # Set position
-    # TODO: to avoid max depth limit, try just concatting to list and then padding in batch
-    #       but think about how this affects generation, might have to rescale vecs on the fly
     pos_vec = parent_pos.copy()
     pos_vec[cur_level] = cur_child_num
 
@@ -196,7 +193,11 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
     sequence.token_types.append(token_type)
     sequence.pos_vecs.append(pos_vec)
     sequence.pos_levels.append(cur_level)
-    # sequence.pos_encodings.append(encode_pos(pos_vec, cur_level, tpe))
+    if options.shared_emb:
+        if token_type in MATH_TYPES and not Vocabulary.is_special_token(token_type, token_id):
+            sequence.gpt_tokens.append(text_tokenizer(symbol)["input_ids"])
+        else:
+            sequence.gpt_tokens.append([])
 
     # Process children
     child_idx = 0

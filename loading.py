@@ -4,6 +4,7 @@ import random
 from tqdm import tqdm
 import torch
 from torch.utils.data import Dataset as TorchDataset, DataLoader, BatchSampler, distributed
+import numpy as np
 from transformers import GPT2TokenizerFast
 
 from math_tokenize import tokenize_formula, EMPTY_POS_VECTOR, get_empty_pos_encoding, encode_pos
@@ -58,7 +59,8 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_t
         sequence.token_types += [TokenType.TEXT] * len(text_token_ids)
         sequence.pos_vecs += [EMPTY_POS_VECTOR] * len(text_token_ids)
         sequence.pos_levels += [0] * len(text_token_ids)
-        # sequence.pos_encodings += [get_empty_pos_encoding(options.tpe)] * len(text_token_ids)
+        if options.shared_emb:
+            sequence.gpt_tokens += [[]] * len(text_token_ids)
 
         # Sequence will end with a text chunk (even if it's an empty string)
         if text_chunk_idx == len(text_chunks) - 1:
@@ -80,28 +82,32 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_t
             sequence.token_types += [TokenType.TEXT] * len(formula_token_ids)
             sequence.pos_vecs += [EMPTY_POS_VECTOR] * len(formula_token_ids)
             sequence.pos_levels += [0] * len(formula_token_ids)
-            # sequence.pos_encodings += [get_empty_pos_encoding(options.tpe)] * len(formula_token_ids)
+            if options.shared_emb:
+                sequence.gpt_tokens += [[]] * len(formula_token_ids)
         else:
             # Add formula start token
             sequence.token_ids.append(0)
             sequence.token_types.append(TokenType.START_FORMULA)
             sequence.pos_vecs.append(EMPTY_POS_VECTOR)
             sequence.pos_levels.append(0)
-            # sequence.pos_encodings.append(get_empty_pos_encoding(options.tpe))
+            if options.shared_emb:
+                sequence.gpt_tokens.append([])
 
             # Add formula
             sequence.token_ids += formula_sequence.token_ids
             sequence.token_types += formula_sequence.token_types
             sequence.pos_vecs += formula_sequence.pos_vecs
             sequence.pos_levels += formula_sequence.pos_levels
-            # sequence.pos_encodings += formula_sequence.pos_encodings
+            if options.shared_emb:
+                sequence.gpt_tokens += formula_sequence.gpt_tokens
 
             # Add formula end token
             sequence.token_ids.append(0)
             sequence.token_types.append(TokenType.END_FORMULA)
             sequence.pos_vecs.append(EMPTY_POS_VECTOR)
             sequence.pos_levels.append(0)
-            # sequence.pos_encodings.append(get_empty_pos_encoding(options.tpe))
+            if options.shared_emb:
+                sequence.gpt_tokens.append([])
 
     return sequence, num_missing_formulas
 
@@ -329,7 +335,7 @@ class FeedbackDataset(Dataset):
 def get_data_loader(dataset: Dataset, task: Optional[DownstreamTask], batch_size: int, shuffle: bool, drop_last: bool, options: TrainOptions):
     return DataLoader(
         dataset,
-        collate_fn=Collator(options.tpe, task),
+        collate_fn=Collator(task, options),
         batch_size=1 if options.ddp else batch_size,
         shuffle=not options.ddp and shuffle,
         drop_last=not options.ddp and drop_last,
@@ -355,6 +361,8 @@ def trim_batch(batch: CollatedBatch, trim_start: int, trim_end: int) -> Collated
         "pos_vecs": batch["pos_vecs"][:, trim_start : trim_end],
         "pos_levels": batch["pos_levels"][:, trim_start : trim_end],
         "pos_encodings": batch["pos_encodings"][:, trim_start : trim_end] if batch["pos_encodings"] is not None else None,
+        "gpt_tokens": batch["gpt_tokens"][:, trim_start : trim_end] if batch["gpt_tokens"] is not None else None,
+        "use_shared_emb": batch["use_shared_emb"][:, trim_start : trim_end] if batch["use_shared_emb"] is not None else None,
         "attention_mask": batch["attention_mask"][:, trim_start : trim_end],
         "sequence_lengths": torch.tensor([min(trim_end - trim_start, max(seq_len - trim_start, 0)) for seq_len in batch["sequence_lengths"]]),
         "prompt_lengths": batch["prompt_lengths"],
@@ -363,8 +371,8 @@ def trim_batch(batch: CollatedBatch, trim_start: int, trim_end: int) -> Collated
     }
 
 class Collator:
-    def __init__(self, tpe: str, task: Optional[DownstreamTask] = None):
-        self.tpe = tpe
+    def __init__(self, task: Optional[DownstreamTask], options: TrainOptions):
+        self.options = options
         self.task = task
 
     def __call__(self, batch: List[Sequence]) -> CollatedBatch:
@@ -373,11 +381,16 @@ class Collator:
         pos_vec_batches = []
         pos_level_batches = []
         pos_encoding_batches = []
+        gpt_token_batches = []
+        use_shared_emb_batches = []
         attention_mask = []
         sequence_lengths = []
         prompt_lengths = []
         gen_label_batches = []
         cls_labels = []
+
+        if self.options.shared_emb:
+            max_gpt_token_len = max(len(gpt_token_vec) for sequence in batch for gpt_token_vec in sequence.gpt_tokens)
 
         for sequence in batch:
             token_ids = torch.LongTensor(sequence.token_ids)
@@ -385,14 +398,21 @@ class Collator:
             token_type_batches.append(torch.LongTensor(sequence.token_types))
             pos_vec_batches.append(torch.LongTensor(sequence.pos_vecs))
             pos_level_batches.append(torch.LongTensor(sequence.pos_levels))
-            if self.tpe != TPE.NONE.value:
+            if self.options.tpe != TPE.NONE.value:
                 pos_encodings = [
-                    encode_pos(pos_vec, pos_level, self.tpe)
+                    encode_pos(pos_vec, pos_level, self.options.tpe)
                         if token_type not in (TokenType.TEXT, TokenType.START_FORMULA, TokenType.END_FORMULA)
-                        else get_empty_pos_encoding(self.tpe)
+                        else get_empty_pos_encoding(self.options.tpe)
                     for token_type, pos_vec, pos_level in zip(sequence.token_types, sequence.pos_vecs, sequence.pos_levels)
                 ]
                 pos_encoding_batches.append(torch.FloatTensor(pos_encodings))
+            if self.options.shared_emb:
+                gpt_tokens = torch.tensor([
+                    np.pad(gpt_token_vec, (0, max_gpt_token_len - len(gpt_token_vec)), constant_values=PADDING_TOKEN_ID)
+                    for gpt_token_vec in sequence.gpt_tokens
+                ], dtype=torch.long)
+                gpt_token_batches.append(gpt_tokens)
+                use_shared_emb_batches.append(torch.tensor([len(gpt_token_vec) for gpt_token_vec in sequence.gpt_tokens], dtype=torch.bool))
             attention_mask.append(torch.ones(len(sequence.token_ids)))
             sequence_lengths.append(len(sequence))
             if self.task:
@@ -412,6 +432,8 @@ class Collator:
             "pos_vecs": torch.nn.utils.rnn.pad_sequence(pos_vec_batches, batch_first=True).to(device),
             "pos_levels": torch.nn.utils.rnn.pad_sequence(pos_level_batches, batch_first=True).to(device),
             "pos_encodings": torch.nn.utils.rnn.pad_sequence(pos_encoding_batches, batch_first=True).to(device) if pos_encoding_batches else None,
+            "gpt_tokens": torch.nn.utils.rnn.pad_sequence(gpt_token_batches, batch_first=True, padding_value=PADDING_TOKEN_ID).to(device) if gpt_token_batches else None,
+            "use_shared_emb": torch.nn.utils.rnn.pad_sequence(use_shared_emb_batches, batch_first=True).to(device) if use_shared_emb_batches else None,
             "attention_mask": torch.nn.utils.rnn.pad_sequence(attention_mask, batch_first=True).to(device),
             "sequence_lengths": torch.tensor(sequence_lengths), # Must be on CPU
             "prompt_lengths": torch.tensor(prompt_lengths) if prompt_lengths else None, # Must be on CPU

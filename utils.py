@@ -54,6 +54,8 @@ def is_cls_task(task: Optional[DownstreamTask]):
 class TrainOptions:
     def __init__(self, options: dict):
         # Training/testing params
+        self.data_dir: Optional[str] = options.get("data_dir", None)
+        self.split: float = options.get("split", 0.9)
         self.lr: float = options.get("lr", 1e-5)
         self.weight_decay: float = options.get("weight_decay", 1e-2)
         self.epochs: int = options.get("epochs", 20)
@@ -68,7 +70,7 @@ class TrainOptions:
         self.min_gen_len: int = options.get("min_gen_len", 5)
         self.stride: Optional[int] = options.get("stride", None)
         self.ddp: bool = options.get("ddp", False)
-        # Model/data config
+        # Model/data processing config
         self.baseline: bool = options.get("baseline", False)
         self.post_proc: bool = options.get("post_proc", False)
         self.joint: bool = options.get("joint", True)
@@ -76,6 +78,7 @@ class TrainOptions:
         self.tpe: str = options.get("tpe", TPE.FORTE.value)
         self.num_classes: Optional[int] = options.get("num_classes", None)
         self.num_to_tree: bool = options.get("num_to_tree", False)
+        self.sd_to_tree: bool = options.get("sd_to_tree", False)
         self.math_text: bool = options.get("math_text", False)
         self.shared_emb: bool = options.get("shared_emb", False)
 

@@ -50,6 +50,13 @@ def get_target_tokens(batch: CollatedBatch, labels: Optional[torch.Tensor]):
         target_tokens = batch["token_ids"]
     return apply_unks(target_tokens, batch)
 
+def init_perturbation_weights(module):
+    """
+    Init the weights of layers in the perturbation network - should be sufficiently small
+    """
+    if isinstance(module, nn.Linear):
+        nn.init.xavier_normal_(module.weight, 0.1)
+
 class MathGPTBase(nn.Module):
     def __init__(self, options: TrainOptions):
         super().__init__()
@@ -61,8 +68,8 @@ class MathGPTBase(nn.Module):
         self.transformer: GPT2Model = self.gpt2_lm.transformer
 
         # Create type embeddings
-        # TODO: ensure these are sufficiently small (magnitude) to avoid confusing the pre-trained model
         self.type_embeddings = nn.Embedding(self.num_types, EMB_SIZE) # TODO: also try just have text, math, and transition type embeddings
+        nn.init.xavier_normal_(self.type_embeddings.weight, 0.1)
 
         # TODO: not great that we gotta assign str(Type.value)... see if ModuleList fixes this
         # Create token embedding matrix for each type
@@ -78,6 +85,15 @@ class MathGPTBase(nn.Module):
         self.token_embeddings[str(TokenType.START_FORMULA.value)] = nn.Embedding(1, EMB_SIZE)
         self.token_embeddings[str(TokenType.END_FORMULA.value)] = nn.Embedding(1, EMB_SIZE)
         self.token_embeddings[str(TokenType.END.value)] = nn.Embedding(1, EMB_SIZE)
+
+        if options.shared_emb:
+            sep_hidden_size = 10
+            self.shared_emb_perturbation = nn.Sequential(
+                nn.Linear(EMB_SIZE, sep_hidden_size, bias=False),
+                nn.Tanh(),
+                nn.Linear(sep_hidden_size, EMB_SIZE, bias=False)
+            )
+            self.shared_emb_perturbation.apply(init_perturbation_weights)
 
         # Linear projection to convert raw math pos encoding into one that can be added to the input embeddings
         if options.tpe == TPE.FORTE.value:
@@ -123,7 +139,22 @@ class MathGPTBase(nn.Module):
             if not self.options.math_text and token_type == TokenType.MATH_TEXT:
                 continue
             type_idxs = (batch["token_types"] == token_type) & (token_ids != PADDING_TOKEN_ID)
+            if self.options.shared_emb:
+                type_idxs &= ~batch["use_shared_emb"]
             input_embeddings[type_idxs] += self.token_embeddings[str(token_type.value)](token_ids[type_idxs])
+
+        if self.options.shared_emb:
+            # Get GPT token counterparts for math tokens (batch * seq, gpt token ids)
+            selected_tokens = batch["gpt_tokens"][batch["use_shared_emb"]]
+            # Get GPT token embeddings, excluding the padding regions
+            text_emb_mask = selected_tokens != PADDING_TOKEN_ID
+            text_embs = torch.zeros((selected_tokens.shape[0], selected_tokens.shape[1], EMB_SIZE)).to(device)
+            text_embs[text_emb_mask] = self.token_embeddings[str(TokenType.TEXT.value)](selected_tokens[text_emb_mask])
+            # Get average of GPT token embeddings for each math token
+            emb_avgs = torch.sum(text_embs, dim=1) / torch.sum(text_emb_mask, dim=-1).unsqueeze(1)
+            # Add the embedding averages and their perturbations to the input embeddings
+            perturbations = self.shared_emb_perturbation(emb_avgs)
+            input_embeddings[batch["use_shared_emb"]] += emb_avgs + perturbations
 
         # Add math position encodings
         if self.options.tpe != TPE.NONE.value:
