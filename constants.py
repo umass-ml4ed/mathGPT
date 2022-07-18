@@ -47,6 +47,7 @@ TYPE_STR_TO_MAX_NUM_TOKENS: Dict[str, int] = {
     "T": 1000,
     "V": 1000,
     "F": 5000,
+    # "F": 600,
 }
 
 FORMULA_IDENTIFIER = "[_mathGPT_formula_]" # Replace formulas in raw text with this to recover after loading
@@ -90,8 +91,8 @@ PADDING_TOKEN_ID = -100
 EOS_TOKEN = "<|endoftext|>"
 EOS_TOKEN_ID = 50256
 SEP_TOKEN = "[SEP]"
-CLS_TOKEN = "[CLS]"
-DOLLAR_TOK = 720
+START_FORM_TEXT_TOK = [1279, 76, 29]
+END_FORM_TEXT_TOK = [7359, 76, 29]
 
 # File paths
 DATA = "data"

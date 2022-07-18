@@ -1,14 +1,16 @@
 from typing import Dict, List, Tuple
 import torch
 import torch.nn.functional as F
+import numpy as np
 from tqdm import tqdm
 
 from loading import trim_batch
 from model_math_gpt import MathGPTLM
 from math_tokenize import encode_pos
-from utils import device, TrainOptions
+from vocabulary import MATH_TYPES, Vocabulary
+from utils import device, TrainOptions, text_tokenizer
 from data_types import CollatedBatch
-from constants import TokenType, TPE, Gen, EOS_TOKEN_ID, PADDING_TOKEN_ID, DOLLAR_TOK
+from constants import TokenType, TPE, Gen, EOS_TOKEN_ID, PADDING_TOKEN_ID, END_FORM_TEXT_TOK
 
 def infer_math_pos(prev_pos_vecs: torch.Tensor, prev_pos_levels: torch.Tensor, prev_token_types: torch.Tensor):
     """
@@ -121,6 +123,29 @@ def add_to_batch(batch: CollatedBatch, token_preds: torch.Tensor, type_preds: to
     batch["attention_mask"] = torch.concat([batch["attention_mask"], new_attention_mask.unsqueeze(1)], dim=1)
     if batch["gen_labels"] is not None:
         batch["gen_labels"] = torch.concat([batch["gen_labels"], token_preds.unsqueeze(1)], dim=1)
+    if options.shared_emb:
+        # For each new token in the batch, if it's a non-special math token, get the associated symbol and its GPT tokens
+        gpt_tokens_batch = []
+        for token_id_tens, token_type_tens in zip(token_preds, type_preds):
+            token_id, token_type = int(token_id_tens), int(token_type_tens)
+            if token_type in MATH_TYPES and not Vocabulary.is_special_token(token_type, token_id):
+                symbol = Vocabulary.get_symbol(token_type, token_id)
+                gpt_tokens_batch.append(text_tokenizer()(symbol)["input_ids"])
+            else:
+                gpt_tokens_batch.append([])
+        # Add padding to new and existing GPT token tensors and concatenate
+        max_gpt_token_len = max(batch["gpt_tokens"].shape[2], max(len(gpt_tokens) for gpt_tokens in gpt_tokens_batch))
+        new_gpt_tokens = torch.tensor(np.array([
+            np.pad(gpt_token_vec, (0, max_gpt_token_len - len(gpt_token_vec)), constant_values=PADDING_TOKEN_ID)
+            for gpt_token_vec in gpt_tokens_batch
+        ]), dtype=torch.long).to(device)
+        batch["gpt_tokens"] = torch.concat([
+            F.pad(batch["gpt_tokens"], (0, max_gpt_token_len - batch["gpt_tokens"].shape[2]), value=PADDING_TOKEN_ID),
+            new_gpt_tokens.unsqueeze(1)
+        ], dim=1)
+        # Add indicator for if shared embedding is needed for the new tokens
+        use_shared_emb = torch.tensor([len(gpt_token_vec) for gpt_token_vec in gpt_tokens_batch], dtype=torch.bool).to(device)
+        batch["use_shared_emb"] = torch.concat([batch["use_shared_emb"], use_shared_emb.unsqueeze(1)], dim=1)
 
 def generate(model: MathGPTLM, start_batch: CollatedBatch, options: TrainOptions):
     """
@@ -154,7 +179,7 @@ def beam_ended(batch: CollatedBatch, options: TrainOptions):
     test_first_eq = False
     if test_first_eq:
         if options.baseline and options.post_proc:
-            return (batch["token_ids"][0, -1] == DOLLAR_TOK and batch["gen_labels"][0, -1] != PADDING_TOKEN_ID) or batch["token_ids"][0, -1] == PADDING_TOKEN_ID
+            return batch["token_ids"][0, -3:] == END_FORM_TEXT_TOK or batch["token_ids"][0, -1] == PADDING_TOKEN_ID
         return batch["token_types"][0, -1] == TokenType.END_FORMULA or batch["token_ids"][0, -1] == PADDING_TOKEN_ID
     else:
         return batch["token_ids"][0, -1] in (EOS_TOKEN_ID, PADDING_TOKEN_ID)
@@ -178,7 +203,8 @@ def generate_beam(model: MathGPTLM, start_batch: CollatedBatch, options: TrainOp
                 ))
                 continue
             loss, type_to_token_probs = model(batch)
-            if cur_idx - starting_len < options.min_gen_len:
+            cur_len = cur_idx - starting_len + 1
+            if cur_len <= options.min_gen_len:
                 type_to_token_probs[TokenType.TEXT][:, :, EOS_TOKEN_ID] = 0
             token_probs, type_to_start_idx = collapse_token_probs(type_to_token_probs)
             sorted_probs, sorted_indices = torch.sort(token_probs[0], descending=True)

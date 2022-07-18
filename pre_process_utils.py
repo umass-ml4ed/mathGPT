@@ -167,7 +167,8 @@ def process_raw_text(src_text_batch: List[str], err_data: Optional[dict] = None)
             processed_text += searchable_text[:form_start]
             form_end = searchable_text.find("</m>")
             formula_text = searchable_text[form_start + 3 : form_end]
-            formula_text = formula_text.replace(" \\gt ", ">").replace(" \\lt ", "<") # Fix unknown macros
+            # Fix unknown macros
+            formula_text = formula_text.replace(" \\gt ", ">").replace(" \\lt ", "<").replace("\\(", "(").replace("\\)", ")").replace("\\[", "[").replace("\\]", "]")
             if "\\newcommand" in formula_text: # \newcommand needs to not be in a math formula to be processed
                 processed_text += formula_text
             else:
@@ -177,7 +178,7 @@ def process_raw_text(src_text_batch: List[str], err_data: Optional[dict] = None)
             form_start = searchable_text.find("<m>")
         processed_text += searchable_text or " "
         if batch_idx != len(src_text_batch) - 1:
-            processed_text += f" {SAMPLE_SEPARATOR} "
+            processed_text += f"\n{SAMPLE_SEPARATOR}\n"
     processed_text = processed_text.replace("%", "\\%")
 
     # Convert LaTeX source with LaTeXML
@@ -244,11 +245,11 @@ def process_raw_text(src_text_batch: List[str], err_data: Optional[dict] = None)
                 err_data["formulas_missing_from_tangentcft"] += exp_num_formulas - len(article["formulas"])
                 err_data["articles_missing_formulas"] += 1
         if len(articles) != len(src_text_batch):
-            err_data["formulas_missing_from_latexml_randomly"] += 1
+            err_data["formulas_missing_from_latexml_randomly"] += len(src_text_batch)
             raise Exception("Failed to split batch!")
         return articles
     if err_data:
-        err_data["formulas_missing_from_latexml_failure"] += 1
+        err_data["formulas_missing_from_latexml_failure"] += len(src_text_batch)
     raise Exception("LaTeXML failed!")
 
 esc_to_latex = [

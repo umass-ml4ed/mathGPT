@@ -1,3 +1,4 @@
+from functools import lru_cache
 import random
 import os
 from typing import Optional
@@ -5,6 +6,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 # import neptune.new as neptune
+from transformers import GPT2TokenizerFast
 
 from constants import DownstreamTask, TPE, Gen
 
@@ -50,6 +52,10 @@ def enum_value_to_member(value, enum):
 
 def is_cls_task(task: Optional[DownstreamTask]):
     return task == DownstreamTask.ANSWER_SCORING
+
+@lru_cache
+def text_tokenizer():
+    return GPT2TokenizerFast.from_pretrained("gpt2")
 
 class TrainOptions:
     def __init__(self, options: dict):

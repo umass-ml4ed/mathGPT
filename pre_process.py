@@ -55,58 +55,59 @@ def process_wikipedia_data():
             "all_tangent_cft_errs": all_tangent_cft_errs,
         }, err_file, indent=2)
 
-def process_mathsum_data():
+def process_mathsum_data(dataset: str):
     """
     Process all data files in the MathSum datasets
     """
     batch_size: Optional[int] = 20 # 20 seems fastest!
     err_data: Dict[str, Dict[str, int]] = {}
     root_dir = "../MathSum"
-    # for dataset in ("EXEQ-300k", "OFEQ-10k"):
-    for dataset in ("OFEQ-10k",):
-        print("Processing", dataset)
-        for split in ("train", "val", "test"):
-            print("Processing", split, "split")
-            cur_err_data = err_data[f"{dataset},{split}"] = {
-                "articles_missing_formulas": 0,
-                "formulas_missing_from_latexml_failure": 0,
-                "formulas_missing_from_latexml_randomly": 0,
-                "formulas_missing_from_tangentcft": 0,
-            }
-            post_filename = os.path.join(root_dir, dataset, f"post.{split}")
-            title_filename = os.path.join(root_dir, dataset, f"title.{split}")
-            out_filename = os.path.join(DATA, dataset, f"{split}.json")
-            samples: List[GenTaskSample] = []
-            with open(post_filename, encoding="utf-8") as post_file:
-                with open(title_filename, encoding="utf-8") as title_file:
-                    all_posts = post_file.readlines()
-                    all_titles = title_file.readlines()
-                    # These samples have invalid syntax that breaks LaTeXML
-                    if split == "train" and dataset == "OFEQ-10k":
-                        erroneous_samples = [5276, 6707]
-                        for sample_num, sample_idx in enumerate(erroneous_samples):
-                            all_posts = all_posts[:sample_idx - sample_num] + all_posts[sample_idx - sample_num + 1:]
-                            all_titles = all_titles[:sample_idx - sample_num] + all_titles[sample_idx - sample_num + 1:]
-                    # Batching speeds things up a lot, but causes a single LaTeXML error to ruin the whole batch
-                    if batch_size:
-                        for batch_start_idx in tqdm(list(range(0, len(all_posts), batch_size))):
-                            cur_batch = all_posts[batch_start_idx : batch_start_idx + batch_size] +\
-                                all_titles[batch_start_idx : batch_start_idx + batch_size]
-                            cur_batch_size = len(cur_batch) // 2
+    print("Processing", dataset)
+    for split in ("train", "val", "test"):
+        print("Processing", split, "split")
+        cur_err_data = err_data[f"{dataset},{split}"] = {
+            "articles_missing_formulas": 0,
+            "formulas_missing_from_latexml_failure": 0,
+            "formulas_missing_from_latexml_randomly": 0,
+            "formulas_missing_from_tangentcft": 0,
+        }
+        post_filename = os.path.join(root_dir, dataset, f"post.{split}")
+        title_filename = os.path.join(root_dir, dataset, f"title.{split}")
+        out_filename = os.path.join(DATA, dataset, f"{split}.json")
+        samples: List[GenTaskSample] = []
+        with open(post_filename, encoding="utf-8") as post_file:
+            with open(title_filename, encoding="utf-8") as title_file:
+                all_posts = post_file.readlines()
+                all_titles = title_file.readlines()
+                # These samples have invalid syntax that breaks LaTeXML
+                if split == "train" and dataset == "OFEQ-10k":
+                    erroneous_samples = [5276, 6707]
+                    for sample_num, sample_idx in enumerate(erroneous_samples):
+                        all_posts = all_posts[:sample_idx - sample_num] + all_posts[sample_idx - sample_num + 1:]
+                        all_titles = all_titles[:sample_idx - sample_num] + all_titles[sample_idx - sample_num + 1:]
+                # Batching speeds things up a lot, but causes a single LaTeXML error to ruin the whole batch
+                if batch_size:
+                    for batch_start_idx in tqdm(list(range(0, len(all_posts), batch_size))):
+                        cur_batch = all_posts[batch_start_idx : batch_start_idx + batch_size] +\
+                            all_titles[batch_start_idx : batch_start_idx + batch_size]
+                        cur_batch_size = len(cur_batch) // 2
+                        try:
                             processed_batch = process_raw_text(cur_batch, cur_err_data)
                             samples += [{
                                 "prompt": processed_batch[idx],
                                 "label": processed_batch[idx + cur_batch_size]
                             } for idx in range(cur_batch_size)]
-                    else:
-                        for post, title in tqdm(list(zip(all_posts, all_titles))):
-                            samples.append({
-                                "prompt": process_raw_text([post], cur_err_data)[0],
-                                "label": process_raw_text([title], cur_err_data)[0]
-                            })
+                        except Exception:
+                            pass
+                else:
+                    for post, title in tqdm(list(zip(all_posts, all_titles))):
+                        samples.append({
+                            "prompt": process_raw_text([post], cur_err_data)[0],
+                            "label": process_raw_text([title], cur_err_data)[0]
+                        })
 
-            with open(out_filename, "w", encoding="utf-8") as out_file:
-                json.dump(samples, out_file, indent=2, ensure_ascii=False)
+        with open(out_filename, "w", encoding="utf-8") as out_file:
+            json.dump(samples, out_file, indent=2, ensure_ascii=False)
 
     with open("mathsum_errs.json", "w") as err_file:
         json.dump({

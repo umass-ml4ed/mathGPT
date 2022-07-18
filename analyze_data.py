@@ -8,7 +8,7 @@ from tqdm import tqdm
 import numpy as np
 from transformers import GPT2TokenizerFast
 
-from vocabulary import Vocabulary
+from vocabulary import Vocabulary, UNK_MAP
 from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, Formula, OPT
 from constants import TYPE_STR_TO_INT, WIKI_DATA, OFEQ_DATA, AS_ANSWERS, AS_PROBLEMS, FEEDBACK_DATA, SpecialNumToken, SpecialOpToken, SpecialVarToken
 
@@ -152,28 +152,33 @@ def analyze_data(formulas: Iterable[Tuple[str, Formula]]):
     print("Num text tokens:", stats["num_text"], "with children:", stats["num_text_ops"])
     print("Max depth:", stats["max_depth"], "Max width:", stats["max_width"])
 
-    print("Frequencies of math symbols by number of GPT tokens...")
-    text_tokenizer: GPT2TokenizerFast = GPT2TokenizerFast.from_pretrained("gpt2")
-    for type_str, token_to_freq in stats["type_to_token_to_freq"].items():
-        token_len_to_freq = {}
-        for token, freq in token_to_freq.items():
-            token_len = len(text_tokenizer(token)["input_ids"])
-            token_len_to_freq.setdefault(token_len, 0)
-            token_len_to_freq[token_len] += freq
-        print(type_str, sorted(token_len_to_freq.items()))
+    # print("Frequencies of math symbols by number of GPT tokens...")
+    # text_tokenizer: GPT2TokenizerFast = GPT2TokenizerFast.from_pretrained("gpt2")
+    # for type_str, token_to_freq in stats["type_to_token_to_freq"].items():
+    #     token_len_to_freq = {}
+    #     for token, freq in token_to_freq.items():
+    #         token_len = len(text_tokenizer(token)["input_ids"])
+    #         token_len_to_freq.setdefault(token_len, 0)
+    #         token_len_to_freq[token_len] += freq
+    #     print(type_str, sorted(token_len_to_freq.items()))
 
-    num_unk_tokens = {
-        token for type_str, token_to_freq in stats["type_to_token_to_freq"].items() for token in token_to_freq.keys()
-        if type_str == "N" and Vocabulary.get_token(type_str, token)[1] == SpecialNumToken.UNK
-    }
-    other_unk_tokens = {
-        token for type_str, token_to_freq in stats["type_to_token_to_freq"].items() for token in token_to_freq.keys()
-        if type_str not in ("E", "E_no_more", "+", "N") and Vocabulary.get_token(type_str, token)[1] in (SpecialVarToken.UNK, SpecialOpToken.UNK)
-    }
-    print("Unique num tokens converted to UNK:", len(num_unk_tokens))
-    print("Unique other tokens converted to UNK:", len(other_unk_tokens))
-    unique_tokens = {token for token_to_freq in stats["type_to_token_to_freq"].values() for token in token_to_freq.keys()}
-    print("Total num unique tokens:", len(unique_tokens))
+    print("Tokens converted to UNK by type...")
+    ovarall_tokens = set()
+    overall_total = 0
+    for type_str, token_to_freq in stats["type_to_token_to_freq"].items():
+        if type_str in ("E", "E_no_more", "+"):
+            continue
+        unks = set()
+        total = 0
+        for token, freq in token_to_freq.items():
+            ovarall_tokens.add(token)
+            overall_total += freq
+            token_type, token_id = Vocabulary.get_token(type_str, token)
+            if token_id == UNK_MAP[token_type]:
+                unks.add(token)
+                total += freq
+        print("Type:", type_str, "Unique:", len(unks), "Occurrences:", total)
+    print("All tokens (UNK and non-UNK) - Unique:", len(ovarall_tokens), "Occurrences:", overall_total)
 
     # For relevant types, plot n most frequent types against portion of nodes covered by those types
     # for type_str in ["N", "T", "V", "-", "O", "F"]:
@@ -233,5 +238,18 @@ def analyze_vocab():
         print("Converting infrequent tokens to UNK:", infreq_to_unk)
         Vocabulary.load(infreq_to_unk=infreq_to_unk)
         for token_type, symbol_to_token_id in Vocabulary._vocab.items():
+            tokens_to_symbols: Dict[tuple, List[str]] = {}
+            for symbol in symbol_to_token_id:
+                tokens_to_symbols.setdefault(
+                    tuple(sorted(text_tokenizer(symbol)["input_ids"])), []
+                ).append(symbol)
             freq_counter = Counter(len(text_tokenizer(symbol)["input_ids"]) for symbol in symbol_to_token_id)
             print(token_type, freq_counter.most_common())
+            print("Symbols with overlapping token sets..")
+            total_overlaps = 0
+            for token_list, symbols in tokens_to_symbols.items():
+                if len(symbols) > 1:
+                    total_overlaps += 1
+                    if total_overlaps <= 5:
+                        print(token_list, symbols)
+            print("Total:", total_overlaps)

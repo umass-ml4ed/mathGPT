@@ -10,7 +10,7 @@ from transformers import GPT2TokenizerFast
 from math_tokenize import tokenize_formula, EMPTY_POS_VECTOR, get_empty_pos_encoding, encode_pos
 from decode import decode_formula
 from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, Formula, Sequence, CollatedBatch
-from constants import TokenType, DownstreamTask, TPE, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, CLS_TOKEN, FORMULA_IDENTIFIER, DOLLAR_TOK
+from constants import TokenType, DownstreamTask, TPE, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, FORMULA_IDENTIFIER, START_FORM_TEXT_TOK, END_FORM_TEXT_TOK
 from utils import device, is_cls_task, TrainOptions
 
 def split_sequence(sequence: Sequence, max_seq_len: int) -> List[Sequence]:
@@ -76,7 +76,7 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_t
 
         if decode_formulas:
             # Decode formula back into text, with start and stop latex tokens, and add to the sequence
-            formula_text = " $ " + decode_formula(formula_sequence.token_ids, formula_sequence.token_types, text_tokenizer) + " $ "
+            formula_text = " <m> " + decode_formula(formula_sequence.token_ids, formula_sequence.token_types, text_tokenizer) + " </m> "
             formula_token_ids = text_tokenizer(formula_text)["input_ids"]
             sequence.token_ids += formula_token_ids
             sequence.token_types += [TokenType.TEXT] * len(formula_token_ids)
@@ -177,7 +177,7 @@ class GenTaskDataset(Dataset):
             # Sanity check - just generate the first equation of the label with the preceding text given
             if test_first_eq:
                 if options.baseline and options.post_proc:
-                    start_idx = next((idx for idx, token_id in enumerate(label_sequence.token_ids) if token_id == DOLLAR_TOK), None)
+                    start_idx = next((idx for idx in range(len(label_sequence) - 2) if label_sequence.token_ids[idx : idx + 3] == START_FORM_TEXT_TOK), None)
                 else:
                     start_idx = next((idx for idx, token_type in enumerate(label_sequence.token_types) if token_type == TokenType.START_FORMULA), None)
                 if not start_idx:
@@ -185,7 +185,7 @@ class GenTaskDataset(Dataset):
                 headline_start, headline_end = label_sequence.split_at(start_idx + 1)
                 intermediate_sequence = intermediate_sequence + headline_start
                 if options.baseline and options.post_proc:
-                    end_idx = next((idx for idx, token_id in enumerate(headline_end.token_ids) if token_id == DOLLAR_TOK), None)
+                    end_idx = next((idx for idx in range(len(headline_end) - 2) if headline_end.token_ids[idx : idx + 3] == END_FORM_TEXT_TOK), None)
                 else:
                     end_idx = next((idx for idx, token_type in enumerate(headline_end.token_types) if token_type == TokenType.END_FORMULA), None)
                 label_sequence = headline_end.split_at(end_idx + 1)[0]
@@ -407,10 +407,10 @@ class Collator:
                 ]
                 pos_encoding_batches.append(torch.FloatTensor(pos_encodings))
             if self.options.shared_emb:
-                gpt_tokens = torch.tensor([
+                gpt_tokens = torch.tensor(np.array([
                     np.pad(gpt_token_vec, (0, max_gpt_token_len - len(gpt_token_vec)), constant_values=PADDING_TOKEN_ID)
                     for gpt_token_vec in sequence.gpt_tokens
-                ], dtype=torch.long)
+                ]), dtype=torch.long)
                 gpt_token_batches.append(gpt_tokens)
                 use_shared_emb_batches.append(torch.tensor([len(gpt_token_vec) for gpt_token_vec in sequence.gpt_tokens], dtype=torch.bool))
             attention_mask.append(torch.ones(len(sequence.token_ids)))

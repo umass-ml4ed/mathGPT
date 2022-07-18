@@ -26,7 +26,7 @@ def main():
     parser = argparse.ArgumentParser("MathGPT")
     # Modes
     parser.add_argument("--preprocess_wiki", action="store_true", help="Process raw Wikipedia data and save to JSON files; generate raw vocab file")
-    parser.add_argument("--preprocess_mathsum", action="store_true", help="Process raw MathSum data and save to JSON files")
+    parser.add_argument("--preprocess_mathsum", help="Process raw MathSum data and save to JSON files", choices=["OFEQ-10k", "EXEQ-300k"])
     parser.add_argument("--preprocess_answer_scoring", action="store_true", help="Process answer scoring dataset")
     parser.add_argument("--preprocess_feedback", action="store_true", help="Process feedback dataset")
     parser.add_argument("--process_probes", action="store_true", help="Process LM probes and save to JSON files")
@@ -100,7 +100,7 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
     if args.preprocess_wiki:
         process_wikipedia_data()
     if args.preprocess_mathsum:
-        process_mathsum_data()
+        process_mathsum_data(args.preprocess_mathsum)
     if args.preprocess_answer_scoring:
         process_answer_scoring_data()
     if args.preprocess_feedback:

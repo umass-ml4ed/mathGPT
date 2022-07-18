@@ -65,6 +65,8 @@ def tree_to_text(tree_node: DecodeTreeNode, text_tokenizer: GPT2TokenizerFast) -
     if symbol == "injective-limit":
         symbol = "\\varinjlim"
 
+    # TODO: form-seq, conditional-set, tensor-product, gt, lt, int, limit-from, limit
+
     if not tree_node.children:
         return symbol
 
@@ -141,7 +143,7 @@ def decode_batch(batch: CollatedBatch, text_tokenizer: GPT2TokenizerFast) -> Lis
             if token_type == TokenType.START_FORMULA:
                 if sub_seq_start != sub_seq_end:
                     result += text_tokenizer.decode(batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end])
-                result += " $ "
+                result += " <m> "
                 sub_seq_start = sub_seq_end = tok_idx + 1
                 is_text = False
                 continue
@@ -154,7 +156,7 @@ def decode_batch(batch: CollatedBatch, text_tokenizer: GPT2TokenizerFast) -> Lis
                         batch["token_types"][seq_idx][sub_seq_start : sub_seq_end],
                         text_tokenizer
                     )
-                result += " $ "
+                result += " </m> "
                 sub_seq_start = sub_seq_end = tok_idx + 1
                 is_text = True
                 continue
