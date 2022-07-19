@@ -160,7 +160,7 @@ def generate(model: MathGPTLM, start_batch: CollatedBatch, options: TrainOptions
     for _ in range(starting_len, options.max_seq_len):
         # TODO: can we make faster by removing sequences in the batch that hit EOS? or set attention mask to 0 after EOS?
         # TODO: extract and pass past_key_values
-        _, type_to_token_probs = model(gen_batch)
+        type_to_token_probs = model(gen_batch)[1]
 
         if options.gen == Gen.GREEDY.value:
             type_preds, token_preds = get_most_likely_predictions(type_to_token_probs)
@@ -202,7 +202,7 @@ def generate_beam(model: MathGPTLM, start_batch: CollatedBatch, options: TrainOp
                     batch_idx
                 ))
                 continue
-            loss, type_to_token_probs = model(batch)
+            loss, type_to_token_probs = model(batch)[:2]
             cur_len = cur_idx - starting_len + 1
             if cur_len <= options.min_gen_len:
                 type_to_token_probs[TokenType.TEXT][:, :, EOS_TOKEN_ID] = 0
@@ -261,7 +261,7 @@ def generate_batch(model: MathGPTLM, gen_batch: CollatedBatch, options: TrainOpt
         # TODO: can we make faster by removing sequences in the batch that hit EOS? or set attention mask to 0 after EOS?
         # TODO: extract and pass past_key_values
         # Get predictions from model
-        _, type_to_token_probs = model(gen_batch)
+        type_to_token_probs = model(gen_batch)[1]
         batch_all_idx = torch.arange(batch_size)
         last_idx = gen_batch["sequence_lengths"] - 1
 

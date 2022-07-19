@@ -46,7 +46,8 @@ TYPE_STR_TO_MAX_NUM_TOKENS: Dict[str, int] = {
     "N": 2000,
     "T": 1000,
     "V": 1000,
-    "F": 5000,
+    # "T": 2000,
+    # "V": 4000,
     # "F": 600,
 }
 

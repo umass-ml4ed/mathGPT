@@ -13,7 +13,7 @@ class GPTLMBaseline(nn.Module):
         super().__init__()
         self.gpt2_lm: GPT2LMHeadModel = GPT2LMHeadModel.from_pretrained("gpt2")
 
-    def forward(self, batch: CollatedBatch, labels: Optional[torch.Tensor] = None):
+    def forward(self, batch: CollatedBatch, labels: Optional[torch.Tensor] = None, output_attentions: bool = False):
         # Passing padding tokens to the model will break it when looking up embeddings, so just use a valid dummy value
         # Not an issue since we're passing explicit labels that still have the padding
         input_ids = batch["token_ids"]
@@ -25,10 +25,10 @@ class GPTLMBaseline(nn.Module):
             else:
                 labels = input_ids
 
-        output: GPTOutput = self.gpt2_lm(input_ids=input_ids, labels=labels)
+        output: GPTOutput = self.gpt2_lm(input_ids=input_ids, labels=labels, output_attentions=output_attentions)
         probs = {token_type: torch.zeros(input_ids.shape[0], input_ids.shape[1], 1).to(device) for token_type in TokenType}
         probs[TokenType.TEXT] = nn.Softmax(dim=-1)(output.logits)
-        return output.loss, probs
+        return output.loss, probs, output.attentions
 
 class GPTClassifierBaseline(nn.Module):
     def __init__(self, options: TrainOptions):

@@ -50,11 +50,11 @@ def get_target_tokens(batch: CollatedBatch, labels: Optional[torch.Tensor]):
         target_tokens = batch["token_ids"]
     return apply_unks(target_tokens, batch)
 
-def init_perturbation_weights(module):
+def init_small_weights(module):
     """
     Init the weights of layers in the perturbation network - should be sufficiently small
     """
-    if isinstance(module, nn.Linear):
+    if isinstance(module, nn.Linear) or isinstance(module, nn.Embedding):
         nn.init.xavier_normal_(module.weight, 0.1)
 
 class MathGPTBase(nn.Module):
@@ -69,7 +69,7 @@ class MathGPTBase(nn.Module):
 
         # Create type embeddings
         self.type_embeddings = nn.Embedding(self.num_types, EMB_SIZE) # TODO: also try just have text, math, and transition type embeddings
-        nn.init.xavier_normal_(self.type_embeddings.weight, 0.1)
+        init_small_weights(self.type_embeddings)
 
         # TODO: not great that we gotta assign str(Type.value)... see if ModuleList fixes this
         # Create token embedding matrix for each type
@@ -93,11 +93,12 @@ class MathGPTBase(nn.Module):
                 nn.Tanh(),
                 nn.Linear(sep_hidden_size, EMB_SIZE, bias=False)
             )
-            self.shared_emb_perturbation.apply(init_perturbation_weights)
+            self.shared_emb_perturbation.apply(init_small_weights)
 
         # Linear projection to convert raw math pos encoding into one that can be added to the input embeddings
         if options.tpe == TPE.FORTE.value:
             self.math_embedding_projection = nn.Linear(POS_ENCODING_SIZE_FORTE, EMB_SIZE, bias=False)
+            init_small_weights(self.math_embedding_projection)
         elif options.tpe == TPE.RNN.value:
             self.math_embedding_model = RNNPosEncoder()
 
@@ -168,12 +169,12 @@ class MathGPTBase(nn.Module):
 
         return input_embeddings
 
-    def get_transformer_output(self, batch: CollatedBatch):
+    def get_transformer_output(self, batch: CollatedBatch, output_attentions: bool = False):
         # Run inputs through model
         gpt_output: GPTOutput = self.transformer(
             # past_key_values=[], # TODO: for speeding up decoding
             use_cache=False, # TODO: set to True for decoding, but otherwise runs out of memory
-            output_attentions=False,
+            output_attentions=output_attentions,
             # attention_mask=batch["attention_mask"], # TODO: this doesn't seem to make a difference with padding, might be performance-related
             inputs_embeds=self.get_input_embeddings(batch),
             return_dict=True
@@ -237,6 +238,9 @@ class MathGPTLM(MathGPTBase):
         for token_type, allowed_types in ALLOWED_TRANSITIONS.items():
             if not self.options.math_text and token_type == TokenType.MATH_TEXT:
                 continue
+            if self.options.num_to_tree and self.options.sd_to_tree and token_type == TokenType.NUM:
+                # If using num trees (including for single digits), only allow num tokens in those trees
+                allowed_types = [TokenType.NUM, TokenType.END]
             for allowed_type in allowed_types:
                 type_mask[:, :, allowed_type][type_idxs[token_type]] = False
         # Tokens that finish a formula can only generate END_FORMULA
@@ -245,7 +249,10 @@ class MathGPTLM(MathGPTBase):
         if self.options.math_text:
             mth_idx = (batch["token_ids"] == SpecialOpToken.MATH_TEXT_HEAD) & type_idxs[TokenType.OP]
             type_mask[mth_idx] = ~F.one_hot(torch.tensor(TokenType.MATH_TEXT), num_classes=self.num_types).type(torch.bool).to(device)
-        # NOTE: We are not enforcing that NUM_SUB_TREE_HEAD must only generate NUM tokens, since if math_text is also set then OP children can also occur
+        # Num tree head must produce a num token
+        if self.options.num_to_tree:
+            nth_idx = (batch["token_ids"] == SpecialOpToken.NUM_SUB_TREE_HEAD) & type_idxs[TokenType.OP]
+            type_mask[nth_idx] = ~F.one_hot(torch.tensor(TokenType.NUM), num_classes=self.num_types).type(torch.bool).to(device)
         # Prevent nodes from exceeding max depth, which happens if an OP token is produced in the maximum level
         op_unallowed_idx = ((batch["pos_levels"] == MAX_FORMULA_DEPTH - 1) & ~type_idxs[TokenType.END]) |\
                            ((batch["pos_levels"] == MAX_FORMULA_DEPTH - 2) & type_idxs[TokenType.OP])
@@ -390,9 +397,9 @@ class MathGPTLM(MathGPTBase):
         loss = loss_fn(token_activations[:, :-1].reshape(-1, token_activations.shape[2]), shifted_target_tokens.reshape(-1))
         return loss
 
-    def forward(self, batch: CollatedBatch, labels: torch.Tensor = None):
+    def forward(self, batch: CollatedBatch, labels: torch.Tensor = None, output_attentions: bool = False):
         # Get GPT output
-        gpt_output = self.get_transformer_output(batch)
+        gpt_output = self.get_transformer_output(batch, output_attentions)
 
         # Get relevant masks
         type_idxs, final_formula_token_idx = self.get_prediction_masks(batch)
@@ -422,7 +429,7 @@ class MathGPTLM(MathGPTBase):
             else:
                 type_to_token_probs = self.get_token_probs_from_activations(token_activations, type_mask)
 
-        return loss, type_to_token_probs
+        return loss, type_to_token_probs, gpt_output.attentions
 
 class MathGPTClassifier(MathGPTBase):
     def __init__(self, options: TrainOptions):

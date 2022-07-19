@@ -27,6 +27,10 @@ def get_article_names(data_dir_override: Optional[str]):
     data_dir = data_dir_override or WIKI_DATA
     return [os.path.join(data_dir, article_filename) for article_filename in os.listdir(data_dir)]
 
+def get_probes() -> List[Article]:
+    with open("data/probes.json", encoding="utf-8") as probes_file:
+        return json.load(probes_file)
+
 def get_headline_data(split: str, options: TrainOptions) -> List[GenTaskSample]:
     # Load pre-processed dataset when using the MathGPT model, or using the post_proc option for the baseline model
     pre_processed = not options.baseline or options.post_proc
@@ -252,9 +256,7 @@ def test_lm(model_name: str, test_article: str, test_options: dict):
             print("Prediction:", pred_text)
             print("")
     else:
-        with open("data/probes.json", encoding="utf-8") as probes_file:
-            probes: List[Article] = json.load(probes_file)
-        dataset = PreTrainDatasetPreloaded(probes, options, options.max_seq_len)
+        dataset = PreTrainDatasetPreloaded(get_probes(), options, options.max_seq_len)
         data_loader = get_data_loader(dataset, None, 1, False, False, options)
         with torch.no_grad():
             for batch in data_loader:

@@ -5,7 +5,7 @@ import torch
 import numpy as np
 from transformers import GPT2TokenizerFast
 
-from vocabulary import Vocabulary, get_matrix_symbol, MATH_TYPES
+from vocabulary import Vocabulary, get_matrix_symbol, MATH_TYPES, NUM_SYMBOLS, UNK_MAP
 from data_types import OPT, Sequence
 from utils import TrainOptions
 from constants import TokenType, SpecialOpToken, SpecialVarToken, SpecialNumToken, TPE, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH, EMB_SIZE
@@ -127,14 +127,14 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
                 if type_str == "N":
                     # Insert a special num op token and set its children to the digits of the number
                     token_type, token_id = TokenType.OP, SpecialOpToken.NUM_SUB_TREE_HEAD.value
-                    children = [["NC", char, None] for char in symbol][:MAX_FORMULA_WIDTH - 1]
+                    children = [["NC", char, None] for char in symbol if char in NUM_SYMBOLS][:MAX_FORMULA_WIDTH - 1]
                 elif type_str == "NC":
                     type_str = "N"
             else:
                 if type_str == "N" and len(symbol) > 1:
                     # Insert a special num op token and set its children to the digits of the number
                     token_type, token_id = TokenType.OP, SpecialOpToken.NUM_SUB_TREE_HEAD.value
-                    children = [["N", char, None] for char in symbol][:MAX_FORMULA_WIDTH - 1]
+                    children = [["N", char, None] for char in symbol if char in NUM_SYMBOLS][:MAX_FORMULA_WIDTH - 1]
 
         if type_str == "+":
             # Convert all "+" symbols to anonymous operator.
@@ -164,8 +164,7 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
 
             # Convert UNKs to subtrees with GPT-tokenized symbol as children
             if options.math_text:
-                unks = [(TokenType.VAR, SpecialVarToken.UNK), (TokenType.NUM, SpecialNumToken.UNK), (TokenType.OP, SpecialOpToken.UNK)]
-                if (token_type, token_id) in unks:
+                if token_id == UNK_MAP.get(token_type):
                     # Tokenize symbol
                     math_text: List[OPT] = [
                         [TokenType.MATH_TEXT, sym_token_id, None]
