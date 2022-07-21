@@ -10,7 +10,7 @@ from transformers import GPT2TokenizerFast
 from math_tokenize import tokenize_formula, EMPTY_POS_VECTOR, get_empty_pos_encoding, encode_pos
 from decode import decode_formula
 from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, Formula, Sequence, CollatedBatch
-from constants import TokenType, DownstreamTask, TPE, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, FORMULA_IDENTIFIER, START_FORM_TEXT_TOK, END_FORM_TEXT_TOK
+from constants import TokenType, DownstreamTask, TPE, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, FORMULA_IDENTIFIER, START_FORM_TEXT_TOKS, END_FORM_TEXT_TOK
 from utils import device, is_cls_task, TrainOptions
 
 def split_sequence(sequence: Sequence, max_seq_len: int) -> List[Sequence]:
@@ -72,7 +72,7 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_t
             continue
 
         # Tokenize the formula
-        formula_sequence = tokenize_formula(formulas[str(text_chunk_idx)]["opt"], options, text_tokenizer)
+        formula_sequence = tokenize_formula(formulas[str(text_chunk_idx)]["opt"], options)
 
         if decode_formulas:
             # Decode formula back into text, with start and stop latex tokens, and add to the sequence
@@ -161,7 +161,6 @@ class PreTrainDatasetPreloaded(Dataset):
 class GenTaskDataset(Dataset):
     def __init__(self, samples: List[GenTaskSample], options: TrainOptions):
         super().__init__()
-        test_first_eq = False
         min_label_len = 2**31
         for sample in tqdm(samples):
             # Tokenize the prompt and label sequences
@@ -169,37 +168,52 @@ class GenTaskDataset(Dataset):
             prompt_sequence, cur_missing_formulas = tokenize_sequence("", prompt_text, sample["prompt"]["formulas"], self.text_tokenizer, options)
             self.num_missing_formulas += cur_missing_formulas
             intermediate_text = SEP_TOKEN + " Summary: "
-            intermediate_sequence, _ = tokenize_sequence("", intermediate_text, [], self.text_tokenizer, options)
+            intermediate_sequence, _ = tokenize_sequence("", intermediate_text, {}, self.text_tokenizer, options)
             label_text = sample["label"]["text"] + EOS_TOKEN
             label_sequence, cur_missing_formulas = tokenize_sequence("", label_text, sample["label"]["formulas"], self.text_tokenizer, options)
             self.num_missing_formulas += cur_missing_formulas
             min_label_len = min(min_label_len, len(label_sequence))
-            # Sanity check - just generate the first equation of the label with the preceding text given
-            if test_first_eq:
-                if options.baseline and options.post_proc:
-                    start_idx = next((idx for idx in range(len(label_sequence) - 2) if label_sequence.token_ids[idx : idx + 3] == START_FORM_TEXT_TOK), None)
-                else:
-                    start_idx = next((idx for idx, token_type in enumerate(label_sequence.token_types) if token_type == TokenType.START_FORMULA), None)
-                if not start_idx:
-                    continue
-                headline_start, headline_end = label_sequence.split_at(start_idx + 1)
-                intermediate_sequence = intermediate_sequence + headline_start
-                if options.baseline and options.post_proc:
-                    end_idx = next((idx for idx in range(len(headline_end) - 2) if headline_end.token_ids[idx : idx + 3] == END_FORM_TEXT_TOK), None)
-                else:
-                    end_idx = next((idx for idx, token_type in enumerate(headline_end.token_types) if token_type == TokenType.END_FORMULA), None)
-                label_sequence = headline_end.split_at(end_idx + 1)[0]
-            # Trim the prompt if we go over the max length
-            overflow = len(prompt_sequence) + len(intermediate_sequence) + len(label_sequence) - options.max_seq_len
-            if overflow > 0:
-                self.trimmed_sequences += 1
-                prompt_sequence = split_sequence(prompt_sequence, len(prompt_sequence) - overflow)[0]
-            # Concatenate into single sequence, and save the length of the prompt for creating generative labels
-            sequence = prompt_sequence + intermediate_sequence + label_sequence
-            sequence.meta = {
-                "prompt_length": len(prompt_sequence) + len(intermediate_sequence)
-            }
-            self.data.append(sequence)
+
+            # For eval_formulas mode - find each formula in the label and set them to be the new labels
+            if options.eval_formulas:
+                int_seqs = []
+                label_seqs = []
+                while True:
+                    if options.baseline:
+                        start_idx = next((idx for idx in range(len(label_sequence) - 2) if label_sequence.token_ids[idx : idx + 3] in START_FORM_TEXT_TOKS), None)
+                    else:
+                        start_idx = next((idx for idx, token_type in enumerate(label_sequence.token_types) if token_type == TokenType.START_FORMULA), None)
+                    if start_idx is None:
+                        break
+                    headline_start, headline_end = label_sequence.split_at(start_idx + (3 if options.baseline else 1))
+                    intermediate_sequence += headline_start
+                    int_seqs.append(intermediate_sequence)
+                    if options.baseline:
+                        end_idx = next((idx for idx in range(len(headline_end) - 2) if headline_end.token_ids[idx : idx + 3] == END_FORM_TEXT_TOK), None)
+                    else:
+                        end_idx = next((idx for idx, token_type in enumerate(headline_end.token_types) if token_type == TokenType.END_FORMULA), None)
+                    formula_sequence, label_sequence = headline_end.split_at(end_idx + (3 if options.baseline else 1))
+                    label_seqs.append(formula_sequence)
+                    intermediate_sequence += formula_sequence
+            else:
+                int_seqs = [intermediate_sequence]
+                label_seqs = [label_sequence]
+
+            # Construct the full sequence(s) and add to the dataset
+            for intermediate_sequence, label_sequence in zip(int_seqs, label_seqs):
+                # Trim the prompt if we go over the max length
+                overflow = len(prompt_sequence) + len(intermediate_sequence) + len(label_sequence) - options.max_seq_len
+                if overflow > 0:
+                    self.trimmed_sequences += 1
+                    prompt_sequence = split_sequence(prompt_sequence, len(prompt_sequence) - overflow)[0]
+
+                # Concatenate into single sequence, and save the length of the prompt for creating generative labels
+                sequence = prompt_sequence + intermediate_sequence + label_sequence
+                sequence.meta = {
+                    "prompt_length": len(prompt_sequence) + len(intermediate_sequence)
+                }
+                self.data.append(sequence)
+
         print("Missing", self.num_missing_formulas, "formulas")
         print("Trimmed", self.trimmed_sequences, "long sequences")
         print("Min label length:", min_label_len)
@@ -306,6 +320,7 @@ class FeedbackDataset(Dataset):
         shortest_feedback = 2**31
         longest_feedback = 0
         for sample in tqdm(samples):
+            # Tokenize the problem, answer, and feedback sequences
             problem_text = "Question: " + sample["problem"]["text"]
             problem_sequence, cur_missing_formulas = tokenize_sequence("", problem_text, sample["problem"]["formulas"], self.text_tokenizer, options)
             self.num_missing_formulas += cur_missing_formulas
@@ -317,17 +332,20 @@ class FeedbackDataset(Dataset):
             self.num_missing_formulas += cur_missing_formulas
             shortest_feedback = min(shortest_feedback, len(feedback_sequence))
             longest_feedback = max(longest_feedback, len(feedback_sequence))
+
             # Trim the problem if we go over the max length
             overflow = len(problem_sequence) + len(answer_sequence) + len(feedback_sequence) - options.max_seq_len
             if overflow > 0:
                 self.trimmed_sequences += 1
                 problem_sequence = split_sequence(problem_sequence, len(problem_sequence) - overflow)[0]
+
             # Concatenate into single sequence, and save the length of the prompt for creating generative labels
             sequence = problem_sequence + answer_sequence + feedback_sequence
             sequence.meta = {
                 "prompt_length": len(problem_sequence) + len(answer_sequence)
             }
             self.data.append(sequence)
+
         print("Missing", self.num_missing_formulas, "formulas")
         print("Trimmed", self.trimmed_sequences, "long sequences")
         print("Shortest feedback:", shortest_feedback, "Longest feedback:", longest_feedback)

@@ -331,7 +331,7 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask, eval_options
     if task == DownstreamTask.HEADLINES:
         headlines = get_headline_data("test", options)
         test_data = GenTaskDataset(headlines, options)
-        _, results = evaluate_gen_task(model, test_data, task, options)
+        _, results = evaluate_gen_task(model_name, model, test_data, task, options)
     elif task == DownstreamTask.ANSWER_SCORING:
         problems, train_samples, _, test_samples = get_answer_scoring_data()
         train_data = AnswerScoringDataset(train_samples, problems, options)
@@ -340,7 +340,7 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask, eval_options
     elif task == DownstreamTask.FEEDBACK:
         _, _, test_samples = get_feedback_data()
         test_data = FeedbackDataset(test_samples, options)
-        _, results = evaluate_gen_task(model, test_data, task, options)
+        _, results = evaluate_gen_task(model_name, model, test_data, task, options)
     else:
         raise Exception(f"Unsupported task {task}")
 

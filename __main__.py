@@ -6,6 +6,7 @@ from pre_process import process_wikipedia_data, process_probes, process_mathsum_
 from analyze_data import analyze_wiki, analyze_mathsum, analyze_answer_scoring, analyze_feedback, analyze_vocab
 from analyze_model import visualize_attention
 from training import pretrain, evaluate_pretrained_lm, test_lm, train_downstream_task, evaluate_downstream_task, test_gen_task
+from evaluate import evaluate_ted
 from utils import initialize_seeds, device, enum_choices, enum_value_to_member, setup_proc_group, cleanup_proc_group
 from vocabulary import Vocabulary
 from constants import DownstreamTask, TPE, Gen
@@ -43,6 +44,7 @@ def main():
     parser.add_argument("--train_downstream", help="Train downstream task model", choices=enum_choices(DownstreamTask))
     parser.add_argument("--evaluate_downstream", help="Evaluate downstream task model performance on test set", choices=enum_choices(DownstreamTask))
     parser.add_argument("--test_downstream", help="See downstream model output on test samples", choices=enum_choices(DownstreamTask))
+    parser.add_argument("--evaluate_ted", action="store_true", help="Evaluate TED metric on pred and label files from formula-only generative task")
     # Config
     parser.add_argument("--name", help="Name of current model/experiment, used for saving/loading model and config")
     parser.add_argument("--checkpoint_name", help="Name of model to resume training for")
@@ -61,6 +63,7 @@ def main():
     parser.add_argument("--ns_p", type=float, help="P parameter for nucleus sampling")
     parser.add_argument("--beam_width", type=int, help="Width to use in beam search decoding")
     parser.add_argument("--min_gen_len", type=int, help="Minimum length for generated sequences")
+    parser.add_argument("--eval_formulas", type=bool_type, help="For generative tasks, only treat the labels' formulas as targets")
     parser.add_argument("--baseline", type=bool_type, help="Use baseline GPT-2 model")
     parser.add_argument("--post_proc", type=bool_type, help="For baseline - if true, train on post-processed and decoded formulas, else train on original formulas")
     parser.add_argument("--joint", type=bool_type, help="When true, model type/token probability jointly, otherwise model token probability directly")
@@ -133,6 +136,8 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
         evaluate_downstream_task(args.name, enum_value_to_member(args.evaluate_downstream, DownstreamTask), arg_dict)
     if args.test_downstream:
         test_gen_task(args.name, enum_value_to_member(args.test_downstream, DownstreamTask), arg_dict)
+    if args.evaluate_ted:
+        evaluate_ted(args.name, arg_dict)
 
     if args.ddp:
         cleanup_proc_group()

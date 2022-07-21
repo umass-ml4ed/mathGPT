@@ -6,14 +6,32 @@ import torch.distributed as dist
 from tqdm import tqdm
 from sklearn import metrics
 from nlgeval import compute_metrics
+import zss
 
 from loading import Dataset, trim_batch, get_data_loader
 from model_math_gpt import MathGPTBase, MathGPTLM, MathGPTClassifier
 from generate import get_most_likely_predictions, generate
-from decode import decode_batch
+from decode import decode_batch, get_tree, DecodeTreeNode
+from pre_process_utils import process_raw_text
+from math_tokenize import tokenize_formula
 from utils import TrainOptions
-from data_types import CollatedBatch
+from data_types import CollatedBatch, Article, OPT
 from constants import PADDING_TOKEN_ID, DownstreamTask
+
+def calculate_ted(labels: List[DecodeTreeNode], preds: List[DecodeTreeNode]):
+    """
+    Get average tree edit distance across label/pred pairs
+    """
+    def get_children(tree_node: DecodeTreeNode):
+        return tree_node.children
+    def get_label(tree_node: DecodeTreeNode):
+        return str(tree_node.token_type) + "!" + str(tree_node.token_id)
+    def label_dist(label_1: str, label_2: str):
+        return 0 if label_1 == label_2 else 1
+    return np.mean([
+        zss.simple_distance(label, pred, get_children, get_label, label_dist)
+        for label, pred in zip(labels, preds)
+    ])
 
 def evaluate_lm(model: MathGPTLM, dataset: Dataset, options: TrainOptions):
     """
@@ -67,7 +85,8 @@ def evaluate_lm(model: MathGPTLM, dataset: Dataset, options: TrainOptions):
     # TODO: see why loss is different here vs. evaluate_lm_accuracy
     return total_loss / num_batches, f"Perplexity: {perplexity:.3f}"
 
-def process_model_output(model: MathGPTBase, dataset: Dataset, task: Optional[DownstreamTask], options: TrainOptions, output_accumulator: Callable[[Tuple, CollatedBatch], None]):
+def process_model_output(model: MathGPTBase, dataset: Dataset, task: Optional[DownstreamTask], options: TrainOptions,
+                         output_accumulator: Callable[[Tuple, CollatedBatch], None]):
     data_loader = get_data_loader(dataset, task, options.batch_size, False, False, options)
     total_loss = 0.0
     num_batches = 0
@@ -120,18 +139,26 @@ def evaluate_lm_accuracy(model: MathGPTLM, dataset: Dataset, task: Optional[Down
     accuracy = sum(match) / len(match)
     return loss, f"Accuracy: {accuracy:.3f}"
 
-def evaluate_gen_task(model: MathGPTLM, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
+def evaluate_gen_task(model_name: str, model: MathGPTLM, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
     model.eval()
+    compute_ted = options.eval_formulas and not options.baseline
     # Only process one sequence at a time since prompts may have different lengths
     data_loader = get_data_loader(dataset, task, 1, False, False, options)
-    all_labels: List[CollatedBatch] = []
-    all_predictions: List[CollatedBatch] = []
+    all_labels: List[str] = []
+    all_predictions: List[str] = []
+    all_label_trees: List[DecodeTreeNode] = []
+    all_pred_trees: List[DecodeTreeNode] = []
     with torch.no_grad():
         for batch in tqdm(data_loader):
             split_point = batch["prompt_lengths"][0]
             gen_batch = generate(model, trim_batch(batch, 0, split_point), options)
-            all_predictions.append(decode_batch(trim_batch(gen_batch, split_point, options.max_seq_len), dataset.text_tokenizer)[0].replace("\n", " "))
-            all_labels.append(decode_batch(trim_batch(batch, split_point, options.max_seq_len), dataset.text_tokenizer)[0].replace("\n", " "))
+            label = trim_batch(batch, split_point, options.max_seq_len)
+            pred = trim_batch(gen_batch, split_point, options.max_seq_len)
+            all_labels.append(decode_batch(label, dataset.text_tokenizer)[0].replace("\n", " "))
+            all_predictions.append(decode_batch(pred, dataset.text_tokenizer)[0].replace("\n", " "))
+            if compute_ted:
+                all_label_trees.append(get_tree(label["token_ids"][0], label["token_types"][0]))
+                all_pred_trees.append(get_tree(pred["token_ids"][0], pred["token_types"][0]))
 
     if options.ddp:
         all_results = [None] * dist.get_world_size()
@@ -144,14 +171,17 @@ def evaluate_gen_task(model: MathGPTLM, dataset: Dataset, task: DownstreamTask, 
 
     num_exact_match = sum(pred == label for pred, label in zip(all_predictions, all_labels))
     accuracy = num_exact_match / len(all_labels)
-    pred_filename = "preds.txt"
-    label_filename = "labels.txt"
+    pred_filename = f"preds_{model_name}.txt"
+    label_filename = f"labels_{model_name}.txt"
     with open(pred_filename, "w", encoding="utf-8") as pred_file:
         pred_file.write("\n".join(all_predictions))
     with open(label_filename, "w", encoding="utf-8") as label_file:
         label_file.write("\n".join(all_labels))
     metrics = compute_metrics(hypothesis=pred_filename, references=[label_filename], no_skipthoughts=True, no_glove=True)
-    return 0, f"Exact Match Accuracy: {accuracy:.3f}, BLEU-4: {metrics['Bleu_4']:.3f}, ROUGE-L: {metrics['ROUGE_L']:.3f}, METEOR: {metrics['METEOR']:.3f}"
+    avg_ted = calculate_ted(all_label_trees, all_pred_trees) if compute_ted else None
+    return 0, f"Exact Match Accuracy: {accuracy:.3f}, BLEU-4: {metrics['Bleu_4']:.3f}, " +\
+               f"ROUGE-L: {metrics['ROUGE_L']:.3f}, METEOR: {metrics['METEOR']:.3f}" +\
+               (f", TED: {avg_ted:.3f}" if compute_ted else "")
 
 def evaluate_cls_task(model: MathGPTClassifier, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
     model.eval()
@@ -185,3 +215,47 @@ def evaluate_cls_task(model: MathGPTClassifier, dataset: Dataset, task: Downstre
     kappa = metrics.cohen_kappa_score(all_labels_np, all_preds_np, labels=possible_labels)
     _, _, f1, _ = metrics.precision_recall_fscore_support(all_labels_np, all_preds_np)
     return loss, f"Accuracy: {accuracy:.3f}, AUC: {auc:.3f}, Kappa: {kappa:.3f}, RMSE: {rmse:.3f}, F1: {f1.mean():.3f}"
+
+def evaluate_ted(model_name: str, options_dict: dict):
+    batch_size = 40
+    options = TrainOptions(options_dict)
+
+    # Load saved labels and predictions
+    label_filename = f"labels_{model_name}.txt"
+    pred_filename = f"preds_{model_name}.txt"
+    with open(label_filename, encoding="utf-8") as label_file:
+        labels = ["<m>" + label for label in label_file]
+    with open(pred_filename, encoding="utf-8") as pred_file:
+        preds = ["<m>" + pred for pred in pred_file]
+
+    # Convert sample strings to OPTs via pre-processing pipeline
+    err_data = {
+        "articles_missing_formulas": 0,
+        "formulas_missing_from_latexml_failure": 0,
+        "formulas_missing_from_latexml_randomly": 0,
+        "formulas_missing_from_tangentcft": 0,
+    }
+    failed_conversions = 0
+    processed_labels: List[Article] = []
+    processed_preds: List[Article] = []
+    for pred in tqdm(preds):
+        try:
+            processed_preds.append(process_raw_text([pred], err_data)[0])
+        except Exception as exc:
+            print(exc)
+            failed_conversions += 1
+    for batch_start_idx in tqdm(list(range(0, len(labels), batch_size))):
+        processed_labels += process_raw_text(labels[batch_start_idx : batch_start_idx + batch_size], err_data)
+    print(err_data)
+    for label, pred in zip(processed_labels, processed_preds):
+        assert len(label["formulas"]) == 1 and len(pred["formulas"]) == 1
+    # TODO: save all of these into a json so we don't have to run this more than once
+
+    # Perform post-processing via tokenizer, and then convert back to OPTs and calculate TED
+    label_trees: List[DecodeTreeNode] = []
+    pred_trees: List[DecodeTreeNode] = []
+    for src, out in [(processed_labels, label_trees), (processed_preds, pred_trees)]:
+        for sample in src:
+            formula_seq = tokenize_formula(sample["formulas"][0]["opt"], options)
+            out.append(get_tree(formula_seq.token_ids, formula_seq.token_types))
+    print("TED:", calculate_ted(label_trees, pred_trees), "Failed:", failed_conversions)

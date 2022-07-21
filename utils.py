@@ -74,9 +74,10 @@ class TrainOptions:
         self.ns_p: float = options.get("ns_p", 0.90)
         self.beam_width: int = options.get("beam_width", 3)
         self.min_gen_len: int = options.get("min_gen_len", 5)
+        self.eval_formulas: bool = options.get("eval_formulas", False)
         self.stride: Optional[int] = options.get("stride", None)
         self.ddp: bool = options.get("ddp", False)
-        # Model/data processing config
+        # Model/tree structure config
         self.baseline: bool = options.get("baseline", False)
         self.post_proc: bool = options.get("post_proc", False)
         self.joint: bool = options.get("joint", True)

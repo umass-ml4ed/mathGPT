@@ -3,11 +3,10 @@ import math
 from functools import lru_cache
 import torch
 import numpy as np
-from transformers import GPT2TokenizerFast
 
 from vocabulary import Vocabulary, get_matrix_symbol, MATH_TYPES, NUM_SYMBOLS, UNK_MAP
 from data_types import OPT, Sequence
-from utils import TrainOptions
+from utils import TrainOptions, text_tokenizer
 from constants import TokenType, SpecialOpToken, SpecialVarToken, SpecialNumToken, TPE, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH, EMB_SIZE
 
 EMPTY_POS_VECTOR = [0] * MAX_FORMULA_DEPTH
@@ -101,7 +100,7 @@ def encode_pos(pos_vec: Union[List[int], torch.Tensor], pos_level: int, tpe: str
         return encode_pos_rnn(pos_vec, pos_level)
 
 def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_level: int, cur_child_num: int, options: TrainOptions,
-                         text_tokenizer: GPT2TokenizerFast, sequence: Sequence) -> bool:
+                         sequence: Sequence) -> bool:
     """
     Recursive helper for OPT tokenization, add info for current head and then process children.
     Also do data post-processing.
@@ -168,7 +167,7 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
                     # Tokenize symbol
                     math_text: List[OPT] = [
                         [TokenType.MATH_TEXT, sym_token_id, None]
-                        for sym_token_id in text_tokenizer(symbol)["input_ids"]
+                        for sym_token_id in text_tokenizer()(symbol)["input_ids"]
                     ][:MAX_FORMULA_WIDTH - 1]
 
                     # Create node for tokenized symbol
@@ -194,7 +193,7 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
     sequence.pos_levels.append(cur_level)
     if options.shared_emb:
         if token_type in MATH_TYPES and not Vocabulary.is_special_token(token_type, token_id):
-            sequence.gpt_tokens.append(text_tokenizer(symbol)["input_ids"])
+            sequence.gpt_tokens.append(text_tokenizer()(symbol)["input_ids"])
         else:
             sequence.gpt_tokens.append([])
 
@@ -202,19 +201,19 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
     child_idx = 0
     if children:
         for child in children:
-            if tokenize_formula_rec(child, pos_vec, cur_level + 1, child_idx, options, text_tokenizer, sequence):
+            if tokenize_formula_rec(child, pos_vec, cur_level + 1, child_idx, options, sequence):
                 child_idx += 1
 
     # Append END token as last child for all OP tokens
     if token_type == TokenType.OP:
-        tokenize_formula_rec(None, pos_vec, cur_level + 1, child_idx, options, text_tokenizer, sequence)
+        tokenize_formula_rec(None, pos_vec, cur_level + 1, child_idx, options, sequence)
 
     return True
 
-def tokenize_formula(formula: OPT, options: TrainOptions, text_tokenizer: GPT2TokenizerFast):
+def tokenize_formula(formula: OPT, options: TrainOptions):
     """
     Given a formula OPT, return in DFS order the token ids, types, and position encodings
     """
     sequence = Sequence("")
-    tokenize_formula_rec(formula, EMPTY_POS_VECTOR, 0, 0, options, text_tokenizer, sequence)
+    tokenize_formula_rec(formula, EMPTY_POS_VECTOR, 0, 0, options, sequence)
     return sequence

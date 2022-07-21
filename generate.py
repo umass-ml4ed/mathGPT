@@ -176,10 +176,9 @@ def generate(model: MathGPTLM, start_batch: CollatedBatch, options: TrainOptions
     return gen_batch
 
 def beam_ended(batch: CollatedBatch, options: TrainOptions):
-    test_first_eq = False
-    if test_first_eq:
-        if options.baseline and options.post_proc:
-            return batch["token_ids"][0, -3:] == END_FORM_TEXT_TOK or batch["token_ids"][0, -1] == PADDING_TOKEN_ID
+    if options.eval_formulas:
+        if options.baseline:
+            return batch["token_ids"][0, -3:].detach().cpu().numpy().tolist() == END_FORM_TEXT_TOK or batch["token_ids"][0, -1] == PADDING_TOKEN_ID
         return batch["token_types"][0, -1] == TokenType.END_FORMULA or batch["token_ids"][0, -1] == PADDING_TOKEN_ID
     else:
         return batch["token_ids"][0, -1] in (EOS_TOKEN_ID, PADDING_TOKEN_ID)
