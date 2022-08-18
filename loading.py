@@ -48,7 +48,6 @@ def split_sequence(sequence: Sequence, max_seq_len: int) -> List[Sequence]:
     return [pre_split] + split_sequence(post_split, max_seq_len)
 
 def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_tokenizer: GPT2TokenizerFast, options: TrainOptions):
-    decode_formulas = options.baseline
     sequence = Sequence(name)
     text_chunks = text.split(FORMULA_IDENTIFIER)
     num_missing_formulas = 0
@@ -71,12 +70,16 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_t
             num_missing_formulas += 1
             continue
 
-        # Tokenize the formula
-        formula_sequence = tokenize_formula(formulas[str(text_chunk_idx)]["opt"], options)
-
-        if decode_formulas:
+        # Add current formula to the sequence
+        formula = formulas[str(text_chunk_idx)]
+        if options.baseline:
             # Decode formula back into text, with start and stop latex tokens, and add to the sequence
-            formula_text = " <m> " + decode_formula(formula_sequence.token_ids, formula_sequence.token_types) + " </m> "
+            if options.post_proc:
+                formula_sequence = tokenize_formula(formula["opt"], options)
+                formula_text = decode_formula(formula_sequence.token_ids, formula_sequence.token_types)
+            else:
+                formula_text = formula["tex"]
+            formula_text = " <m> " + formula_text + " </m> "
             formula_token_ids = text_tokenizer(formula_text)["input_ids"]
             sequence.token_ids += formula_token_ids
             sequence.token_types += [TokenType.TEXT] * len(formula_token_ids)
@@ -94,6 +97,7 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_t
                 sequence.gpt_tokens.append([])
 
             # Add formula
+            formula_sequence = tokenize_formula(formula["opt"], options)
             sequence.token_ids += formula_sequence.token_ids
             sequence.token_types += formula_sequence.token_types
             sequence.pos_vecs += formula_sequence.pos_vecs
