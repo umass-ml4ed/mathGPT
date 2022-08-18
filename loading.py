@@ -473,7 +473,7 @@ class Collator:
                 ]), dtype=torch.long)
                 gpt_token_batches.append(gpt_tokens)
                 use_shared_emb_batches.append(torch.tensor([len(gpt_token_vec) for gpt_token_vec in sequence.gpt_tokens], dtype=torch.bool))
-            attention_mask.append(torch.ones(len(sequence.token_ids)))
+            attention_mask.append(torch.ones(len(sequence)))
             sequence_lengths.append(len(sequence))
             if self.task:
                 if is_cls_task(self.task):

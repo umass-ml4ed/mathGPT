@@ -14,21 +14,21 @@ class GPTLMBaseline(nn.Module):
         self.gpt2_lm: GPT2LMHeadModel = GPT2LMHeadModel.from_pretrained("gpt2")
 
     def forward(self, batch: CollatedBatch, labels: Optional[torch.Tensor] = None, output_attentions: bool = False):
-        # Passing padding tokens to the model will break it when looking up embeddings, so just use a valid dummy value
-        # Not an issue since we're passing explicit labels that still have the padding
         input_ids = batch["token_ids"]
-        input_ids[input_ids == PADDING_TOKEN_ID] = 0
         if labels is None:
             if batch["gen_labels"] is not None:
-                # This is hacky but when generating a new label prediction, gen_labels will just contain the padding region over the prompt
-                labels = input_ids if torch.all(batch["gen_labels"] == PADDING_TOKEN_ID) else batch["gen_labels"]
+                labels = batch["gen_labels"]
             else:
-                labels = input_ids
+                labels = input_ids.clone()
+        # Passing padding tokens to the model will break it when looking up embeddings, so just use a valid dummy value
+        # Not an issue since we're passing explicit labels that still have the padding
+        input_ids[input_ids == PADDING_TOKEN_ID] = 0
 
         output: GPTOutput = self.gpt2_lm(input_ids=input_ids, labels=labels, output_attentions=output_attentions)
         probs = {token_type: torch.zeros(input_ids.shape[0], input_ids.shape[1], 1).to(device) for token_type in TokenType}
         probs[TokenType.TEXT] = nn.Softmax(dim=-1)(output.logits)
-        return output.loss, probs, output.attentions
+        loss = torch.tensor(0.0).to(device) if torch.all(labels == PADDING_TOKEN_ID) or labels.shape[1] == 1 else output.loss
+        return loss, probs, output.attentions
 
 class GPTClassifierBaseline(nn.Module):
     def __init__(self, options: TrainOptions):
