@@ -64,6 +64,7 @@ def main():
     parser.add_argument("--beam_width", type=int, help="Width to use in beam search decoding")
     parser.add_argument("--min_gen_len", type=int, help="Minimum length for generated sequences")
     parser.add_argument("--eval_formulas", type=bool_type, help="For generative tasks, only treat the labels' formulas as targets")
+    parser.add_argument("--eval_text", type=bool_type, help="For generative tasks, only treat the labels' text regions as targets")
     parser.add_argument("--baseline", type=bool_type, help="Use baseline GPT-2 model")
     parser.add_argument("--post_proc", type=bool_type, help="For baseline - if true, train on post-processed and decoded formulas, else train on original formulas")
     parser.add_argument("--joint", type=bool_type, help="When true, model type/token probability jointly, otherwise model token probability directly")

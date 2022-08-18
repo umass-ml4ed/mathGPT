@@ -76,7 +76,7 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_t
 
         if decode_formulas:
             # Decode formula back into text, with start and stop latex tokens, and add to the sequence
-            formula_text = " <m> " + decode_formula(formula_sequence.token_ids, formula_sequence.token_types, text_tokenizer) + " </m> "
+            formula_text = " <m> " + decode_formula(formula_sequence.token_ids, formula_sequence.token_types) + " </m> "
             formula_token_ids = text_tokenizer(formula_text)["input_ids"]
             sequence.token_ids += formula_token_ids
             sequence.token_types += [TokenType.TEXT] * len(formula_token_ids)
@@ -174,27 +174,65 @@ class GenTaskDataset(Dataset):
             self.num_missing_formulas += cur_missing_formulas
             min_label_len = min(min_label_len, len(label_sequence))
 
-            # For eval_formulas mode - find each formula in the label and set them to be the new labels
-            if options.eval_formulas:
+            # When evaluating particular regions - find each formula/text in the label and set them to be the new labels
+            if options.eval_formulas or options.eval_text:
                 int_seqs = []
                 label_seqs = []
                 while True:
-                    if options.baseline:
-                        start_idx = next((idx for idx in range(len(label_sequence) - 2) if label_sequence.token_ids[idx : idx + 3] in START_FORM_TEXT_TOKS), None)
+                    if options.eval_formulas:
+                        if options.baseline:
+                            start_idx = next((
+                                idx + 3 for idx in range(len(label_sequence) - 2)
+                                if label_sequence.token_ids[idx : idx + 3] in START_FORM_TEXT_TOKS
+                            ), None)
+                        else:
+                            start_idx = next((
+                                idx + 1 for idx, token_type in enumerate(label_sequence.token_types)
+                                if token_type == TokenType.START_FORMULA
+                            ), None)
                     else:
-                        start_idx = next((idx for idx, token_type in enumerate(label_sequence.token_types) if token_type == TokenType.START_FORMULA), None)
+                        if options.baseline:
+                            start_idx = next((
+                                idx + 3 for idx in range(len(label_sequence) - 2)
+                                if label_sequence.token_ids[idx : idx + 3] == END_FORM_TEXT_TOK
+                            ), None)
+                        else:
+                            start_idx = next((
+                                idx + 1 for idx, token_type in enumerate(label_sequence.token_types)
+                                if token_type == TokenType.END_FORMULA
+                            ), None)
                     if start_idx is None:
                         break
-                    headline_start, headline_end = label_sequence.split_at(start_idx + (3 if options.baseline else 1))
+                    headline_start, headline_end = label_sequence.split_at(start_idx)
                     intermediate_sequence += headline_start
-                    int_seqs.append(intermediate_sequence)
-                    if options.baseline:
-                        end_idx = next((idx for idx in range(len(headline_end) - 2) if headline_end.token_ids[idx : idx + 3] == END_FORM_TEXT_TOK), None)
+                    if options.eval_formulas:
+                        if options.baseline:
+                            end_idx = next((
+                                idx + 3 for idx in range(len(headline_end) - 2)
+                                if headline_end.token_ids[idx : idx + 3] == END_FORM_TEXT_TOK
+                            ), None)
+                        else:
+                            end_idx = next((
+                                idx + 1 for idx, token_type in enumerate(headline_end.token_types)
+                                if token_type == TokenType.END_FORMULA
+                            ), None)
                     else:
-                        end_idx = next((idx for idx, token_type in enumerate(headline_end.token_types) if token_type == TokenType.END_FORMULA), None)
-                    formula_sequence, label_sequence = headline_end.split_at(end_idx + (3 if options.baseline else 1))
-                    label_seqs.append(formula_sequence)
-                    intermediate_sequence += formula_sequence
+                        if options.baseline:
+                            end_idx = next((
+                                idx + 3 for idx in range(len(headline_end) - 2)
+                                if headline_end.token_ids[idx : idx + 3] in START_FORM_TEXT_TOKS
+                            ), len(headline_end))
+                        else:
+                            end_idx = next((
+                                idx + 1 for idx, token_type in enumerate(headline_end.token_types)
+                                if token_type == TokenType.START_FORMULA
+                            ), len(headline_end))
+                    cur_label_sequence, label_sequence = headline_end.split_at(end_idx)
+                    if options.eval_text and len(cur_label_sequence) <= 2:
+                        break
+                    int_seqs.append(intermediate_sequence)
+                    label_seqs.append(cur_label_sequence)
+                    intermediate_sequence += cur_label_sequence
             else:
                 int_seqs = [intermediate_sequence]
                 label_seqs = [label_sequence]

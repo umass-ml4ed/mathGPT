@@ -10,7 +10,7 @@ from math_tokenize import encode_pos
 from vocabulary import MATH_TYPES, Vocabulary
 from utils import device, TrainOptions, text_tokenizer
 from data_types import CollatedBatch
-from constants import TokenType, TPE, Gen, EOS_TOKEN_ID, PADDING_TOKEN_ID, END_FORM_TEXT_TOK
+from constants import TokenType, TPE, Gen, EOS_TOKEN_ID, PADDING_TOKEN_ID, END_FORM_TEXT_TOK, START_FORM_TEXT_TOKS
 
 def infer_math_pos(prev_pos_vecs: torch.Tensor, prev_pos_levels: torch.Tensor, prev_token_types: torch.Tensor):
     """
@@ -180,6 +180,10 @@ def beam_ended(batch: CollatedBatch, options: TrainOptions):
         if options.baseline:
             return batch["token_ids"][0, -3:].detach().cpu().numpy().tolist() == END_FORM_TEXT_TOK or batch["token_ids"][0, -1] == PADDING_TOKEN_ID
         return batch["token_types"][0, -1] == TokenType.END_FORMULA or batch["token_ids"][0, -1] == PADDING_TOKEN_ID
+    elif options.eval_text:
+        if options.baseline:
+            return batch["token_ids"][0, -3:].detach().cpu().numpy().tolist() in START_FORM_TEXT_TOKS or batch["token_ids"][0, -1] in (EOS_TOKEN_ID, PADDING_TOKEN_ID)
+        return batch["token_types"][0, -1] == TokenType.START_FORMULA or batch["token_ids"][0, -1] in (EOS_TOKEN_ID, PADDING_TOKEN_ID)
     else:
         return batch["token_ids"][0, -1] in (EOS_TOKEN_ID, PADDING_TOKEN_ID)
 
@@ -201,13 +205,13 @@ def generate_beam(model: MathGPTLM, start_batch: CollatedBatch, options: TrainOp
                     batch_idx
                 ))
                 continue
-            loss, type_to_token_probs = model(batch)[:2]
+            labels = batch["token_ids"] if batch["gen_labels"] is None else batch["gen_labels"]
+            loss, type_to_token_probs = model(batch, labels=labels)[:2]
             cur_len = cur_idx - starting_len + 1
             if cur_len <= options.min_gen_len:
                 type_to_token_probs[TokenType.TEXT][:, :, EOS_TOKEN_ID] = 0
             token_probs, type_to_start_idx = collapse_token_probs(type_to_token_probs)
             sorted_probs, sorted_indices = torch.sort(token_probs[0], descending=True)
-            labels = batch["token_ids"] if batch["gen_labels"] is None else batch["gen_labels"]
             loss_denom = torch.sum(labels != PADDING_TOKEN_ID)
             for beam in range(options.beam_width):
                 new_token_id, new_token_type = uncollapse_token_idx(sorted_indices[beam], type_to_start_idx)

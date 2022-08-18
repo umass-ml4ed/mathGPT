@@ -5,8 +5,10 @@ import torch
 from transformers import GPT2TokenizerFast
 
 from data_types import CollatedBatch
+from utils import text_tokenizer
 from constants import TokenType, SpecialOpToken, EOS_TOKEN_ID, PADDING_TOKEN_ID
 from vocabulary import Vocabulary, get_matrix_symbol
+from symbol_map import SYMBOL_MAP
 
 @dataclass
 class DecodeTreeNode:
@@ -33,12 +35,15 @@ def get_tree(token_ids: torch.Tensor, token_types: torch.Tensor) -> DecodeTreeNo
     # Return root of formula, may need to look in ancestors in case we're decoding a partial tree
     return ancestors[0] if ancestors else root
 
+# For testing purposes
+cur_seq = {}
 unhandled_symbols = set()
+symbol_to_first_seq = {}
 
-def tree_to_text(tree_node: DecodeTreeNode, text_tokenizer: GPT2TokenizerFast) -> str:
+def tree_to_text(tree_node: DecodeTreeNode) -> str:
     # Resolve math text for current node (leaf nodes)
     if Vocabulary.math_text() and tree_node.token_type == TokenType.OP and tree_node.token_id == SpecialOpToken.MATH_TEXT_HEAD:
-        return text_tokenizer.decode([child.token_id for child in tree_node.children])
+        return text_tokenizer().decode([child.token_id for child in tree_node.children])
 
     symbol = Vocabulary.get_symbol(tree_node.token_type, tree_node.token_id)
     children = tree_node.children
@@ -46,121 +51,126 @@ def tree_to_text(tree_node: DecodeTreeNode, text_tokenizer: GPT2TokenizerFast) -
     # Resolve math text for op nodes
     if Vocabulary.math_text() and tree_node.token_type == TokenType.OP and tree_node.token_id == SpecialOpToken.ANON_OP and\
         children[0].token_type == TokenType.OP and children[0].token_id == SpecialOpToken.MATH_TEXT_HEAD:
-        symbol = text_tokenizer.decode([child.token_id for child in children[0].children])
+        symbol = text_tokenizer().decode([child.token_id for child in children[0].children])
         children = children[1:]
 
-    # Convert symbol to LaTeX
-    # TODO: organize these
-    if symbol == "eq":
-        symbol = "="
-    if symbol == "minus":
-        symbol = "-"
-    if symbol == "plus":
-        symbol = "+"
-    if symbol == "times":
-        symbol = "\\times"
-    if symbol == "divide":
-        symbol = "/"
-    if symbol == "partialdiff":
-        symbol = "\\partial"
-    if symbol == "product":
-        symbol = "\\prod"
-    if symbol == "conditional":
-        symbol = "|"
-    if symbol == "in":
-        symbol = "\\in"
-    if symbol == "leq":
-        symbol = "\\leq"
-    if symbol == "geq":
-        symbol = "\\geq"
-    if symbol == "injective-limit":
-        symbol = "\\varinjlim"
-    if symbol == "gt":
-        symbol = ">"
-    if symbol == "lt":
-        symbol = "<"
-    if symbol == "sum":
-        symbol = "\\sum"
-    if symbol == "int":
-        symbol = "\\int"
-    if symbol == "union":
-        symbol = "\\cup"
-    if symbol == "intersect":
-        symbol = "\\cap"
-    if symbol == "tensor-product":
-        symbol = "\\otimes"
-    if symbol == "limit":
-        symbol = "\\lim"
-    if symbol == "similar-to":
-        symbol = "\\sim"
-    if symbol == "limit-from":
-        symbol = ""
+    # Convert symbol to LaTeX macro if mapping exists
+    symbol = SYMBOL_MAP.get(symbol, symbol)
+
+    symbol_to_first_seq.setdefault(symbol, cur_seq)
 
     # Just return symbol for leaf nodes
     if not children:
+        if symbol == str(SpecialOpToken.CERR_OP):
+            return ""
         return symbol
 
+    # Handle special op nodes
     if symbol == str(SpecialOpToken.CERR_OP):
-        return " ".join(tree_to_text(child, text_tokenizer) for child in children[1:])
+        return " ".join(tree_to_text(child) for child in children[1:])
 
     if symbol == str(SpecialOpToken.NUM_SUB_TREE_HEAD):
-        return "".join(tree_to_text(child, text_tokenizer) for child in children)
+        return "".join(tree_to_text(child) for child in children)
 
     if symbol == str(SpecialOpToken.ANON_OP):
-        left = tree_to_text(children[0], text_tokenizer)
-        return left + " { " + " ".join(tree_to_text(child, text_tokenizer) for child in children[1:]) + " } "
+        left = tree_to_text(children[0])
+        return left + " { " + " ".join(tree_to_text(child) for child in children[1:]) + " } "
 
-    if symbol == get_matrix_symbol("L") or symbol == "form-seq":
-        return " , ".join(tree_to_text(child, text_tokenizer) for child in children)
+    # Handle remaining operators with special meaning
+    if symbol == get_matrix_symbol("L") or symbol == "form-seq" or symbol == "and":
+        return " , ".join(tree_to_text(child) for child in children)
 
     if symbol == get_matrix_symbol("D"):
-        return " [ " + " , ".join(tree_to_text(child, text_tokenizer) for child in children) + " ] "
+        return " [ " + " , ".join(tree_to_text(child) for child in children) + " ] "
 
     if symbol == get_matrix_symbol("S"):
-        return " \\{ " + " , ".join(tree_to_text(child, text_tokenizer) for child in children) + " \\} "
+        return " \\{ " + " , ".join(tree_to_text(child) for child in children) + " \\} "
 
     if symbol == get_matrix_symbol("V"):
-        return " ( " + " , ".join(tree_to_text(child, text_tokenizer) for child in children) + " ) "
+        return " ( " + " , ".join(tree_to_text(child) for child in children) + " ) "
 
     if symbol == get_matrix_symbol("M"):
-        return " \\begin{matrix} " + " \\\\ ".join(tree_to_text(child, text_tokenizer) for child in children) + " \\end{matrix} "
+        return " \\begin{matrix} " + " \\\\ ".join(tree_to_text(child) for child in children) + " \\end{matrix} "
 
     if symbol == get_matrix_symbol("R"):
-        return " & ".join(tree_to_text(child, text_tokenizer) for child in children)
+        return " & ".join(tree_to_text(child) for child in children)
+
+    if symbol == "cases":
+        return " \\begin{cases} " +  " \\\\ ".join(
+            " & ".join(
+                tree_to_text(child)
+                for child in children[case_idx : case_idx + 2]
+            ) for case_idx in range(0, len(children), 2)
+        ) + " \\end{cases} "
+
+    if symbol == "evaluated-at":
+        return tree_to_text(children[0]) + " | _ { " + tree_to_text(children[1]) + " } " + (
+            (" ^ { " + tree_to_text(children[2]) + " } ") if len(children) == 3 else "")
 
     if symbol == "abs":
-        return " | " + " ".join(tree_to_text(child, text_tokenizer) for child in children) + " | "
+        return " | " + " ".join(tree_to_text(child) for child in children) + " | "
+
+    if symbol == "norm":
+        return " \\| " + " ".join(tree_to_text(child) for child in children) + " \\| "
 
     if symbol == "conditional-set":
-        return " \\{ " + " | ".join(tree_to_text(child, text_tokenizer) for child in children) + " \\} "
+        return " \\{ " + " | ".join(tree_to_text(child) for child in children) + " \\} "
 
     if symbol == "differential-d":
-        return " \\,d " + " ".join(tree_to_text(child, text_tokenizer) for child in children)
+        return " \\,d " + " ".join(tree_to_text(child) for child in children)
+
+    if symbol == "expectation":
+        return " < " + " ".join(tree_to_text(child) for child in children) + " > "
+
+    if symbol == "factorial":
+        return " ".join(tree_to_text(child) for child in children) + " ! "
+
+    if symbol == "double-factorial":
+        return " ".join(tree_to_text(child) for child in children) + " !! "
+
+    if symbol == "ceiling":
+        return " \\lceil " + " ".join(tree_to_text(child) for child in children) + " \\rceil "
+
+    if symbol == "floor":
+        return " \\lfloor " + " ".join(tree_to_text(child) for child in children) + " \\rfloor "
+
+    if symbol == "inner-product":
+        return " \\langle " + " \\mid ".join(tree_to_text(child) for child in children) + " \\rangle "
+
+    if symbol == "root":
+        return " \\sqrt [ " + tree_to_text(children[-1]) + " ] { " + " ".join(tree_to_text(child) for child in children[:-1]) + " } "
+
+    if symbol == "binomial":
+        return " \\binom { " + tree_to_text(children[0]) + " } { " +  tree_to_text(children[1]) + " } "
+
+    if symbol == "continued-fraction":
+        return " \\cfrac { " + tree_to_text(children[0]) + " } { " +  tree_to_text(children[1]) + " } "
 
     if symbol.startswith("interval("):
         return (" ( " if symbol[9] == "O" else " [ ") +\
-            " , ".join(tree_to_text(child, text_tokenizer) for child in children) +\
+            " , ".join(tree_to_text(child) for child in children) +\
             (" ) " if symbol[11] == "O" else " ] ")
+
+    if not symbol.startswith("\\"):
+        unhandled_symbols.add(symbol)
 
     if len(children) >= 2:
         if symbol in ("\\times", "/", "<", ">", "\\leq", "\\geq", "+", "-", "="):
-            return f" {symbol} ".join(tree_to_text(child, text_tokenizer) for child in children)
+            return f" {symbol} ".join(tree_to_text(child) for child in children)
     if len(children) == 2:
-        left = tree_to_text(children[0], text_tokenizer)
-        right = tree_to_text(children[1], text_tokenizer)
+        left = tree_to_text(children[0])
+        right = tree_to_text(children[1])
         if symbol == "SUB":
             return f" {left} _ {{ {right} }} "
         if symbol == "SUP":
             return f" {left} ^ {{ {right} }} "
         return f" {left} {symbol} {right} "
 
-    unhandled_symbols.add(symbol)
-
     if len(children) == 1:
-        return f" {symbol} " + tree_to_text(children[0], text_tokenizer)
-    return f" {symbol} ".join(tree_to_text(child, text_tokenizer) for child in children)
+        return f" {symbol} " + tree_to_text(children[0])
+    return f" {symbol} ".join(tree_to_text(child) for child in children)
 
-def decode_formula(token_ids: torch.Tensor, token_types: torch.Tensor, text_tokenizer: GPT2TokenizerFast):
+def decode_formula(token_ids: torch.Tensor, token_types: torch.Tensor):
     """
     Convert a raw OPT sequence into a readable formula string
     """
@@ -175,17 +185,21 @@ def decode_formula(token_ids: torch.Tensor, token_types: torch.Tensor, text_toke
 
     if scheme == "tree":
         tree = get_tree(token_ids, token_types)
-        return tree_to_text(tree, text_tokenizer)
+        return tree_to_text(tree)
 
     return ""
 
-def decode_batch(batch: CollatedBatch, text_tokenizer: GPT2TokenizerFast) -> List[str]:
+def decode_batch(batch: CollatedBatch) -> List[str]:
     """
     Given a batch, decode it into human-readable text
     Return text translation for each sequence in the batch
     """
+    global cur_seq
+
     all_decoded_sequences: List[str] = []
     for seq_idx in range(len(batch["token_ids"])):
+        cur_seq = {}
+
         result = ""
         sub_seq_start = sub_seq_end = 0
         is_text = True
@@ -193,7 +207,7 @@ def decode_batch(batch: CollatedBatch, text_tokenizer: GPT2TokenizerFast) -> Lis
             # At start formula, switch to math context, and decode any prior text tokens
             if token_type == TokenType.START_FORMULA:
                 if sub_seq_start != sub_seq_end:
-                    result += text_tokenizer.decode(batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end])
+                    result += text_tokenizer().decode(batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end])
                 result += " <m> "
                 sub_seq_start = sub_seq_end = tok_idx + 1
                 is_text = False
@@ -204,8 +218,7 @@ def decode_batch(batch: CollatedBatch, text_tokenizer: GPT2TokenizerFast) -> Lis
                 if sub_seq_start != sub_seq_end:
                     result += decode_formula(
                         batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end],
-                        batch["token_types"][seq_idx][sub_seq_start : sub_seq_end],
-                        text_tokenizer
+                        batch["token_types"][seq_idx][sub_seq_start : sub_seq_end]
                     )
                 result += " </m> "
                 sub_seq_start = sub_seq_end = tok_idx + 1
@@ -224,15 +237,15 @@ def decode_batch(batch: CollatedBatch, text_tokenizer: GPT2TokenizerFast) -> Lis
                 token_ids = batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end]
                 non_padding_idx = token_ids != PADDING_TOKEN_ID # TODO: why would we have padding that is not preceded by EOS?
                 if is_text:
-                    result += text_tokenizer.decode(token_ids[non_padding_idx])
+                    result += text_tokenizer().decode(token_ids[non_padding_idx])
                 else:
                     result += decode_formula(
                         token_ids[non_padding_idx],
-                        batch["token_types"][seq_idx][sub_seq_start : sub_seq_end][non_padding_idx],
-                        text_tokenizer
+                        batch["token_types"][seq_idx][sub_seq_start : sub_seq_end][non_padding_idx]
                     )
 
         result = re.sub(r" +", " ", result)
+        cur_seq["text"] = result
         all_decoded_sequences.append(result)
 
     return all_decoded_sequences

@@ -42,10 +42,10 @@ def get_target_tokens(batch: CollatedBatch, labels: Optional[torch.Tensor]):
     Get target tokens for generative task
     """
     # Get appropriate targets
-    if batch["gen_labels"] is not None:
-        target_tokens = batch["gen_labels"]
-    elif labels is not None:
+    if labels is not None:
         target_tokens = labels
+    elif batch["gen_labels"] is not None:
+        target_tokens = batch["gen_labels"]
     else:
         target_tokens = batch["token_ids"]
     return apply_unks(target_tokens, batch)
@@ -98,19 +98,8 @@ class MathGPTBase(nn.Module):
         # Linear projection to convert raw math pos encoding into one that can be added to the input embeddings
         if options.tpe == TPE.FORTE.value:
             self.math_embedding_projection = nn.Linear(POS_ENCODING_SIZE_FORTE, EMB_SIZE, bias=False)
-            init_small_weights(self.math_embedding_projection)
         elif options.tpe == TPE.RNN.value:
             self.math_embedding_model = RNNPosEncoder()
-
-    def load_pretrained(self, pretrained_state_dict: Dict[str, torch.Tensor]):
-        """
-        Given a pre-trained model's state_dict, load its parameters that are relevant to the current model
-        """
-        state_dict = self.state_dict()
-        for param_name, param_val in pretrained_state_dict.items():
-            if param_name in state_dict:
-                state_dict[param_name] = param_val
-        self.load_state_dict(state_dict)
 
     def get_math_embeddings(self, batch: CollatedBatch, math_idxs: torch.Tensor) -> torch.Tensor:
         """

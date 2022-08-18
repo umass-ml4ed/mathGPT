@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Dict
 import torch
 from torch import nn
 from transformers import GPT2LMHeadModel, GPT2Model

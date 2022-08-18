@@ -1,4 +1,6 @@
 from typing import List, Callable, Tuple, Optional
+import os
+import json
 from itertools import chain
 import numpy as np
 import torch
@@ -154,8 +156,8 @@ def evaluate_gen_task(model_name: str, model: MathGPTLM, dataset: Dataset, task:
             gen_batch = generate(model, trim_batch(batch, 0, split_point), options)
             label = trim_batch(batch, split_point, options.max_seq_len)
             pred = trim_batch(gen_batch, split_point, options.max_seq_len)
-            all_labels.append(decode_batch(label, dataset.text_tokenizer)[0].replace("\n", " "))
-            all_predictions.append(decode_batch(pred, dataset.text_tokenizer)[0].replace("\n", " "))
+            all_labels.append(decode_batch(label)[0].replace("\n", " "))
+            all_predictions.append(decode_batch(pred)[0].replace("\n", " "))
             if compute_ted:
                 all_label_trees.append(get_tree(label["token_ids"][0], label["token_types"][0]))
                 all_pred_trees.append(get_tree(pred["token_ids"][0], pred["token_types"][0]))
@@ -221,41 +223,60 @@ def evaluate_ted(model_name: str, options_dict: dict):
     options = TrainOptions(options_dict)
 
     # Load saved labels and predictions
-    label_filename = f"labels_{model_name}.txt"
-    pred_filename = f"preds_{model_name}.txt"
-    with open(label_filename, encoding="utf-8") as label_file:
-        labels = ["<m>" + label for label in label_file]
-    with open(pred_filename, encoding="utf-8") as pred_file:
-        preds = ["<m>" + pred for pred in pred_file]
+    json_filename = f"results_{model_name}.json"
+    if not os.path.exists(json_filename):
+        label_filename = f"labels_{model_name}.txt"
+        pred_filename = f"preds_{model_name}.txt"
+        with open(label_filename, encoding="utf-8") as label_file:
+            labels = ["<m> " + label.strip() for label in label_file]
+        with open(pred_filename, encoding="utf-8") as pred_file:
+            preds = ["<m> " + pred.strip() + ("" if pred.strip().endswith("</m>") else " </m>") for pred in pred_file]
 
-    # Convert sample strings to OPTs via pre-processing pipeline
-    err_data = {
-        "articles_missing_formulas": 0,
-        "formulas_missing_from_latexml_failure": 0,
-        "formulas_missing_from_latexml_randomly": 0,
-        "formulas_missing_from_tangentcft": 0,
-    }
-    failed_conversions = 0
-    processed_labels: List[Article] = []
-    processed_preds: List[Article] = []
-    for pred in tqdm(preds):
-        try:
-            processed_preds.append(process_raw_text([pred], err_data)[0])
-        except Exception as exc:
-            print(exc)
-            failed_conversions += 1
-    for batch_start_idx in tqdm(list(range(0, len(labels), batch_size))):
-        processed_labels += process_raw_text(labels[batch_start_idx : batch_start_idx + batch_size], err_data)
-    print(err_data)
-    for label, pred in zip(processed_labels, processed_preds):
-        assert len(label["formulas"]) == 1 and len(pred["formulas"]) == 1
-    # TODO: save all of these into a json so we don't have to run this more than once
+        # Convert sample strings to OPTs via pre-processing pipeline
+        err_data = {
+            "articles_missing_formulas": 0,
+            "formulas_missing_from_latexml_failure": 0,
+            "formulas_missing_from_latexml_randomly": 0,
+            "formulas_missing_from_tangentcft": 0,
+        }
+        failed_conversions = []
+        processed_labels: List[Article] = []
+        processed_preds: List[Article] = []
+        for pred_idx, pred in tqdm(enumerate(preds), total=len(preds)):
+            try:
+                processed_preds.append(process_raw_text([pred], err_data)[0])
+            except Exception as exc:
+                print(exc)
+                failed_conversions.append(pred_idx)
+        for batch_start_idx in tqdm(list(range(0, len(labels), batch_size))):
+            processed_labels += process_raw_text(labels[batch_start_idx : batch_start_idx + batch_size], err_data)
+        print(err_data)
+        with open(json_filename, "w", encoding="utf-8") as json_file:
+            json.dump({
+                "labels": processed_labels,
+                "preds": processed_preds,
+                "failed": failed_conversions,
+            }, json_file, indent=2, ensure_ascii=False)
+
+    # Read file even if immediately written for key string type consistency
+    with open(json_filename, encoding="utf-8") as json_file:
+        results = json.load(json_file)
+        processed_labels = results["labels"]
+        processed_preds = results["preds"]
+        failed_conversions = results["failed"]
 
     # Perform post-processing via tokenizer, and then convert back to OPTs and calculate TED
     label_trees: List[DecodeTreeNode] = []
     pred_trees: List[DecodeTreeNode] = []
-    for src, out in [(processed_labels, label_trees), (processed_preds, pred_trees)]:
-        for sample in src:
-            formula_seq = tokenize_formula(sample["formulas"][0]["opt"], options)
-            out.append(get_tree(formula_seq.token_ids, formula_seq.token_types))
-    print("TED:", calculate_ted(label_trees, pred_trees), "Failed:", failed_conversions)
+    missing_formula = []
+    for sample_idx, (label, pred) in enumerate(zip(processed_labels, processed_preds)):
+        if not label["formulas"] or not pred["formulas"]:
+            missing_formula.append(sample_idx)
+            continue
+        if len(label["formulas"]) > 1 or len(pred["formulas"]) > 1:
+            print("More than 1 formula in sample:", sample_idx)
+        label_seq = tokenize_formula(label["formulas"]["0"]["opt"], options)
+        pred_seq = tokenize_formula(pred["formulas"]["0"]["opt"], options)
+        label_trees.append(get_tree(label_seq.token_ids, label_seq.token_types))
+        pred_trees.append(get_tree(pred_seq.token_ids, pred_seq.token_types))
+    print(f"TED: {calculate_ted(label_trees, pred_trees):.3f}, Failed: {failed_conversions}, Missing formula: {missing_formula}")

@@ -1,7 +1,7 @@
 from functools import lru_cache
 import random
 import os
-from typing import Optional
+from typing import Optional, Dict
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -57,6 +57,16 @@ def is_cls_task(task: Optional[DownstreamTask]):
 def text_tokenizer():
     return GPT2TokenizerFast.from_pretrained("gpt2")
 
+def load_pretrained(model: torch.nn.Module, pretrained_state_dict: Dict[str, torch.Tensor]):
+    """
+    Given a pre-trained model's state_dict, load its parameters that are relevant to the current model
+    """
+    state_dict = model.state_dict()
+    for param_name, param_val in pretrained_state_dict.items():
+        if param_name in state_dict:
+            state_dict[param_name] = param_val
+    model.load_state_dict(state_dict)
+
 class TrainOptions:
     def __init__(self, options: dict):
         # Training/testing params
@@ -75,6 +85,7 @@ class TrainOptions:
         self.beam_width: int = options.get("beam_width", 3)
         self.min_gen_len: int = options.get("min_gen_len", 5)
         self.eval_formulas: bool = options.get("eval_formulas", False)
+        self.eval_text: bool = options.get("eval_text", False)
         self.stride: Optional[int] = options.get("stride", None)
         self.ddp: bool = options.get("ddp", False)
         # Model/tree structure config

@@ -19,7 +19,7 @@ from loading import Dataset, PreTrainDataset, PreTrainDatasetPreloaded, GenTaskD
 from evaluate import evaluate_lm, evaluate_lm_accuracy, evaluate_cls_task, evaluate_gen_task
 from generate import generate
 from decode import decode_batch
-from utils import TrainOptions, device, is_cls_task, new_neptune_run
+from utils import TrainOptions, device, is_cls_task, new_neptune_run, load_pretrained
 from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample
 from constants import DownstreamTask, Checkpoint, DOWNSTREAM_TASK_TO_NUM_CLASSES, WIKI_DATA, OFEQ_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_DATA
 
@@ -245,11 +245,11 @@ def test_lm(model_name: str, test_article: str, test_options: dict):
             data_loader_it = iter(data_loader)
             gen_batch = next(data_loader_it)
             gen_batch_len = len(gen_batch["token_ids"])
-            prompt_text = decode_batch(gen_batch, dataset.text_tokenizer)[0]
+            prompt_text = decode_batch(gen_batch)[0]
             gen_batch = generate(model, gen_batch, options)
-            pred_text = decode_batch(trim_batch(gen_batch, gen_batch_len, options.max_seq_len), dataset.text_tokenizer)[0]
+            pred_text = decode_batch(trim_batch(gen_batch, gen_batch_len, options.max_seq_len))[0]
             followup_batch = next(data_loader_it)
-            og_text = decode_batch(followup_batch, dataset.text_tokenizer)[0]
+            og_text = decode_batch(followup_batch)[0]
 
             print("Prompt:", prompt_text)
             print("OG Text:", og_text)
@@ -260,9 +260,9 @@ def test_lm(model_name: str, test_article: str, test_options: dict):
         data_loader = get_data_loader(dataset, None, 1, False, False, options)
         with torch.no_grad():
             for batch in data_loader:
-                prompt_text = decode_batch(batch, dataset.text_tokenizer)[0]
+                prompt_text = decode_batch(batch)[0]
                 gen_batch = generate(model, batch, options)
-                pred_text = decode_batch(gen_batch, dataset.text_tokenizer)[0]
+                pred_text = decode_batch(gen_batch)[0]
 
                 print("Prompt:", prompt_text)
                 print("Prediction:", pred_text)
@@ -294,7 +294,7 @@ def train_downstream_task(model_name: str, checkpoint_name: Optional[str], pretr
         if pretrained_name:
             print("Loading pre-trained model...")
             checkpoint: Checkpoint = torch.load(f"{pretrained_name}.pt", map_location=device)
-            model.load_pretrained(checkpoint["model_state_dict"] if "model_state_dict" in checkpoint else checkpoint)
+            load_pretrained(model, checkpoint["model_state_dict"] if "model_state_dict" in checkpoint else checkpoint)
             checkpoint = None
         if options.ddp:
             model = DDP(model, device_ids=[torch.cuda.current_device()], find_unused_parameters=True)
@@ -366,10 +366,10 @@ def test_gen_task(model_name: str, task: DownstreamTask, test_options: dict):
         for batch in data_loader:
             split_point = batch["prompt_lengths"][0]
             gen_batch = trim_batch(batch, 0, split_point)
-            prompt_text = decode_batch(gen_batch, dataset.text_tokenizer)[0]
+            prompt_text = decode_batch(gen_batch)[0]
             gen_batch = generate(model, gen_batch, options)
-            pred_text = decode_batch(trim_batch(gen_batch, split_point, options.max_seq_len), dataset.text_tokenizer)[0]
-            og_text = decode_batch(trim_batch(batch, split_point, options.max_seq_len), dataset.text_tokenizer)[0]
+            pred_text = decode_batch(trim_batch(gen_batch, split_point, options.max_seq_len))[0]
+            og_text = decode_batch(trim_batch(batch, split_point, options.max_seq_len))[0]
 
             print("Prompt:", prompt_text)
             print("OG Text:", og_text)
