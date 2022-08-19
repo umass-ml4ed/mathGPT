@@ -21,7 +21,7 @@ from generate import generate
 from decode import decode_batch
 from utils import TrainOptions, device, is_cls_task, new_neptune_run, load_pretrained
 from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample
-from constants import DownstreamTask, Checkpoint, DOWNSTREAM_TASK_TO_NUM_CLASSES, WIKI_DATA, OFEQ_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_DATA
+from constants import DownstreamTask, Checkpoint, DOWNSTREAM_TASK_TO_NUM_CLASSES, WIKI_DATA, OFEQ_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES
 
 def get_article_names(options: TrainOptions):
     data_dir = options.data_dir or WIKI_DATA
@@ -59,12 +59,14 @@ def get_answer_scoring_data() -> Tuple[Dict[str, Article], List[AnswerScoringSam
     return problems, answers_np[train_data_idx], answers_np[test_data_idx][:test_len], answers_np[test_data_idx][test_len:]
 
 def get_feedback_data():
-    with open(FEEDBACK_DATA, encoding="utf-8") as feedback_file:
-        samples: List[FeedbackTaskSample] = json.load(feedback_file)
+    with open(FEEDBACK_PROBLEMS, encoding="utf-8") as problem_file:
+        problems: Dict[str, Article] = json.load(problem_file)
+    with open(FEEDBACK_SAMPLES, encoding="utf-8") as sample_file:
+        samples: List[FeedbackTaskSample] = json.load(sample_file)
     random.Random(221).shuffle(samples)
     train_len = int(.8 * len(samples))
     test_len = int(.1 * len(samples))
-    return samples[:train_len], samples[train_len : -test_len], samples[-test_len:]
+    return problems, samples[:train_len], samples[train_len : -test_len], samples[-test_len:]
 
 def load_options(model_name: str):
     with open(f"{model_name}.json", encoding="utf-8") as config_file:
@@ -308,9 +310,9 @@ def train_downstream_task(model_name: str, checkpoint_name: Optional[str], pretr
         train_data = AnswerScoringDataset(train_samples, problems, options)
         val_data = AnswerScoringDataset(val_samples, problems, options, train_data.data)
     elif task == DownstreamTask.FEEDBACK:
-        train_samples, val_samples, _ = get_feedback_data()
-        train_data = FeedbackDataset(train_samples, options)
-        val_data = FeedbackDataset(val_samples, options)
+        problems, train_samples, val_samples, _ = get_feedback_data()
+        train_data = FeedbackDataset(train_samples, problems, options)
+        val_data = FeedbackDataset(val_samples, problems, options)
     else:
         raise Exception(f"Unsupported task {task}")
     train_loader = get_data_loader(train_data, task, options.batch_size, True, True, options)
@@ -338,8 +340,8 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask, eval_options
         test_data = AnswerScoringDataset(test_samples, problems, options, train_data.data)
         _, results = evaluate_cls_task(model, test_data, task, options)
     elif task == DownstreamTask.FEEDBACK:
-        _, _, test_samples = get_feedback_data()
-        test_data = FeedbackDataset(test_samples, options)
+        problems, _, _, test_samples = get_feedback_data()
+        test_data = FeedbackDataset(test_samples, problems, options)
         _, results = evaluate_gen_task(model_name, model, test_data, task, options)
     else:
         raise Exception(f"Unsupported task {task}")
@@ -357,8 +359,8 @@ def test_gen_task(model_name: str, task: DownstreamTask, test_options: dict):
         samples = get_headline_data("test", options)
         dataset = GenTaskDataset(samples[start_idx : start_idx + samples_to_try], options)
     elif task == DownstreamTask.FEEDBACK:
-         _, _, samples = get_feedback_data()
-         dataset = FeedbackDataset(samples[start_idx : start_idx + samples_to_try], options)
+         problems, _, _, samples = get_feedback_data()
+         dataset = FeedbackDataset(samples[start_idx : start_idx + samples_to_try], problems, options)
     else:
         raise Exception(f"Unsupported task {task}")
     data_loader = get_data_loader(dataset, task, 1, False, False, options)

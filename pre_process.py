@@ -1,4 +1,4 @@
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple, Set
 import os
 import re
 import json
@@ -10,7 +10,7 @@ from TangentCFT.TangentS.math_tan.math_document import MathDocument
 from pre_process_utils import process_article, process_raw_text, html_to_latex, wrap_formulas, all_latexml_errs, all_tangent_cft_errs
 from vocabulary import Vocabulary
 from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample
-from constants import FORMULA_IDENTIFIER, DATA, WIKI_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_DATA
+from constants import FORMULA_IDENTIFIER, DATA, WIKI_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES
 
 def process_wikipedia_data():
     """
@@ -226,7 +226,7 @@ def process_answer_scoring_data():
         }, err_file, indent=2, ensure_ascii=False)
 
 def process_feedback_data():
-    df = pandas.read_csv("../cwafs_in_production (1).csv", encoding="utf-8")
+    df = pandas.read_csv("../common wrong answer feedback with all parts.csv", encoding="utf-8")
 
     # Do some initial analysis on the dataset
     esc_pat = re.compile(r"&[#a-z0-9]*;")
@@ -239,41 +239,86 @@ def process_feedback_data():
             found_escs.add(match)
         for match in tag_pat.findall(text_str):
             found_tags.add(match)
-    for field in ["problem_body", "cwa1", "cwa1_feedback", "cwa2", "cwa2_feedback", "cwa3", "cwa3_feedback"]:
+    for field in ["body", "cwa_1", "cwa_1_feedback", "cwa_2", "cwa_2_feedback", "cwa_3", "cwa_3_feedback"]:
         df[field].apply(match)
     print("All escs:", found_escs)
     print("All tags:", found_tags)
+    print("Unique problems:", df["problem_code"].unique().size, "; with sub-parts:", df["problem_id"].unique().size)
 
-    # Do HTML to LaTeX conversion, wrap formulas, and run through LaTeXML/TangentCFT
+    # Extract all problems, answers and feedback, and do HTML to LaTeX and formula wrapping
+    df.sort_values(["problem_code", "problem_part"]) # Ensure that question parts are adjacent and in order
+    seen_problems: Set[int] = set()
+    skipped: List[int] = []
+    pid_ptext: List[Tuple[int, str]] = []
+    unprocessed_samples: List[dict] = []
+    cur_problem_code = None
+    cur_problem_head_text = ""
+    for _, row in tqdm(df.iterrows(), total=df.shape[0]):
+        # Skip repeats in the dataset - they don't have unique answers/feedback
+        if row["problem_id"] in seen_problems:
+            continue
+        seen_problems.add(row["problem_id"])
+
+        # Process current problem part
+        raw_problem = str(row["body"]).replace("\\n", " ").replace("\\r", " ")
+        processed_problem_text = wrap_formulas(html_to_latex(raw_problem))
+        if not processed_problem_text or processed_problem_text.isspace(): # Skip empty problem bodies - can happen with unparseable images
+            skipped.append(row["problem_id"])
+            continue
+
+        # Start new problem group if necessary, take problem body of first part to be header for remaining parts
+        if row["problem_code"] != cur_problem_code:
+            cur_problem_code = row["problem_code"]
+            cur_problem_head_text = processed_problem_text
+            pid_ptext.append((row["problem_id"], processed_problem_text))
+        else:
+            pid_ptext.append((row["problem_id"], cur_problem_head_text + processed_problem_text))
+
+        # Process answers
+        for cwa_field in ["cwa_1", "cwa_2", "cwa_3"]:
+            raw_answer = str(row[cwa_field]).replace("\\n", " ").replace("\\r", " ")
+            raw_feedback = str(row[cwa_field + "_feedback"]).replace("\\n", " ").replace("\\r", " ")
+            if raw_answer in ("null", "nan", "#ERROR!") or raw_feedback == "nan":
+                continue
+            unprocessed_samples.append({
+                "problem_id": row["problem_id"],
+                "answer": wrap_formulas(html_to_latex(raw_answer)),
+                "feedback": wrap_formulas(html_to_latex(raw_feedback)),
+            })
+
+    # Do batch LaTeXML/TangentCFT processing, write problems and samples to output files
     err_data = {
         "articles_missing_formulas": 0,
         "formulas_missing_from_latexml_failure": 0,
         "formulas_missing_from_latexml_randomly": 0,
         "formulas_missing_from_tangentcft": 0,
     }
+    batch_size = 40
+    pid_to_problem: Dict[int, Article] = {}
+    for problem_idx in tqdm(range(0, len(pid_ptext), batch_size)):
+        batch = pid_ptext[problem_idx : problem_idx + batch_size]
+        processed_problems = process_raw_text([tup[1] for tup in batch], err_data)
+        for tup, problem in zip(batch, processed_problems):
+            pid_to_problem[tup[0]] = problem
+    with open(FEEDBACK_PROBLEMS, "w", encoding="utf-8") as problem_file:
+        json.dump(pid_to_problem, problem_file, indent=2, ensure_ascii=False)
+
     samples: List[FeedbackTaskSample] = []
-    for _, row in tqdm(df.iterrows(), total=df.shape[0]):
-        batched_text = []
-        raw_problem = str(row["problem_body"]).replace("\\n", " ").replace("\\r", " ")
-        batched_text.append(raw_problem)
-        for cwa_field in ["cwa1", "cwa2", "cwa3"]:
-            raw_answer = str(row[cwa_field]).replace("\\n", " ").replace("\\r", " ")
-            raw_feedback = str(row[cwa_field + "_feedback"]).replace("\\n", " ").replace("\\r", " ")
-            if raw_answer in ("null", "nan", "#ERROR!") or raw_feedback == "nan":
-                continue
-            batched_text.append(raw_answer)
-            batched_text.append(raw_feedback)
-        processed_batch = process_raw_text([wrap_formulas(html_to_latex(raw_text)) for raw_text in batched_text], err_data)
-        for idx in range(1, len(processed_batch), 2):
+    for sample_idx in tqdm(range(0, len(unprocessed_samples), batch_size)):
+        batch = unprocessed_samples[sample_idx : sample_idx + batch_size]
+        processed_answers = process_raw_text([sample["answer"] for sample in batch], err_data)
+        processed_feedback = process_raw_text([sample["feedback"] for sample in batch], err_data)
+        for sample, answer, feedback in zip(batch, processed_answers, processed_feedback):
             samples.append({
-                "problem": processed_batch[0],
-                "answer": processed_batch[idx],
-                "feedback": processed_batch[idx + 1],
+                "problem_id": str(sample["problem_id"]),
+                "answer": answer,
+                "feedback": feedback,
             })
-    with open(FEEDBACK_DATA, "w", encoding="utf-8") as feedback_file:
-        json.dump(samples, feedback_file, indent=2, ensure_ascii=False)
+    with open(FEEDBACK_SAMPLES, "w", encoding="utf-8") as sample_file:
+        json.dump(samples, sample_file, indent=2, ensure_ascii=False)
 
     # Dump errors
+    print("Skipped", skipped)
     with open("feedback_errs.json", "w", encoding="utf-8") as err_file:
         json.dump({
             **err_data,

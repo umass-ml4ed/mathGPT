@@ -357,15 +357,22 @@ class AnswerScoringDataset(Dataset):
         return sequence
 
 class FeedbackDataset(Dataset):
-    def __init__(self, samples: List[FeedbackTaskSample], options: TrainOptions):
+    def __init__(self, samples: List[FeedbackTaskSample], problems: Dict[str, Article], options: TrainOptions):
         super().__init__()
         shortest_feedback = 2**31
         longest_feedback = 0
-        for sample in tqdm(samples):
-            # Tokenize the problem, answer, and feedback sequences
-            problem_text = "Question: " + sample["problem"]["text"]
-            problem_sequence, cur_missing_formulas = tokenize_sequence("", problem_text, sample["problem"]["formulas"], self.text_tokenizer, options)
+
+        # Process problems
+        pid_to_seq: Dict[str, Sequence] = {}
+        for pid, problem in tqdm(problems.items()):
+            problem_text = "Question: " + problem["text"]
+            problem_sequence, cur_missing_formulas = tokenize_sequence("", problem_text, problem["formulas"], self.text_tokenizer, options)
             self.num_missing_formulas += cur_missing_formulas
+            pid_to_seq[pid] = problem_sequence
+
+        # Process samples
+        for sample in tqdm(samples):
+            problem_sequence = pid_to_seq[sample["problem_id"]]
             answer_text = " [SEP] Answer: " + sample["answer"]["text"] + " [SEP] Feedback: "
             answer_sequence, cur_missing_formulas = tokenize_sequence("", answer_text, sample["answer"]["formulas"], self.text_tokenizer, options)
             self.num_missing_formulas += cur_missing_formulas

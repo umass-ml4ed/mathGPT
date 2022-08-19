@@ -24,7 +24,7 @@ class AnswerScoringSample(TypedDict):
     grade: int
 
 class FeedbackTaskSample(TypedDict):
-    problem: Article
+    problem_id: str
     answer: Article
     feedback: Article
 

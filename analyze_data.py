@@ -10,7 +10,7 @@ from transformers import GPT2TokenizerFast
 
 from vocabulary import Vocabulary, UNK_MAP
 from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, Formula, OPT
-from constants import TYPE_STR_TO_INT, WIKI_DATA, OFEQ_DATA, AS_ANSWERS, AS_PROBLEMS, FEEDBACK_DATA, SpecialNumToken, SpecialOpToken, SpecialVarToken
+from constants import TYPE_STR_TO_INT, WIKI_DATA, OFEQ_DATA, AS_ANSWERS, AS_PROBLEMS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, SpecialNumToken, SpecialOpToken, SpecialVarToken
 
 START_PARENS = ("normal-(", "normal-[", "normal-{")
 END_PARENS = ("normal-)", "normal-]", "normal-}")
@@ -224,12 +224,17 @@ def analyze_answer_scoring():
     analyze_data(tqdm(all_formulas))
 
 def analyze_feedback():
-    with open(FEEDBACK_DATA, encoding="utf-8") as feedback_file:
-        samples: List[FeedbackTaskSample] = json.load(feedback_file)
+    with open(FEEDBACK_PROBLEMS, encoding="utf-8") as problem_file:
+        problems: Dict[str, Article] = json.load(problem_file)
+    with open(FEEDBACK_SAMPLES, encoding="utf-8") as sample_file:
+        samples: List[FeedbackTaskSample] = json.load(sample_file)
     all_formulas = []
-    for field in ["problem", "answer", "feedback"]:
+    for problem in problems.values():
+        all_formulas += [("", formula) for formula in problem["formulas"].values()]
+    for field in ["answer", "feedback"]:
         all_formulas += [("", formula) for sample in samples for formula in sample[field]["formulas"].values()]
     analyze_data(tqdm(all_formulas))
+    print("Total num problems:", len(problems), "; responses:", len(samples))
 
 def analyze_vocab():
     print("Number of GPT tokens in each vocab symbol...")
