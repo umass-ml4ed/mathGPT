@@ -2,8 +2,8 @@ import argparse
 import torch
 import torch.multiprocessing as mp
 
-from pre_process import process_wikipedia_data, process_probes, process_mathsum_data, process_answer_scoring_data, process_feedback_data
-from analyze_data import analyze_wiki, analyze_mathsum, analyze_answer_scoring, analyze_feedback, analyze_vocab
+from pre_process import process_wikipedia_data, process_probes, process_mathsum_data, process_answer_scoring_data, process_feedback_data, process_solving_data
+from analyze_data import analyze_wiki, analyze_mathsum, analyze_answer_scoring, analyze_feedback, analyze_vocab, analyze_solving
 from analyze_model import visualize_attention
 from training import pretrain, evaluate_pretrained_lm, test_lm, train_downstream_task, evaluate_downstream_task, test_gen_task
 from evaluate import evaluate_ted
@@ -31,11 +31,13 @@ def main():
     parser.add_argument("--preprocess_mathsum", help="Process raw MathSum data and save to JSON files", choices=["OFEQ-10k", "EXEQ-300k"])
     parser.add_argument("--preprocess_answer_scoring", action="store_true", help="Process answer scoring dataset")
     parser.add_argument("--preprocess_feedback", action="store_true", help="Process feedback dataset")
+    parser.add_argument("--preprocess_solving", action="store_true", help="Process problem solving dataset")
     parser.add_argument("--process_probes", action="store_true", help="Process LM probes and save to JSON files")
     parser.add_argument("--analyze_wiki", action="store_true", help="Produce stats on pre-processed Wikipedia dataset")
     parser.add_argument("--analyze_mathsum", action="store_true", help="Produce stats on pre-processed MathSum dataset")
     parser.add_argument("--analyze_answer_scoring", action="store_true", help="Produce stats on pre-processed answer scoring dataset")
     parser.add_argument("--analyze_feedback", action="store_true", help="Produce stats on pre-processed feedback dataset")
+    parser.add_argument("--analyze_solving", action="store_true", help="Produce stats on pre-processed problem solving dataset")
     parser.add_argument("--analyze_vocab", action="store_true", help="Produce stats on the math vocab")
     parser.add_argument("--visualize_attention", help="Visualize model's attention weights", choices=["probes"] + enum_choices(DownstreamTask))
     parser.add_argument("--pretrain", action="store_true", help="Pre-train LM")
@@ -111,6 +113,8 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
         process_answer_scoring_data()
     if args.preprocess_feedback:
         process_feedback_data()
+    if args.preprocess_solving:
+        process_solving_data()
     if args.process_probes:
         process_probes()
     if args.analyze_wiki:
@@ -121,6 +125,8 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
         analyze_answer_scoring()
     if args.analyze_feedback:
         analyze_feedback()
+    if args.analyze_solving:
+        analyze_solving()
     if args.analyze_vocab:
         analyze_vocab()
     if args.visualize_attention:

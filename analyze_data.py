@@ -9,8 +9,8 @@ import numpy as np
 from transformers import GPT2TokenizerFast
 
 from vocabulary import Vocabulary, UNK_MAP
-from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, Formula, OPT
-from constants import TYPE_STR_TO_INT, WIKI_DATA, OFEQ_DATA, AS_ANSWERS, AS_PROBLEMS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, SpecialNumToken, SpecialOpToken, SpecialVarToken
+from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, SolvingTaskSample, Formula, OPT
+from constants import TYPE_STR_TO_INT, WIKI_DATA, OFEQ_DATA, AS_ANSWERS, AS_PROBLEMS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, SOLVING_DATA, SpecialNumToken, SpecialOpToken, SpecialVarToken
 
 START_PARENS = ("normal-(", "normal-[", "normal-{")
 END_PARENS = ("normal-)", "normal-]", "normal-}")
@@ -187,15 +187,14 @@ def analyze_data(formulas: Iterable[Tuple[str, Formula]]):
     #     plt.title(f"Frequency CDF for {type_str} type")
     #     plt.show()
 
-def get_wiki_formulas():
-    for article_name in tqdm(os.listdir(WIKI_DATA)):
-        article_filepath = os.path.join(WIKI_DATA, article_name)
-        with open(article_filepath, encoding="utf-8") as article_file:
-            article: Article = json.load(article_file)
-        for formula in article["formulas"].values():
-            yield article_name, formula
-
 def analyze_wiki():
+    def get_wiki_formulas():
+        for article_name in tqdm(os.listdir(WIKI_DATA)):
+            article_filepath = os.path.join(WIKI_DATA, article_name)
+            with open(article_filepath, encoding="utf-8") as article_file:
+                article: Article = json.load(article_file)
+            for formula in article["formulas"].values():
+                yield article_name, formula
     analyze_data(get_wiki_formulas())
 
 def analyze_mathsum():
@@ -235,6 +234,15 @@ def analyze_feedback():
         all_formulas += [("", formula) for sample in samples for formula in sample[field]["formulas"].values()]
     analyze_data(tqdm(all_formulas))
     print("Total num problems:", len(problems), "; responses:", len(samples))
+
+def analyze_solving():
+    all_formulas = []
+    for split in ("train", "test"):
+        with open(os.path.join(SOLVING_DATA, f"{split}.json"), encoding="utf-8") as src_file:
+            samples: List[SolvingTaskSample] = json.load(src_file)
+        for field in ["problem", "steps", "answer"]:
+            all_formulas += [("", formula) for sample in samples for formula in sample[field]["formulas"].values()]
+    analyze_data(tqdm(all_formulas))
 
 def analyze_vocab():
     print("Number of GPT tokens in each vocab symbol...")

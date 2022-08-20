@@ -67,7 +67,7 @@ def tree_to_text(tree_node: DecodeTreeNode) -> str:
 
     # Handle special op nodes
     if symbol == str(SpecialOpToken.CERR_OP):
-        return " ".join(tree_to_text(child) for child in children[1:])
+        return " ".join(tree_to_text(child) for child in children)
 
     if symbol == str(SpecialOpToken.NUM_SUB_TREE_HEAD):
         return "".join(tree_to_text(child) for child in children)
@@ -122,6 +122,9 @@ def tree_to_text(tree_node: DecodeTreeNode) -> str:
     if symbol == "expectation":
         return " < " + " ".join(tree_to_text(child) for child in children) + " > "
 
+    if symbol == "percent":
+        return " ".join(tree_to_text(child) for child in children) + " % "
+
     if symbol == "factorial":
         return " ".join(tree_to_text(child) for child in children) + " ! "
 
@@ -154,18 +157,11 @@ def tree_to_text(tree_node: DecodeTreeNode) -> str:
     if not symbol.startswith("\\"):
         unhandled_symbols.add(symbol)
 
-    if len(children) >= 2:
-        if symbol in ("\\times", "/", "<", ">", "\\leq", "\\geq", "+", "-", "="):
-            return f" {symbol} ".join(tree_to_text(child) for child in children)
     if len(children) == 2:
-        left = tree_to_text(children[0])
-        right = tree_to_text(children[1])
         if symbol == "SUB":
-            return f" {left} _ {{ {right} }} "
+            return f" {tree_to_text(children[0])} _ {{ {tree_to_text(children[1])} }} "
         if symbol == "SUP":
-            return f" {left} ^ {{ {right} }} "
-        return f" {left} {symbol} {right} "
-
+            return f" {tree_to_text(children[0])} ^ {{ {tree_to_text(children[1])} }} "
     if len(children) == 1:
         return f" {symbol} " + tree_to_text(children[0])
     return f" {symbol} ".join(tree_to_text(child) for child in children)

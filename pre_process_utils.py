@@ -154,10 +154,15 @@ def fix_matrix(formula_text: str):
         final_text = fix_matrix(final_text)
     return final_text
 
-def process_raw_text(src_text_batch: List[str], err_data: Optional[dict] = None) -> List[Article]:
+def process_raw_text(src_text_batch: List[str], err_data: dict) -> List[Article]:
     """
     Extract text and processed formulas from batch of raw text
     """
+    err_data.setdefault("articles_missing_formulas", 0)
+    err_data.setdefault("formulas_missing_from_latexml_failure", 0)
+    err_data.setdefault("formulas_missing_from_latexml_randomly", 0)
+    err_data.setdefault("formulas_missing_from_tangentcft", 0)
+
     # Combine batch and convert formulas to viable LaTeX format
     processed_text = ""
     for batch_idx, src_text in enumerate(src_text_batch):
@@ -343,13 +348,13 @@ esc_to_latex = [
 
 latex_math_macros = {latex[1] for latex in esc_to_latex if latex[2]}.union({"^", "_"})
 
-math_ops = {"=", "<", ">", "+", "-", "*", "/", ":", "(", ")", "\\{", "\\}", "[", "]"}
+math_ops = {"=", "<", ">", "+", "-", "*", "/", ":", "(", ")", "\\{", "\\}", "[", "]", "\\$", "%"}
 
 latex_ops = {"\\times", "\\div", "\\ne", "\\ge", "\\le", "\\angle", "\\forall", "\\equiv", "\\exists", "\\notin", "\\in", "\\prod", "\\cdot", "\\degree", "\\approx", "\\surd", "\\vee"}
 
-math_word_re = re.compile(r"^([0-9]+([\.,][0-9]+)*|\.[0-9]+|(\\_)+|[0-9\.]*[a-zA-Z][0-9\.]*)$")
+math_word_re = re.compile(r"^([0-9]+([\.,][0-9]+)*|\.[0-9]+|\\_|\?|[0-9\.]*[a-zA-Z][0-9\.]*)$")
 
-punctuation_re = re.compile(r"(\s([0-9a-zA-Z\\_]*|[0-9]+([\.,][0-9]+)*[a-zA-Z]?))([\.,!?;]+)([a-zA-Z\\_]*(\s|$))")
+punctuation_re = re.compile(r"(\s(\?|[0-9a-zA-Z\\_]*|[0-9]+([\.,][0-9]+)*[a-zA-Z]?))([\.,!?;]+)([a-zA-Z\\_]*(\s|$))")
 
 times_re = re.compile(r"\s([0-9]+([\.,][0-9]+)*|\.[0-9]+|\)|[a-zA-Z])\s*x\s*([0-9]+([\.,][0-9]+)*|\.[0-9]+|\(|[a-zA-Z])\s")
 
@@ -361,7 +366,9 @@ def convert_mathml(mathml: BeautifulSoup):
         for el in mathml.find_all(tag):
             children = list(el.children)
             el.replace_with(f" {children[0].text} {op} {{ {children[1].text} }} ")
-    return mathml.get_text(separator=" ")
+    text = mathml.get_text(separator=" ")
+    text = text.replace(" . ", ".") # All periods in mathml should be decimals
+    return text
 
 @lru_cache(maxsize=1024) # Cache because many entries have the same question text
 def html_to_latex(text: str):
@@ -498,3 +505,8 @@ def wrap_formulas(text: str):
     if formula_start is not None:
         try_add_formula(formula_start, word_idx + 1, words, final_text)
     return " ".join(final_text)
+
+calc_annotation_re = re.compile(r"<<[^>]*>>")
+
+def remove_calculator_annotations(text: str):
+    return calc_annotation_re.sub("", text)

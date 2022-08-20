@@ -185,6 +185,25 @@ def evaluate_gen_task(model_name: str, model: MathGPTLM, dataset: Dataset, task:
                f"ROUGE-L: {metrics['ROUGE_L']:.3f}, METEOR: {metrics['METEOR']:.3f}" +\
                (f", TED: {avg_ted:.3f}" if compute_ted else "")
 
+def evaluate_problem_solving_task(model: MathGPTLM, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
+    model.eval()
+    # Only process one sequence at a time since prompts may have different lengths
+    data_loader = get_data_loader(dataset, task, 1, False, False, options)
+    all_labels: List[str] = []
+    all_predictions: List[str] = []
+    with torch.no_grad():
+        for batch in tqdm(data_loader):
+            split_point = batch["prompt_lengths"][0]
+            gen_batch = generate(model, trim_batch(batch, 0, split_point), options)
+            label = trim_batch(batch, split_point, options.max_seq_len)
+            pred = trim_batch(gen_batch, split_point, options.max_seq_len)
+            full_label = decode_batch(label)[0].replace("\n", " ")
+            full_pred = decode_batch(pred)[0].replace("\n", " ")
+            all_labels.append(full_label.split("Final Answer:")[1])
+            all_predictions.append(full_pred.split("Final Answer:")[1])
+    accuracy = metrics.accuracy_score(all_labels, all_predictions)
+    return 0, f"Accuracy: {accuracy:.3f}"
+
 def evaluate_cls_task(model: MathGPTClassifier, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
     model.eval()
     all_predictions = []
@@ -233,12 +252,7 @@ def evaluate_ted(model_name: str, options_dict: dict):
             preds = ["<m> " + pred.strip() + ("" if pred.strip().endswith("</m>") else " </m>") for pred in pred_file]
 
         # Convert sample strings to OPTs via pre-processing pipeline
-        err_data = {
-            "articles_missing_formulas": 0,
-            "formulas_missing_from_latexml_failure": 0,
-            "formulas_missing_from_latexml_randomly": 0,
-            "formulas_missing_from_tangentcft": 0,
-        }
+        err_data = {}
         failed_conversions = []
         processed_labels: List[Article] = []
         processed_preds: List[Article] = []

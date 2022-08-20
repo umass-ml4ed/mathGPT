@@ -8,8 +8,6 @@ Install LaTeXML https://math.nist.gov/~BMiller/LaTeXML/get.html
 
 Install nlg-eval https://github.com/Maluuba/nlg-eval
 
-Download dataset https://ntcir-math.nii.ac.jp/data/ # TODO: just wiki or both?
-
 Add TangentCFT to path
 ```
 export PYTHONPATH=../TangentCFT:../
@@ -27,3 +25,16 @@ Install requirements
 python3 -m pip install -r requirements.txt
 ```
 
+### Data
+
+TODO: specify directories for all
+
+Wikipedia: https://ntcir-math.nii.ac.jp/data/ # TODO: just wiki or both?
+
+TODO: headlines
+
+TODO: AS (not available)
+
+TODO: feedback (not available)
+
+TODO: solving https://github.com/openai/grade-school-math

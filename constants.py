@@ -64,6 +64,7 @@ class DownstreamTask(Enum):
     HEADLINES = "headlines"
     ANSWER_SCORING = "answer_scoring"
     FEEDBACK = "feedback"
+    SOLVING = "solving"
 
 DOWNSTREAM_TASK_TO_NUM_CLASSES = {
     DownstreamTask.ANSWER_SCORING: 5,
@@ -104,3 +105,4 @@ AS_PROBLEMS = "data/answer_scoring/problems.json"
 AS_ANSWERS = "data/answer_scoring/answers.json"
 FEEDBACK_PROBLEMS = "data/feedback/problems.json"
 FEEDBACK_SAMPLES = "data/feedback/samples.json"
+SOLVING_DATA = "data/GSM8K"

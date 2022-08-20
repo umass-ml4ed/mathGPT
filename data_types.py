@@ -28,6 +28,11 @@ class FeedbackTaskSample(TypedDict):
     answer: Article
     feedback: Article
 
+class SolvingTaskSample(TypedDict):
+    problem: Article
+    steps: Article
+    answer: Article
+
 class SequenceMetaData(TypedDict):
     # For gen tasks
     prompt_length: Optional[int]

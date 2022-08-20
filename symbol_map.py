@@ -121,6 +121,7 @@ SYMBOL_MAP = {
     "symmetric-difference": "\\ominus",
     "annotated": " ",
     "implies": "\\implies",
+    "currency-dollar": "$",
 
     "infinity": "\\infty",
     "emptyset": "\\emptyset",

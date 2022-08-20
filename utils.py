@@ -8,7 +8,7 @@ import torch.distributed as dist
 # import neptune.new as neptune
 from transformers import GPT2TokenizerFast
 
-from constants import DownstreamTask, TPE, Gen
+from constants import DownstreamTask, TPE, Gen, DOWNSTREAM_TASK_TO_NUM_CLASSES
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -51,7 +51,7 @@ def enum_value_to_member(value, enum):
     return next((member for member in enum if member.value == value), None)
 
 def is_cls_task(task: Optional[DownstreamTask]):
-    return task == DownstreamTask.ANSWER_SCORING
+    return task in DOWNSTREAM_TASK_TO_NUM_CLASSES
 
 @lru_cache
 def text_tokenizer():

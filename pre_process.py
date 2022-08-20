@@ -7,10 +7,10 @@ import pandas
 
 from TangentCFT.TangentS.math_tan.math_document import MathDocument
 
-from pre_process_utils import process_article, process_raw_text, html_to_latex, wrap_formulas, all_latexml_errs, all_tangent_cft_errs
+from pre_process_utils import process_article, process_raw_text, html_to_latex, wrap_formulas, remove_calculator_annotations, all_latexml_errs, all_tangent_cft_errs
 from vocabulary import Vocabulary
-from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample
-from constants import FORMULA_IDENTIFIER, DATA, WIKI_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES
+from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, SolvingTaskSample
+from constants import FORMULA_IDENTIFIER, DATA, WIKI_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, SOLVING_DATA
 
 def process_wikipedia_data():
     """
@@ -30,7 +30,6 @@ def process_wikipedia_data():
 
     print("Processing articles...")
     err_data = {
-        "articles_missing_formulas": 0,
         "formulas_missing": 0,
     }
     max_articles = len(article_filenames)
@@ -65,12 +64,7 @@ def process_mathsum_data(dataset: str):
     print("Processing", dataset)
     for split in ("train", "val", "test"):
         print("Processing", split, "split")
-        cur_err_data = err_data[f"{dataset},{split}"] = {
-            "articles_missing_formulas": 0,
-            "formulas_missing_from_latexml_failure": 0,
-            "formulas_missing_from_latexml_randomly": 0,
-            "formulas_missing_from_tangentcft": 0,
-        }
+        cur_err_data = err_data[f"{dataset},{split}"] = {}
         post_filename = os.path.join(root_dir, dataset, f"post.{split}")
         title_filename = os.path.join(root_dir, dataset, f"title.{split}")
         out_filename = os.path.join(DATA, dataset, f"{split}.json")
@@ -117,14 +111,12 @@ def process_mathsum_data(dataset: str):
         }, err_file, indent=2)
 
 def process_probes():
+    """
+    Process all LM probes
+    """
     with open("data/probes.txt", encoding="utf-8") as src_prompt_file:
         src_probes = src_prompt_file.readlines()
-    err_data = {
-        "articles_missing_formulas": 0,
-        "formulas_missing_from_latexml_failure": 0,
-        "formulas_missing_from_latexml_randomly": 0,
-        "formulas_missing_from_tangentcft": 0,
-    }
+    err_data = {}
     processed_probes = process_raw_text(src_probes, err_data)
     print(err_data)
     print(all_latexml_errs)
@@ -133,6 +125,9 @@ def process_probes():
         json.dump(processed_probes, processed_prompt_file, indent=2, ensure_ascii=False)
 
 def process_answer_scoring_data():
+    """
+    Process all data in the answer scoring dataset
+    """
     df = pandas.read_csv("../qc_full_meta_clean.csv", encoding="utf-8")
     # df = pandas.read_csv("../qc_clean.csv", encoding="utf-8")
     # df = pandas.read_csv("../before_rasch.csv", encoding="utf-8")
@@ -167,12 +162,7 @@ def process_answer_scoring_data():
     print("Extracting answer formulas...")
     df["answer_latex"] = df["answer_latex"].apply(wrap_formulas)
 
-    err_data = {
-        "articles_missing_formulas": 0,
-        "formulas_missing_from_latexml_failure": 0,
-        "formulas_missing_from_latexml_randomly": 0,
-        "formulas_missing_from_tangentcft": 0,
-    }
+    err_data = {}
     batch_size = 100
 
     # Do tree conversion on all problems and store in lookup file
@@ -226,6 +216,9 @@ def process_answer_scoring_data():
         }, err_file, indent=2, ensure_ascii=False)
 
 def process_feedback_data():
+    """
+    Process all data in the feedback dataset
+    """
     df = pandas.read_csv("../common wrong answer feedback with all parts.csv", encoding="utf-8")
 
     # Do some initial analysis on the dataset
@@ -287,16 +280,11 @@ def process_feedback_data():
             })
 
     # Do batch LaTeXML/TangentCFT processing, write problems and samples to output files
-    err_data = {
-        "articles_missing_formulas": 0,
-        "formulas_missing_from_latexml_failure": 0,
-        "formulas_missing_from_latexml_randomly": 0,
-        "formulas_missing_from_tangentcft": 0,
-    }
+    err_data = {}
     batch_size = 40
     pid_to_problem: Dict[int, Article] = {}
-    for problem_idx in tqdm(range(0, len(pid_ptext), batch_size)):
-        batch = pid_ptext[problem_idx : problem_idx + batch_size]
+    for batch_start_idx in tqdm(range(0, len(pid_ptext), batch_size)):
+        batch = pid_ptext[batch_start_idx : batch_start_idx + batch_size]
         processed_problems = process_raw_text([tup[1] for tup in batch], err_data)
         for tup, problem in zip(batch, processed_problems):
             pid_to_problem[tup[0]] = problem
@@ -304,8 +292,8 @@ def process_feedback_data():
         json.dump(pid_to_problem, problem_file, indent=2, ensure_ascii=False)
 
     samples: List[FeedbackTaskSample] = []
-    for sample_idx in tqdm(range(0, len(unprocessed_samples), batch_size)):
-        batch = unprocessed_samples[sample_idx : sample_idx + batch_size]
+    for batch_start_idx in tqdm(range(0, len(unprocessed_samples), batch_size)):
+        batch = unprocessed_samples[batch_start_idx : batch_start_idx + batch_size]
         processed_answers = process_raw_text([sample["answer"] for sample in batch], err_data)
         processed_feedback = process_raw_text([sample["feedback"] for sample in batch], err_data)
         for sample, answer, feedback in zip(batch, processed_answers, processed_feedback):
@@ -320,6 +308,45 @@ def process_feedback_data():
     # Dump errors
     print("Skipped", skipped)
     with open("feedback_errs.json", "w", encoding="utf-8") as err_file:
+        json.dump({
+            **err_data,
+            "all_latexml_errs": all_latexml_errs,
+            "all_tangent_cft_errs": all_tangent_cft_errs,
+        }, err_file, indent=2, ensure_ascii=False)
+
+def process_solving_data():
+    """
+    Process all data in the problem solving dataset
+    """
+    err_data = {}
+    for split in ("train", "test"):
+        # Extract all questions/steps/answers from the split
+        batch_text = []
+        with open(f"../grade-school-math/grade_school_math/data/{split}.jsonl", encoding="utf-8") as src_file:
+            for src_line in tqdm(src_file):
+                sample = json.loads(src_line)
+                batch_text.append(wrap_formulas(html_to_latex(remove_calculator_annotations(sample["question"]))))
+                steps, answer = sample["answer"].split("\n####")
+                batch_text.append(wrap_formulas(html_to_latex(remove_calculator_annotations(steps))))
+                batch_text.append(wrap_formulas(html_to_latex(remove_calculator_annotations(answer))))
+
+        # Batch process LaTeXML/TangentCFT
+        batch_size = 30
+        samples: List[SolvingTaskSample] = []
+        for batch_start_idx in tqdm(range(0, len(batch_text), batch_size * 3)):
+            processed_text = process_raw_text(batch_text[batch_start_idx : batch_start_idx + batch_size * 3], err_data)
+            for sample_idx in range(0, len(processed_text), 3):
+                samples.append({
+                    "problem": processed_text[sample_idx],
+                    "steps": processed_text[sample_idx + 1],
+                    "answer": processed_text[sample_idx + 2],
+                })
+
+        with open(os.path.join(SOLVING_DATA, f"{split}.json"), "w", encoding="utf-8") as out_file:
+            json.dump(samples, out_file, indent=2, ensure_ascii=False)
+
+    # Dump errors
+    with open("problem_solving_errs.json", "w", encoding="utf-8") as err_file:
         json.dump({
             **err_data,
             "all_latexml_errs": all_latexml_errs,

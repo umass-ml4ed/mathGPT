@@ -5,13 +5,12 @@ from tqdm import tqdm
 import torch
 from torch.utils.data import Dataset as TorchDataset, DataLoader, BatchSampler, distributed
 import numpy as np
-from transformers import GPT2TokenizerFast
 
 from math_tokenize import tokenize_formula, EMPTY_POS_VECTOR, get_empty_pos_encoding, encode_pos
 from decode import decode_formula
-from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, Formula, Sequence, CollatedBatch
+from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, SolvingTaskSample, Formula, Sequence, CollatedBatch
 from constants import TokenType, DownstreamTask, TPE, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, FORMULA_IDENTIFIER, START_FORM_TEXT_TOKS, END_FORM_TEXT_TOK
-from utils import device, is_cls_task, TrainOptions
+from utils import device, is_cls_task, text_tokenizer, TrainOptions
 
 def split_sequence(sequence: Sequence, max_seq_len: int) -> List[Sequence]:
     """
@@ -47,13 +46,13 @@ def split_sequence(sequence: Sequence, max_seq_len: int) -> List[Sequence]:
     pre_split, post_split = sequence.split_at(pre_form_text_tok_id + 1)
     return [pre_split] + split_sequence(post_split, max_seq_len)
 
-def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_tokenizer: GPT2TokenizerFast, options: TrainOptions):
+def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], options: TrainOptions):
     sequence = Sequence(name)
     text_chunks = text.split(FORMULA_IDENTIFIER)
     num_missing_formulas = 0
     for text_chunk_idx, text_chunk in enumerate(text_chunks):
         # Tokenize the text chunk and add it to the sequence
-        text_token_ids: List[int] = text_tokenizer(text_chunk)["input_ids"]
+        text_token_ids: List[int] = text_tokenizer()(text_chunk)["input_ids"]
         sequence.token_ids += text_token_ids
         sequence.token_types += [TokenType.TEXT] * len(text_token_ids)
         sequence.pos_vecs += [EMPTY_POS_VECTOR] * len(text_token_ids)
@@ -80,7 +79,7 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_t
             else:
                 formula_text = formula["tex"]
             formula_text = " <m> " + formula_text + " </m> "
-            formula_token_ids = text_tokenizer(formula_text)["input_ids"]
+            formula_token_ids = text_tokenizer()(formula_text)["input_ids"]
             sequence.token_ids += formula_token_ids
             sequence.token_types += [TokenType.TEXT] * len(formula_token_ids)
             sequence.pos_vecs += [EMPTY_POS_VECTOR] * len(formula_token_ids)
@@ -118,7 +117,6 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], text_t
 class Dataset(TorchDataset):
     def __init__(self):
         self.data: List[Sequence] = []
-        self.text_tokenizer: GPT2TokenizerFast = GPT2TokenizerFast.from_pretrained("gpt2")
         self.num_missing_formulas = 0
         self.trimmed_sequences = 0
         print("Processing data...")
@@ -137,7 +135,7 @@ class PreTrainDataset(Dataset):
                 article: Article = json.load(article_file)
 
             article_text = article["text"] + EOS_TOKEN
-            sequence, cur_missing_formulas = tokenize_sequence(article_name, article_text, article["formulas"], self.text_tokenizer, options)
+            sequence, cur_missing_formulas = tokenize_sequence(article_name, article_text, article["formulas"], options)
             self.num_missing_formulas += cur_missing_formulas
 
             if max_seq_len:
@@ -152,7 +150,7 @@ class PreTrainDatasetPreloaded(Dataset):
         super().__init__()
         for article in tqdm(articles):
             article_text = article["text"]
-            sequence, cur_missing_formulas = tokenize_sequence("", article_text, article["formulas"], self.text_tokenizer, options)
+            sequence, cur_missing_formulas = tokenize_sequence("", article_text, article["formulas"], options)
             self.num_missing_formulas += cur_missing_formulas
 
             if max_seq_len:
@@ -169,12 +167,12 @@ class GenTaskDataset(Dataset):
         for sample in tqdm(samples):
             # Tokenize the prompt and label sequences
             prompt_text = "Question: " + sample["prompt"]["text"]
-            prompt_sequence, cur_missing_formulas = tokenize_sequence("", prompt_text, sample["prompt"]["formulas"], self.text_tokenizer, options)
+            prompt_sequence, cur_missing_formulas = tokenize_sequence("", prompt_text, sample["prompt"]["formulas"], options)
             self.num_missing_formulas += cur_missing_formulas
             intermediate_text = SEP_TOKEN + " Summary: "
-            intermediate_sequence, _ = tokenize_sequence("", intermediate_text, {}, self.text_tokenizer, options)
+            intermediate_sequence, _ = tokenize_sequence("", intermediate_text, {}, options)
             label_text = sample["label"]["text"] + EOS_TOKEN
-            label_sequence, cur_missing_formulas = tokenize_sequence("", label_text, sample["label"]["formulas"], self.text_tokenizer, options)
+            label_sequence, cur_missing_formulas = tokenize_sequence("", label_text, sample["label"]["formulas"], options)
             self.num_missing_formulas += cur_missing_formulas
             min_label_len = min(min_label_len, len(label_sequence))
 
@@ -269,17 +267,17 @@ class AnswerScoringDataset(Dataset):
         self.example_bank: Dict[int, Dict[int, List[Sequence]]] = {}
 
         # Static sequences that get added to each sample
-        self.qs_prefix_seq = tokenize_sequence("", "Question: ", {}, self.text_tokenizer, self.options)[0]
-        self.scores_seq = tokenize_sequence("", " [SEP] Possible scores: Wrong Poor Fair Good Excellent", {}, self.text_tokenizer, self.options)[0]
-        self.example_prefix_seq = tokenize_sequence("", " [SEP] Example: ", {}, self.text_tokenizer, self.options)[0]
-        self.answer_prefix_seq = tokenize_sequence("", " [SEP] Score this answer: ", {}, self.text_tokenizer, self.options)[0]
-        self.cls_seq = tokenize_sequence("", " [CLS]", {}, self.text_tokenizer, self.options)[0]
+        self.qs_prefix_seq = tokenize_sequence("", "Question: ", {}, self.options)[0]
+        self.scores_seq = tokenize_sequence("", " [SEP] Possible scores: Wrong Poor Fair Good Excellent", {}, self.options)[0]
+        self.example_prefix_seq = tokenize_sequence("", " [SEP] Example: ", {}, self.options)[0]
+        self.answer_prefix_seq = tokenize_sequence("", " [SEP] Score this answer: ", {}, self.options)[0]
+        self.cls_seq = tokenize_sequence("", " [CLS]", {}, self.options)[0]
         self.grade_to_score_seq = {
-            0: tokenize_sequence("", " Score: Wrong", {}, self.text_tokenizer, self.options)[0],
-            1: tokenize_sequence("", " Score: Poor", {}, self.text_tokenizer, self.options)[0],
-            2: tokenize_sequence("", " Score: Fair", {}, self.text_tokenizer, self.options)[0],
-            3: tokenize_sequence("", " Score: Good", {}, self.text_tokenizer, self.options)[0],
-            4: tokenize_sequence("", " Score: Excellent", {}, self.text_tokenizer, self.options)[0],
+            0: tokenize_sequence("", " Score: Wrong", {}, self.options)[0],
+            1: tokenize_sequence("", " Score: Poor", {}, self.options)[0],
+            2: tokenize_sequence("", " Score: Fair", {}, self.options)[0],
+            3: tokenize_sequence("", " Score: Good", {}, self.options)[0],
+            4: tokenize_sequence("", " Score: Excellent", {}, self.options)[0],
         }
 
         # To avoid exceeding max len, cap answer and problem seq lens to half the remaining space
@@ -289,7 +287,7 @@ class AnswerScoringDataset(Dataset):
 
         # Process answers
         for sample in tqdm(samples):
-            answer_sequence, cur_missing_formulas = tokenize_sequence("", sample["answer"]["text"], sample["answer"]["formulas"], self.text_tokenizer, options)
+            answer_sequence, cur_missing_formulas = tokenize_sequence("", sample["answer"]["text"], sample["answer"]["formulas"], options)
             self.num_missing_formulas += cur_missing_formulas
             if len(answer_sequence) > max_component_len:
                 self.trimmed_sequences += 1
@@ -303,7 +301,7 @@ class AnswerScoringDataset(Dataset):
 
         # Process problems
         for problem_id, problem in problems.items():
-            problem_sequence, cur_missing_formulas = tokenize_sequence("", problem["text"], problem["formulas"], self.text_tokenizer, options)
+            problem_sequence, cur_missing_formulas = tokenize_sequence("", problem["text"], problem["formulas"], options)
             self.num_missing_formulas += cur_missing_formulas
             if len(problem_sequence) > max_component_len:
                 self.trimmed_sequences += 1
@@ -366,7 +364,7 @@ class FeedbackDataset(Dataset):
         pid_to_seq: Dict[str, Sequence] = {}
         for pid, problem in tqdm(problems.items()):
             problem_text = "Question: " + problem["text"]
-            problem_sequence, cur_missing_formulas = tokenize_sequence("", problem_text, problem["formulas"], self.text_tokenizer, options)
+            problem_sequence, cur_missing_formulas = tokenize_sequence("", problem_text, problem["formulas"], options)
             self.num_missing_formulas += cur_missing_formulas
             pid_to_seq[pid] = problem_sequence
 
@@ -374,10 +372,10 @@ class FeedbackDataset(Dataset):
         for sample in tqdm(samples):
             problem_sequence = pid_to_seq[sample["problem_id"]]
             answer_text = " [SEP] Answer: " + sample["answer"]["text"] + " [SEP] Feedback: "
-            answer_sequence, cur_missing_formulas = tokenize_sequence("", answer_text, sample["answer"]["formulas"], self.text_tokenizer, options)
+            answer_sequence, cur_missing_formulas = tokenize_sequence("", answer_text, sample["answer"]["formulas"], options)
             self.num_missing_formulas += cur_missing_formulas
             feedback_text = sample["feedback"]["text"] + EOS_TOKEN
-            feedback_sequence, cur_missing_formulas = tokenize_sequence("", feedback_text, sample["feedback"]["formulas"], self.text_tokenizer, options)
+            feedback_sequence, cur_missing_formulas = tokenize_sequence("", feedback_text, sample["feedback"]["formulas"], options)
             self.num_missing_formulas += cur_missing_formulas
             shortest_feedback = min(shortest_feedback, len(feedback_sequence))
             longest_feedback = max(longest_feedback, len(feedback_sequence))
@@ -398,6 +396,33 @@ class FeedbackDataset(Dataset):
         print("Missing", self.num_missing_formulas, "formulas")
         print("Trimmed", self.trimmed_sequences, "long sequences")
         print("Shortest feedback:", shortest_feedback, "Longest feedback:", longest_feedback)
+
+class ProblemSolvingDataset(Dataset):
+    def __init__(self, samples: List[SolvingTaskSample], options: TrainOptions):
+        super().__init__()
+
+        for sample in tqdm(samples):
+            problem_text = "Question: " + sample["problem"]["text"] + " [SEP] Solution: "
+            problem_sequence, cur_missing_formulas = tokenize_sequence("", problem_text, sample["problem"]["formulas"], options)
+            self.num_missing_formulas += cur_missing_formulas
+            steps_text = sample["steps"]["text"] + " [SEP] Final Answer: "
+            steps_sequence, cur_missing_formulas = tokenize_sequence("", steps_text, sample["steps"]["formulas"], options)
+            self.num_missing_formulas += cur_missing_formulas
+            answer_text = sample["answer"]["text"] + EOS_TOKEN
+            answer_sequence, cur_missing_formulas = tokenize_sequence("", answer_text, sample["answer"]["formulas"], options)
+            self.num_missing_formulas += cur_missing_formulas
+
+            # Concatenate into single sequence, and save the length of the prompt for creating generative labels
+            sequence = problem_sequence + steps_sequence + answer_sequence
+            if len(sequence) > options.max_seq_len:
+                self.trimmed_sequences += 1
+            sequence.meta = {
+                "prompt_length": len(problem_sequence)
+            }
+            self.data.append(sequence)
+
+        print("Missing", self.num_missing_formulas, "formulas")
+        print("Overflowed:", self.trimmed_sequences)
 
 def get_data_loader(dataset: Dataset, task: Optional[DownstreamTask], batch_size: int, shuffle: bool, drop_last: bool, options: TrainOptions):
     return DataLoader(
