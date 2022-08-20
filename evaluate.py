@@ -185,6 +185,12 @@ def evaluate_gen_task(model_name: str, model: MathGPTLM, dataset: Dataset, task:
                f"ROUGE-L: {metrics['ROUGE_L']:.3f}, METEOR: {metrics['METEOR']:.3f}" +\
                (f", TED: {avg_ted:.3f}" if compute_ted else "")
 
+def get_problem_solving_final_answer(full_solution: str):
+    if "Final Answer:" in full_solution:
+        # Get final answer portion, remove surrounding whitespace, remove commas in numbers
+        return full_solution.split("Final Answer:")[1].strip().replace(" , ", "")
+    return ""
+
 def evaluate_problem_solving_task(model: MathGPTLM, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
     model.eval()
     # Only process one sequence at a time since prompts may have different lengths
@@ -199,8 +205,8 @@ def evaluate_problem_solving_task(model: MathGPTLM, dataset: Dataset, task: Down
             pred = trim_batch(gen_batch, split_point, options.max_seq_len)
             full_label = decode_batch(label)[0].replace("\n", " ")
             full_pred = decode_batch(pred)[0].replace("\n", " ")
-            all_labels.append(full_label.split("Final Answer:")[1])
-            all_predictions.append(full_pred.split("Final Answer:")[1])
+            all_labels.append(get_problem_solving_final_answer(full_label))
+            all_predictions.append(get_problem_solving_final_answer(full_pred))
     accuracy = metrics.accuracy_score(all_labels, all_predictions)
     return 0, f"Accuracy: {accuracy:.3f}"
 
