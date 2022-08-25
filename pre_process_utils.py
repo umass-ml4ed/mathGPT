@@ -154,13 +154,13 @@ def fix_matrix(formula_text: str):
         final_text = fix_matrix(final_text)
     return final_text
 
-def process_raw_text(src_text_batch: List[str], err_data: dict) -> List[Article]:
+def process_raw_text(src_text_batch: List[str], err_data: dict) -> List[Optional[Article]]:
     """
     Extract text and processed formulas from batch of raw text
     """
+    err_data.setdefault("samples_with_latexml_failures", 0)
+    err_data.setdefault("batches_failed_to_split", 0)
     err_data.setdefault("articles_missing_formulas", 0)
-    err_data.setdefault("formulas_missing_from_latexml_failure", 0)
-    err_data.setdefault("formulas_missing_from_latexml_randomly", 0)
     err_data.setdefault("formulas_missing_from_tangentcft", 0)
 
     # Combine batch and convert formulas to viable LaTeX format
@@ -184,7 +184,7 @@ def process_raw_text(src_text_batch: List[str], err_data: dict) -> List[Article]
         processed_text += searchable_text or " "
         if batch_idx != len(src_text_batch) - 1:
             processed_text += f"\n{SAMPLE_SEPARATOR}\n"
-    processed_text = processed_text.replace("%", "\\%")
+    re.sub(r"([^\\]?)%", r"\g<1>\\%", processed_text) # Escape % if not already escaped
 
     # Convert LaTeX source with LaTeXML
     temp_filename = "temp.tex"
@@ -220,42 +220,49 @@ def process_raw_text(src_text_batch: List[str], err_data: dict) -> List[Article]
             latexml_success = False
             all_latexml_errs.append(errs.decode("utf-8"))
 
+    if not latexml_success:
+        print(errs.decode("utf-8"))
+        if len(src_text_batch) == 1:
+            err_data["samples_with_latexml_failures"] += 1
+            return [None]
+        print("LaTeXML failed, processing each sample individually...")
+        return [process_raw_text([sample], err_data)[0] for sample in src_text_batch]
+
+    _, all_content = MathDocument.read_doc_file(math_output_filename)
+    if all_content.count(SAMPLE_SEPARATOR) != len(src_text_batch) - 1:
+        err_data["batches_failed_to_split"] += 1
+        print("Failed to split batch, processing each sample individually...")
+        return [process_raw_text([sample], err_data)[0] for sample in src_text_batch]
+
+    # Resolve share elements since TangentCFT doesn't handle them
+    # TangentCFT doesn't handle matrix structure <apply><csymbol>matrix</csymbol><matrix>...</matrix></apply>, so collapse to <matrix>...</matrix>
+    if "<share" in all_content or "matrix</csymbol>" in all_content:
+        soup = BeautifulSoup(all_content, "lxml")
+        while True:
+            share_el = soup.find("share")
+            if not share_el:
+                break
+            ref_el = soup.find(id=share_el.attrs["href"][1:])
+            if not ref_el:
+                share_el.decompose() # Sometimes LaTeXML assigns a ref that doesn't exist, just destroy the element in that case
+            else:
+                share_el.replace_with(copy(ref_el))
+        while True:
+            matrix_symb_el = soup.find("csymbol", string="matrix")
+            if not matrix_symb_el:
+                break
+            matrix_el = matrix_symb_el.parent.contents[1]
+            matrix_symb_el.parent.replace_with(matrix_el)
+        all_content = str(soup)
+
     # Extract text and formulas from processed text
-    if latexml_success:
-        _, all_content = MathDocument.read_doc_file(math_output_filename)
-        # Resolve share elements since TangentCFT doesn't handle them
-        # TangentCFT doesn't handle matrix structure <apply><csymbol>matrix</csymbol><matrix>...</matrix></apply>, so collapse to <matrix>...</matrix>
-        if "<share" in all_content or "matrix</csymbol>" in all_content:
-            soup = BeautifulSoup(all_content, "lxml")
-            while True:
-                share_el = soup.find("share")
-                if not share_el:
-                    break
-                ref_el = soup.find(id=share_el.attrs["href"][1:])
-                if not ref_el:
-                    share_el.decompose() # Sometimes LaTeXML assigns a ref that doesn't exist, just destroy the element in that case
-                else:
-                    share_el.replace_with(copy(ref_el))
-            while True:
-                matrix_symb_el = soup.find("csymbol", string="matrix")
-                if not matrix_symb_el:
-                    break
-                matrix_el = matrix_symb_el.parent.contents[1]
-                matrix_symb_el.parent.replace_with(matrix_el)
-            all_content = str(soup)
-        articles = [process_article(content) for content in all_content.split(SAMPLE_SEPARATOR)]
-        for article in articles:
-            exp_num_formulas = article["text"].count(FORMULA_IDENTIFIER)
-            if exp_num_formulas != len(article["formulas"]):
-                err_data["formulas_missing_from_tangentcft"] += exp_num_formulas - len(article["formulas"])
-                err_data["articles_missing_formulas"] += 1
-        if len(articles) != len(src_text_batch):
-            err_data["formulas_missing_from_latexml_randomly"] += len(src_text_batch)
-            raise Exception("Failed to split batch!")
-        return articles
-    if err_data:
-        err_data["formulas_missing_from_latexml_failure"] += len(src_text_batch)
-    raise Exception("LaTeXML failed!")
+    articles = [process_article(content) for content in all_content.split(SAMPLE_SEPARATOR)]
+    for article in articles:
+        exp_num_formulas = article["text"].count(FORMULA_IDENTIFIER)
+        if exp_num_formulas > len(article["formulas"]):
+            err_data["formulas_missing_from_tangentcft"] += exp_num_formulas - len(article["formulas"])
+            err_data["articles_missing_formulas"] += 1
+    return articles
 
 esc_to_latex = [
     ("&#215;", "\\times", True),
@@ -510,3 +517,27 @@ calc_annotation_re = re.compile(r"<<[^>]*>>")
 
 def remove_calculator_annotations(text: str):
     return calc_annotation_re.sub("", text)
+
+def get_boxed_answer(text: str):
+    boxed_idx = text.rfind("\\boxed")
+    if boxed_idx < 0:
+        boxed_idx = text.rfind("\\fbox")
+    if boxed_idx < 0:
+        print("Missing answer!", text)
+    start_idx = text.find("{", boxed_idx)
+    if start_idx < 0:
+        # Handle case where \boxed macro is used without braces
+        start_form_idx = text.find(" ", boxed_idx)
+        end_form_idx = text.find("$", boxed_idx)
+        return " $ " + text[start_form_idx : end_form_idx].strip() + " $ "
+    if start_idx >= 0:
+        brace_count = 0
+        for char_idx, char in enumerate(text[start_idx:]):
+            if char == "{":
+                brace_count += 1
+            elif char == "}":
+                brace_count -= 1
+            if brace_count == 0:
+                return " $ " + text[start_idx + 1 : start_idx + char_idx].strip() + " $ "
+    print("Missing answer!", text)
+    return ""

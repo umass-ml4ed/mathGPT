@@ -10,7 +10,7 @@ from math_tokenize import encode_pos
 from vocabulary import MATH_TYPES, Vocabulary
 from utils import device, TrainOptions, text_tokenizer
 from data_types import CollatedBatch
-from constants import TokenType, TPE, Gen, EOS_TOKEN_ID, PADDING_TOKEN_ID, END_FORM_TEXT_TOK, START_FORM_TEXT_TOKS
+from constants import TokenType, TPE, Gen, PastKeyValues, EOS_TOKEN_ID, PADDING_TOKEN_ID, END_FORM_TEXT_TOK, START_FORM_TEXT_TOKS
 
 def infer_math_pos(prev_pos_vecs: torch.Tensor, prev_pos_levels: torch.Tensor, prev_token_types: torch.Tensor):
     """
@@ -192,6 +192,7 @@ def generate_beam(model: MathGPTLM, start_batch: CollatedBatch, options: TrainOp
     batch_size, starting_len = start_batch["token_ids"].shape
     assert batch_size == 1 # It's just easier this way...
     candidate_batches = [(0., trim_batch(start_batch, 0, options.max_seq_len))]
+    past_key_value_batches: List[PastKeyValues] = [None]
     for cur_idx in range(starting_len, options.max_seq_len):
         # For each candidate batch, get the n most likely continuations
         top_candidate_info: List[Tuple[float, int, int, int]] = []
@@ -206,30 +207,38 @@ def generate_beam(model: MathGPTLM, start_batch: CollatedBatch, options: TrainOp
                 ))
                 continue
             labels = batch["token_ids"] if batch["gen_labels"] is None else batch["gen_labels"]
-            loss, type_to_token_probs = model(batch, labels=labels)[:2]
+            _, type_to_token_probs, _, past_key_values = model(
+                batch,
+                labels=labels,
+                decoding=True,
+                past_key_values=past_key_value_batches[batch_idx]
+            )
+            past_key_value_batches[batch_idx] = past_key_values
             cur_len = cur_idx - starting_len + 1
             if cur_len <= options.min_gen_len:
                 type_to_token_probs[TokenType.TEXT][:, :, EOS_TOKEN_ID] = 0
             token_probs, type_to_start_idx = collapse_token_probs(type_to_token_probs)
             sorted_probs, sorted_indices = torch.sort(token_probs[0], descending=True)
-            loss_denom = torch.sum(labels != PADDING_TOKEN_ID)
             for beam in range(options.beam_width):
                 new_token_id, new_token_type = uncollapse_token_idx(sorted_indices[beam], type_to_start_idx)
                 top_candidate_info.append((
-                    (loss * loss_denom - torch.log(sorted_probs[beam])).detach().cpu().numpy(),
+                    nll - torch.log(sorted_probs[beam]).detach().cpu().numpy(),
                     new_token_id,
                     new_token_type,
                     batch_idx
                 ))
         # Create a new candidate batch for the n most likely continuations
         new_candidate_batches: List[Tuple[float, CollatedBatch]] = []
+        new_past_key_value_batches = []
         for nll, new_token_id, new_token_type, batch_idx in sorted(top_candidate_info)[:options.beam_width]:
-            new_batch = trim_batch(candidate_batches[batch_idx][1], 0, options.max_seq_len)
+            new_batch = trim_batch(candidate_batches[batch_idx][1], 0, options.max_seq_len) # Copy the source batch
             token_preds = torch.tensor([new_token_id]).to(device)
             type_preds = torch.tensor([new_token_type]).to(device)
             add_to_batch(new_batch, token_preds, type_preds, options)
             new_candidate_batches.append((nll, new_batch))
+            new_past_key_value_batches.append(past_key_value_batches[batch_idx])
         candidate_batches = new_candidate_batches
+        past_key_value_batches = new_past_key_value_batches
         # Stop if all beams hit an EOS
         if all(beam_ended(batch[1], options) for batch in candidate_batches):
             break

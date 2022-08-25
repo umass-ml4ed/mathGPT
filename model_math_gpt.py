@@ -5,10 +5,11 @@ import torch.nn.functional as F
 from transformers import GPT2Model, GPT2LMHeadModel
 from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions as GPTOutput
 
+from loading import trim_batch
 from vocabulary import Vocabulary, UNK_MAP, MATH_TYPES
 from math_tokenize import POS_ENCODING_SIZE_FORTE
 from data_types import CollatedBatch
-from constants import TokenType, TPE, SpecialOpToken, EMB_SIZE, PADDING_TOKEN_ID, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH, TEXT_VOCAB_SIZE
+from constants import TokenType, TPE, SpecialOpToken, PastKeyValues, EMB_SIZE, PADDING_TOKEN_ID, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH, TEXT_VOCAB_SIZE
 from utils import device, TrainOptions
 
 # Leverages pre-trained GPT2 from transformers library
@@ -158,14 +159,14 @@ class MathGPTBase(nn.Module):
 
         return input_embeddings
 
-    def get_transformer_output(self, batch: CollatedBatch, output_attentions: bool = False):
+    def get_transformer_output(self, batch: CollatedBatch, output_attentions: bool = False,
+                               decoding: bool = False, past_key_values: PastKeyValues = None):
         # Run inputs through model
         gpt_output: GPTOutput = self.transformer(
-            # past_key_values=[], # TODO: for speeding up decoding
-            use_cache=False, # TODO: set to True for decoding, but otherwise runs out of memory
             output_attentions=output_attentions,
-            # attention_mask=batch["attention_mask"], # TODO: this doesn't seem to make a difference with padding, might be performance-related
             inputs_embeds=self.get_input_embeddings(batch),
+            past_key_values=past_key_values,
+            use_cache=decoding,
             return_dict=True
         )
         return gpt_output
@@ -386,9 +387,15 @@ class MathGPTLM(MathGPTBase):
         loss = loss_fn(token_activations[:, :-1].reshape(-1, token_activations.shape[2]), shifted_target_tokens.reshape(-1))
         return loss
 
-    def forward(self, batch: CollatedBatch, labels: torch.Tensor = None, output_attentions: bool = False):
+    def forward(self, batch: CollatedBatch, labels: torch.Tensor = None, output_attentions: bool = False,
+                decoding: bool = False, past_key_values: PastKeyValues = None):
+        if past_key_values is not None:
+            batch = trim_batch(batch, batch["token_ids"].shape[1] - 1, batch["token_ids"].shape[1])
+            if labels is not None:
+                labels = labels[:, -1:]
+
         # Get GPT output
-        gpt_output = self.get_transformer_output(batch, output_attentions)
+        gpt_output = self.get_transformer_output(batch, output_attentions, decoding, past_key_values)
 
         # Get relevant masks
         type_idxs, final_formula_token_idx = self.get_prediction_masks(batch)
@@ -418,7 +425,7 @@ class MathGPTLM(MathGPTBase):
             else:
                 type_to_token_probs = self.get_token_probs_from_activations(token_activations, type_mask)
 
-        return loss, type_to_token_probs, gpt_output.attentions
+        return loss, type_to_token_probs, gpt_output.attentions, gpt_output.past_key_values
 
 class MathGPTClassifier(MathGPTBase):
     def __init__(self, options: TrainOptions):

@@ -1,4 +1,4 @@
-from typing import Dict, Optional, TypedDict
+from typing import Dict, Optional, TypedDict, Tuple
 from enum import IntEnum, Enum
 import torch
 
@@ -64,7 +64,8 @@ class DownstreamTask(Enum):
     HEADLINES = "headlines"
     ANSWER_SCORING = "answer_scoring"
     FEEDBACK = "feedback"
-    SOLVING = "solving"
+    GSM8K = "gsm8k"
+    MATH = "math"
 
 DOWNSTREAM_TASK_TO_NUM_CLASSES = {
     DownstreamTask.ANSWER_SCORING: 5,
@@ -81,6 +82,8 @@ class Gen(Enum):
     GREEDY = "greedy"
     NUCLEUS = "nucleus"
     BEAM = "beam"
+
+PastKeyValues = Optional[Tuple[Tuple[torch.FloatTensor]]]
 
 MAX_FORMULA_DEPTH = 32
 MAX_FORMULA_WIDTH = 64
@@ -105,4 +108,5 @@ AS_PROBLEMS = "data/answer_scoring/problems.json"
 AS_ANSWERS = "data/answer_scoring/answers.json"
 FEEDBACK_PROBLEMS = "data/feedback/problems.json"
 FEEDBACK_SAMPLES = "data/feedback/samples.json"
-SOLVING_DATA = "data/GSM8K"
+GSM8K_DATA = "data/GSM8K"
+MATH_DATA = "data/MATH"

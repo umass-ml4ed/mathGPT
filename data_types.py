@@ -1,4 +1,4 @@
-from typing import Any, Dict, Tuple, List, Optional, Union, TypedDict
+from typing import Dict, Tuple, List, Optional, Union, TypedDict
 import torch
 
 from constants import TokenType
@@ -28,7 +28,7 @@ class FeedbackTaskSample(TypedDict):
     answer: Article
     feedback: Article
 
-class SolvingTaskSample(TypedDict):
+class ProblemSolvingTaskSample(TypedDict):
     problem: Article
     steps: Article
     answer: Article

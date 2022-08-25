@@ -9,8 +9,8 @@ import numpy as np
 from transformers import GPT2TokenizerFast
 
 from vocabulary import Vocabulary, UNK_MAP
-from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, SolvingTaskSample, Formula, OPT
-from constants import TYPE_STR_TO_INT, WIKI_DATA, OFEQ_DATA, AS_ANSWERS, AS_PROBLEMS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, SOLVING_DATA, SpecialNumToken, SpecialOpToken, SpecialVarToken
+from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, ProblemSolvingTaskSample, Formula, OPT
+from constants import TYPE_STR_TO_INT, WIKI_DATA, OFEQ_DATA, AS_ANSWERS, AS_PROBLEMS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, GSM8K_DATA, SpecialNumToken, SpecialOpToken, SpecialVarToken
 
 START_PARENS = ("normal-(", "normal-[", "normal-{")
 END_PARENS = ("normal-)", "normal-]", "normal-}")
@@ -235,14 +235,18 @@ def analyze_feedback():
     analyze_data(tqdm(all_formulas))
     print("Total num problems:", len(problems), "; responses:", len(samples))
 
-def analyze_solving():
+def analyze_gsm8k():
     all_formulas = []
     for split in ("train", "test"):
-        with open(os.path.join(SOLVING_DATA, f"{split}.json"), encoding="utf-8") as src_file:
-            samples: List[SolvingTaskSample] = json.load(src_file)
+        with open(os.path.join(GSM8K_DATA, f"{split}.json"), encoding="utf-8") as src_file:
+            samples: List[ProblemSolvingTaskSample] = json.load(src_file)
         for field in ["problem", "steps", "answer"]:
             all_formulas += [("", formula) for sample in samples for formula in sample[field]["formulas"].values()]
     analyze_data(tqdm(all_formulas))
+
+def analyze_math():
+    # TODO
+    pass
 
 def analyze_vocab():
     print("Number of GPT tokens in each vocab symbol...")

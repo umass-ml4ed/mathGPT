@@ -8,7 +8,7 @@ import numpy as np
 
 from math_tokenize import tokenize_formula, EMPTY_POS_VECTOR, get_empty_pos_encoding, encode_pos
 from decode import decode_formula
-from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, SolvingTaskSample, Formula, Sequence, CollatedBatch
+from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, ProblemSolvingTaskSample, Formula, Sequence, CollatedBatch
 from constants import TokenType, DownstreamTask, TPE, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, FORMULA_IDENTIFIER, START_FORM_TEXT_TOKS, END_FORM_TEXT_TOK
 from utils import device, is_cls_task, text_tokenizer, TrainOptions
 
@@ -52,6 +52,7 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], option
     num_missing_formulas = 0
     for text_chunk_idx, text_chunk in enumerate(text_chunks):
         # Tokenize the text chunk and add it to the sequence
+        text_chunk = text_chunk or " " # Ensure that formulas are never perfectly adjacent to simplify decoding constraints
         text_token_ids: List[int] = text_tokenizer()(text_chunk)["input_ids"]
         sequence.token_ids += text_token_ids
         sequence.token_types += [TokenType.TEXT] * len(text_token_ids)
@@ -398,7 +399,7 @@ class FeedbackDataset(Dataset):
         print("Shortest feedback:", shortest_feedback, "Longest feedback:", longest_feedback)
 
 class ProblemSolvingDataset(Dataset):
-    def __init__(self, samples: List[SolvingTaskSample], options: TrainOptions):
+    def __init__(self, samples: List[ProblemSolvingTaskSample], options: TrainOptions):
         super().__init__()
 
         for sample in tqdm(samples):
@@ -414,15 +415,16 @@ class ProblemSolvingDataset(Dataset):
 
             # Concatenate into single sequence, and save the length of the prompt for creating generative labels
             sequence = problem_sequence + steps_sequence + answer_sequence
-            if len(sequence) > options.max_seq_len:
+            if len(sequence) > options.max_seq_len: # TODO: actually trim instead of skip
                 self.trimmed_sequences += 1
+                continue
             sequence.meta = {
                 "prompt_length": len(problem_sequence)
             }
             self.data.append(sequence)
 
         print("Missing", self.num_missing_formulas, "formulas")
-        print("Overflowed:", self.trimmed_sequences)
+        print("Skipped", self.trimmed_sequences, "overflowed sequences")
 
 def get_data_loader(dataset: Dataset, task: Optional[DownstreamTask], batch_size: int, shuffle: bool, drop_last: bool, options: TrainOptions):
     return DataLoader(

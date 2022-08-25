@@ -12,7 +12,7 @@ from tqdm import tqdm
 # from neptune.new.run import Run
 from sklearn.model_selection import StratifiedKFold
 import numpy as np
-from mathGPT.data_types import SolvingTaskSample
+from mathGPT.data_types import ProblemSolvingTaskSample
 
 from model_math_gpt import MathGPTBase, MathGPTLM, MathGPTClassifier
 from model_baseline import GPTLMBaseline, GPTClassifierBaseline
@@ -22,7 +22,7 @@ from generate import generate
 from decode import decode_batch
 from utils import TrainOptions, device, is_cls_task, new_neptune_run, load_pretrained
 from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample
-from constants import DownstreamTask, Checkpoint, DOWNSTREAM_TASK_TO_NUM_CLASSES, WIKI_DATA, OFEQ_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, SOLVING_DATA
+from constants import DownstreamTask, Checkpoint, DOWNSTREAM_TASK_TO_NUM_CLASSES, WIKI_DATA, OFEQ_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, GSM8K_DATA, MATH_DATA
 
 def get_article_names(options: TrainOptions):
     data_dir = options.data_dir or WIKI_DATA
@@ -69,9 +69,10 @@ def get_feedback_data():
     test_len = int(.1 * len(samples))
     return problems, samples[:train_len], samples[train_len : -test_len], samples[-test_len:]
 
-def get_problem_solving_data(split: str, ratio: float = 1):
-    with open(os.path.join(SOLVING_DATA, f"{split}.json"), encoding="utf-8") as data_file:
-        data: List[SolvingTaskSample] = json.load(data_file)
+def problem_solving_data(split: str, task: DownstreamTask, ratio: float = 1):
+    src_dir = GSM8K_DATA if task == DownstreamTask.GSM8K else MATH_DATA
+    with open(os.path.join(src_dir, f"{split}.json"), encoding="utf-8") as data_file:
+        data: List[ProblemSolvingTaskSample] = json.load(data_file)
         return data[:int(len(data) * ratio)], data[int(len(data) * ratio):]
 
 def load_options(model_name: str):
@@ -319,8 +320,8 @@ def train_downstream_task(model_name: str, checkpoint_name: Optional[str], pretr
         problems, train_samples, val_samples, _ = get_feedback_data()
         train_data = FeedbackDataset(train_samples, problems, options)
         val_data = FeedbackDataset(val_samples, problems, options)
-    elif task == DownstreamTask.SOLVING:
-        train_samples, val_samples = get_problem_solving_data("train", .85)
+    elif task in (DownstreamTask.GSM8K, DownstreamTask.MATH):
+        train_samples, val_samples = problem_solving_data("train", task, .85)
         train_data = ProblemSolvingDataset(train_samples, options)
         val_data = ProblemSolvingDataset(val_samples, options)
     else:
@@ -353,10 +354,10 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask, eval_options
         problems, _, _, test_samples = get_feedback_data()
         test_data = FeedbackDataset(test_samples, problems, options)
         _, results = evaluate_gen_task(model_name, model, test_data, task, options)
-    elif task == DownstreamTask.SOLVING:
-        test_samples, _ = get_problem_solving_data("test")
+    elif task in (DownstreamTask.GSM8K, DownstreamTask.MATH):
+        test_samples, _ = problem_solving_data("test", task)
         test_data = ProblemSolvingDataset(test_samples, options)
-        _, results = evaluate_problem_solving_task(model, test_data, task, options)
+        _, results = evaluate_problem_solving_task(model_name, model, test_data, task, options)
     else:
         raise Exception(f"Unsupported task {task}")
 
@@ -375,8 +376,8 @@ def test_gen_task(model_name: str, task: DownstreamTask, test_options: dict):
     elif task == DownstreamTask.FEEDBACK:
          problems, _, _, samples = get_feedback_data()
          dataset = FeedbackDataset(samples[start_idx : start_idx + samples_to_try], problems, options)
-    elif task == DownstreamTask.SOLVING:
-        samples, _ = get_problem_solving_data("test")
+    elif task in (DownstreamTask.GSM8K, DownstreamTask.MATH):
+        samples, _ = problem_solving_data("test", task)
         dataset = ProblemSolvingDataset(samples[start_idx : start_idx + samples_to_try], options)
     else:
         raise Exception(f"Unsupported task {task}")

@@ -62,7 +62,11 @@ def load_pretrained(model: torch.nn.Module, pretrained_state_dict: Dict[str, tor
     Given a pre-trained model's state_dict, load its parameters that are relevant to the current model
     """
     state_dict = model.state_dict()
-    for param_name, param_val in pretrained_state_dict.items():
+    if hasattr(model, "transform_pretrained_state_dict"):
+        _pretrained_state_dict = model.transform_pretrained_state_dict(pretrained_state_dict)
+    else:
+        _pretrained_state_dict = pretrained_state_dict
+    for param_name, param_val in _pretrained_state_dict.items():
         if param_name in state_dict:
             state_dict[param_name] = param_val
     model.load_state_dict(state_dict)

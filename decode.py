@@ -2,7 +2,6 @@ from typing import List
 import re
 from dataclasses import dataclass
 import torch
-from transformers import GPT2TokenizerFast
 
 from data_types import CollatedBatch
 from utils import text_tokenizer
@@ -50,7 +49,7 @@ def tree_to_text(tree_node: DecodeTreeNode) -> str:
 
     # Resolve math text for op nodes
     if Vocabulary.math_text() and tree_node.token_type == TokenType.OP and tree_node.token_id == SpecialOpToken.ANON_OP and\
-        children[0].token_type == TokenType.OP and children[0].token_id == SpecialOpToken.MATH_TEXT_HEAD:
+        children and children[0].token_type == TokenType.OP and children[0].token_id == SpecialOpToken.MATH_TEXT_HEAD:
         symbol = text_tokenizer().decode([child.token_id for child in children[0].children])
         children = children[1:]
 

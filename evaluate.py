@@ -186,12 +186,12 @@ def evaluate_gen_task(model_name: str, model: MathGPTLM, dataset: Dataset, task:
                (f", TED: {avg_ted:.3f}" if compute_ted else "")
 
 def get_problem_solving_final_answer(full_solution: str):
+    processed_solution = ""
     if "Final Answer:" in full_solution:
-        # Get final answer portion, remove surrounding whitespace, remove commas in numbers
-        return full_solution.split("Final Answer:")[1].strip().replace(" , ", "")
-    return ""
+        processed_solution = full_solution.split("Final Answer:")[1]
+    return processed_solution.strip().replace(" , ", "") # Remove commas from numbers and whitespace around answer
 
-def evaluate_problem_solving_task(model: MathGPTLM, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
+def evaluate_problem_solving_task(model_name: str, model: MathGPTLM, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
     model.eval()
     # Only process one sequence at a time since prompts may have different lengths
     data_loader = get_data_loader(dataset, task, 1, False, False, options)
@@ -203,11 +203,20 @@ def evaluate_problem_solving_task(model: MathGPTLM, dataset: Dataset, task: Down
             gen_batch = generate(model, trim_batch(batch, 0, split_point), options)
             label = trim_batch(batch, split_point, options.max_seq_len)
             pred = trim_batch(gen_batch, split_point, options.max_seq_len)
-            full_label = decode_batch(label)[0].replace("\n", " ")
-            full_pred = decode_batch(pred)[0].replace("\n", " ")
-            all_labels.append(get_problem_solving_final_answer(full_label))
-            all_predictions.append(get_problem_solving_final_answer(full_pred))
-    accuracy = metrics.accuracy_score(all_labels, all_predictions)
+            all_labels.append(decode_batch(label)[0].replace("\n", " "))
+            all_predictions.append(decode_batch(pred)[0].replace("\n", " "))
+
+    label_filename = f"labels_{model_name}.txt"
+    pred_filename = f"preds_{model_name}.txt"
+    with open(label_filename, "w", encoding="utf-8") as label_file:
+        label_file.write("\n".join(all_labels))
+    with open(pred_filename, "w", encoding="utf-8") as pred_file:
+        pred_file.write("\n".join(all_predictions))
+
+    accuracy = metrics.accuracy_score(
+        [get_problem_solving_final_answer(label) for label in all_labels],
+        [get_problem_solving_final_answer(pred) for pred in all_predictions]
+    )
     return 0, f"Accuracy: {accuracy:.3f}"
 
 def evaluate_cls_task(model: MathGPTClassifier, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
