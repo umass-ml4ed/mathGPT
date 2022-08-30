@@ -102,7 +102,7 @@ def tree_to_text(tree_node: DecodeTreeNode) -> str:
             ) for case_idx in range(0, len(children), 2)
         ) + " \\end{cases} "
 
-    if symbol == "evaluated-at":
+    if symbol == "evaluated-at" and len(children) >= 2:
         return tree_to_text(children[0]) + " | _ { " + tree_to_text(children[1]) + " } " + (
             (" ^ { " + tree_to_text(children[2]) + " } ") if len(children) == 3 else "")
 
@@ -142,10 +142,10 @@ def tree_to_text(tree_node: DecodeTreeNode) -> str:
     if symbol == "root":
         return " \\sqrt [ " + tree_to_text(children[-1]) + " ] { " + " ".join(tree_to_text(child) for child in children[:-1]) + " } "
 
-    if symbol == "binomial":
+    if symbol == "binomial" and len(children) == 2:
         return " \\binom { " + tree_to_text(children[0]) + " } { " +  tree_to_text(children[1]) + " } "
 
-    if symbol == "continued-fraction":
+    if symbol == "continued-fraction" and len(children) == 2:
         return " \\cfrac { " + tree_to_text(children[0]) + " } { " +  tree_to_text(children[1]) + " } "
 
     if symbol.startswith("interval("):

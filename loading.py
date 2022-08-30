@@ -401,6 +401,10 @@ class FeedbackDataset(Dataset):
 class ProblemSolvingDataset(Dataset):
     def __init__(self, samples: List[ProblemSolvingTaskSample], options: TrainOptions):
         super().__init__()
+        shortest_qs = 2**31
+        longest_qs = 0
+        shortest_sol = 2**31
+        longest_sol = 0
 
         for sample in tqdm(samples):
             problem_text = "Question: " + sample["problem"]["text"] + " [SEP] Solution: "
@@ -412,6 +416,10 @@ class ProblemSolvingDataset(Dataset):
             answer_text = sample["answer"]["text"] + EOS_TOKEN
             answer_sequence, cur_missing_formulas = tokenize_sequence("", answer_text, sample["answer"]["formulas"], options)
             self.num_missing_formulas += cur_missing_formulas
+            shortest_qs = min(shortest_qs, len(problem_sequence))
+            longest_qs = max(longest_qs, len(problem_sequence))
+            shortest_sol = min(shortest_sol, len(steps_sequence))
+            longest_sol = max(longest_sol, len(steps_sequence))
 
             # Concatenate into single sequence, and save the length of the prompt for creating generative labels
             sequence = problem_sequence + steps_sequence + answer_sequence
@@ -425,6 +433,8 @@ class ProblemSolvingDataset(Dataset):
 
         print("Missing", self.num_missing_formulas, "formulas")
         print("Skipped", self.trimmed_sequences, "overflowed sequences")
+        print("Questions: Shortest:", shortest_qs, "Longest:", longest_qs)
+        print("Solutions: Shortest:", shortest_sol, "Longest:", longest_sol)
 
 def get_data_loader(dataset: Dataset, task: Optional[DownstreamTask], batch_size: int, shuffle: bool, drop_last: bool, options: TrainOptions):
     return DataLoader(

@@ -75,7 +75,7 @@ class TrainOptions:
     def __init__(self, options: dict):
         # Training/testing params
         self.data_dir: Optional[str] = options.get("data_dir", None)
-        self.split: float = options.get("split", 0.9)
+        self.split: float = options.get("split", 0.95)
         self.lr: float = options.get("lr", 1e-5)
         self.weight_decay: float = options.get("weight_decay", 1e-2)
         self.epochs: int = options.get("epochs", 20)
@@ -83,7 +83,7 @@ class TrainOptions:
         self.batch_size: int = options.get("batch_size", 64)
         self.grad_accum_batches: int = options.get("grad_accum_batches", 1)
         self.max_seq_len: int = options.get("max_seq_len", 1024)
-        self.amp: bool = options.get("amp", False)
+        self.amp: bool = options.get("amp", True)
         self.gen: str = options.get("gen", Gen.BEAM.value)
         self.ns_p: float = options.get("ns_p", 0.90)
         self.beam_width: int = options.get("beam_width", 3)
@@ -95,14 +95,17 @@ class TrainOptions:
         # Model/tree structure config
         self.baseline: bool = options.get("baseline", False)
         self.post_proc: bool = options.get("post_proc", False)
-        self.joint: bool = options.get("joint", True)
+        self.joint: bool = options.get("joint", False)
         self.use_type_embs: bool = options.get("use_type_embs", True)
         self.tpe: str = options.get("tpe", TPE.FORTE.value)
         self.num_classes: Optional[int] = options.get("num_classes", None)
-        self.num_to_tree: bool = options.get("num_to_tree", False)
+        self.num_to_tree: bool = options.get("num_to_tree", True)
         self.sd_to_tree: bool = options.get("sd_to_tree", False)
-        self.math_text: bool = options.get("math_text", False)
-        self.shared_emb: bool = options.get("shared_emb", False)
+        self.math_text: bool = options.get("math_text", True)
+        self.shared_emb: bool = options.get("shared_emb", True)
+        self.cdt: bool = options.get("cdt", True)
+        self.freeze_wte: bool = options.get("freeze_wte", False)
+        self.init_math_pred: bool = options.get("init_math_pred", False)
 
     def as_dict(self):
         self_dict = self.__dict__

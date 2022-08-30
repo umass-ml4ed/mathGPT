@@ -10,7 +10,7 @@ from vocabulary import Vocabulary, UNK_MAP, MATH_TYPES
 from math_tokenize import POS_ENCODING_SIZE_FORTE
 from data_types import CollatedBatch
 from constants import TokenType, TPE, SpecialOpToken, PastKeyValues, EMB_SIZE, PADDING_TOKEN_ID, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH, TEXT_VOCAB_SIZE
-from utils import device, TrainOptions
+from utils import device, TrainOptions, text_tokenizer
 
 # Leverages pre-trained GPT2 from transformers library
 # https://huggingface.co/docs/transformers/model_doc/gpt2
@@ -67,12 +67,13 @@ class MathGPTBase(nn.Module):
         # Extract pre-trained GPT2 transformer and text prediction head
         self.gpt2_lm: GPT2LMHeadModel = GPT2LMHeadModel.from_pretrained("gpt2")
         self.transformer: GPT2Model = self.gpt2_lm.transformer
+        if self.options.freeze_wte:
+            self.transformer.wte.weight.requires_grad = False
 
         # Create type embeddings
         self.type_embeddings = nn.Embedding(self.num_types, EMB_SIZE) # TODO: also try just have text, math, and transition type embeddings
         init_small_weights(self.type_embeddings)
 
-        # TODO: not great that we gotta assign str(Type.value)... see if ModuleList fixes this
         # Create token embedding matrix for each type
         self.token_embeddings = nn.ModuleDict({
             str(token_type.value): nn.Embedding(Vocabulary.num_tokens_in_type(token_type), EMB_SIZE)
@@ -126,10 +127,11 @@ class MathGPTBase(nn.Module):
 
         # Add token embeddings for each type
         token_ids = apply_unks(batch["token_ids"], batch)
+        non_padded_idx = token_ids != PADDING_TOKEN_ID
         for token_type in TokenType:
             if not self.options.math_text and token_type == TokenType.MATH_TEXT:
                 continue
-            type_idxs = (batch["token_types"] == token_type) & (token_ids != PADDING_TOKEN_ID)
+            type_idxs = (batch["token_types"] == token_type) & non_padded_idx
             if self.options.shared_emb:
                 type_idxs &= ~batch["use_shared_emb"]
             input_embeddings[type_idxs] += self.token_embeddings[str(token_type.value)](token_ids[type_idxs])
@@ -189,6 +191,7 @@ class MathGPTLM(MathGPTBase):
             if self.options.math_text:
                 self.type_to_token_pred_layer[str(TokenType.MATH_TEXT.value)] = self.gpt2_lm.lm_head
             # For joint probability modeling, single-token types only rely on the probability of their corresponding type
+            # TODO: implement init_math_pred
         else:
             self.text_pred_layer = self.gpt2_lm.lm_head
             self.type_to_size = {
@@ -199,7 +202,24 @@ class MathGPTLM(MathGPTBase):
                 TokenType.START_FORMULA: 1,
                 TokenType.END_FORMULA: 1,
             }
-            self.math_pred_layer = nn.Linear(EMB_SIZE, sum(self.type_to_size.values()))
+            if self.options.init_math_pred:
+                self.math_pred_layer = nn.Linear(EMB_SIZE, sum(self.type_to_size.values()), bias=False)
+                with torch.no_grad():
+                    start_idx = 0
+                    for token_type in TokenType:
+                        if token_type in (TokenType.TEXT, TokenType.MATH_TEXT):
+                            continue
+                        if token_type in MATH_TYPES:
+                            for token_id in range(self.type_to_size[token_type]):
+                                if not Vocabulary.is_special_token(token_type, token_id):
+                                    symbol = Vocabulary.get_symbol(token_type, token_id)
+                                    if symbol: # Symbol can sometimes be empty string, which has no corresponding text tokens
+                                        text_tokens = text_tokenizer()(symbol)["input_ids"]
+                                        avg_pred_weights = self.text_pred_layer.weight[text_tokens].mean(dim=0)
+                                        self.math_pred_layer.weight[start_idx + token_id] = avg_pred_weights
+                        start_idx += self.type_to_size[token_type]
+            else:
+                self.math_pred_layer = nn.Linear(EMB_SIZE, sum(self.type_to_size.values()))
 
     def get_prediction_masks(self, batch: CollatedBatch):
         """
@@ -262,14 +282,15 @@ class MathGPTLM(MathGPTBase):
         type_mask[must_end_idx] = ~F.one_hot(torch.tensor(TokenType.END), num_classes=self.num_types).type(torch.bool).to(device)
         return type_mask
 
-    def get_type_probs(self, gpt_output: GPTOutput, type_mask: torch.Tensor) -> torch.Tensor:
+    def get_type_probs(self, gpt_output: GPTOutput, type_mask: Optional[torch.Tensor]) -> torch.Tensor:
         """
         Calculate the probability of generating each type for each token in the batch, including masking to constrain to possible transitions
         """
         # Get raw prediction values from model output
         type_preds = self.type_pred_layer(gpt_output.last_hidden_state)
         # Apply mask and get predicted probability of types at each index
-        type_preds[type_mask] = -torch.inf
+        if type_mask is not None:
+            type_preds[type_mask] = -torch.inf
         type_probs = nn.Softmax(dim=-1)(type_preds)
         return type_probs
 
@@ -327,15 +348,16 @@ class MathGPTLM(MathGPTBase):
             losses.append(loss)
         return torch.concat(losses, dim=0).mean()
 
-    def get_token_activations(self, gpt_output: GPTOutput, type_mask: torch.Tensor):
+    def get_token_activations(self, gpt_output: GPTOutput, type_mask: Optional[torch.Tensor]):
         # Get activations from linear layers
         text_activations = self.text_pred_layer(gpt_output.last_hidden_state)
         math_activations = self.math_pred_layer(gpt_output.last_hidden_state)
         # Apply text transition mask
-        if self.options.math_text:
-            text_activations[type_mask[:, :, TokenType.TEXT] & type_mask[:, :, TokenType.MATH_TEXT]] = -torch.inf
-        else:
-            text_activations[type_mask[:, :, TokenType.TEXT]] = -torch.inf
+        if type_mask is not None:
+            if self.options.math_text:
+                text_activations[type_mask[:, :, TokenType.TEXT] & type_mask[:, :, TokenType.MATH_TEXT]] = -torch.inf
+            else:
+                text_activations[type_mask[:, :, TokenType.TEXT]] = -torch.inf
         # Apply type-specific transition mask
         math_activation_parts: List[torch.Tensor] = []
         start_idx = 0
@@ -343,7 +365,8 @@ class MathGPTLM(MathGPTBase):
             if token_type in (TokenType.TEXT, TokenType.MATH_TEXT):
                 continue
             activation = math_activations[:, :, start_idx : start_idx + self.type_to_size[token_type]]
-            activation[type_mask[:, :, token_type]] = -torch.inf
+            if type_mask is not None:
+                activation[type_mask[:, :, token_type]] = -torch.inf
             math_activation_parts.append(activation)
             start_idx += self.type_to_size[token_type]
         return torch.concat([text_activations] + math_activation_parts, dim=-1)
@@ -401,7 +424,10 @@ class MathGPTLM(MathGPTBase):
         type_idxs, final_formula_token_idx = self.get_prediction_masks(batch)
 
         # Get type masks that constrain predictions to permitted transitions
-        type_mask = self.get_type_mask(type_idxs, final_formula_token_idx, batch)
+        if self.options.cdt or not self.training:
+            type_mask = self.get_type_mask(type_idxs, final_formula_token_idx, batch)
+        else:
+            type_mask = None
 
         if self.options.joint:
             # Calculate P(type) for each possible type

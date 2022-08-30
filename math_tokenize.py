@@ -25,6 +25,7 @@ def get_empty_pos_encoding(tpe: str):
         return _EMPTY_POS_ENCODING_SIN
     return _EMPTY_POS_ENCODING_RNN
 
+@lru_cache(maxsize=1024)
 def encode_pos_forte(pos_vec: Union[List[int], torch.Tensor], pos_level: int):
     """
     Return encoding of the tree position
@@ -91,7 +92,7 @@ def encode_pos(pos_vec: Union[List[int], torch.Tensor], pos_level: int, tpe: str
     Return the position encoding of a single tree node
     """
     if tpe == TPE.FORTE.value:
-        return encode_pos_forte(pos_vec, pos_level)
+        return encode_pos_forte(tuple(pos_vec), pos_level)
     if tpe == TPE.SIN_PART.value:
         return encode_pos_sin_part(pos_vec, pos_level)
     if tpe == TPE.SIN_ADD.value:

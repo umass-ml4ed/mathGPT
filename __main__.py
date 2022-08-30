@@ -75,10 +75,13 @@ def main():
     parser.add_argument("--use_type_embs", type=bool_type, help="Add type-specific embeddings to input token embeddings")
     parser.add_argument("--tpe", help="Scheme to use for tree position encodings", choices=enum_choices(TPE))
     parser.add_argument("--ddp", type=bool_type, help="Use DistributedDataParallel")
-    parser.add_argument("--num_to_tree", type=bool_type, help="Convert numeric symbols into sub-trees")
+    parser.add_argument("--num_to_tree", type=bool_type, default=True, help="Convert numeric symbols into sub-trees")
     parser.add_argument("--sd_to_tree", type=bool_type, help="When using num_to_tree, if single digits should convert to sub-trees, otherwise be single tokens")
-    parser.add_argument("--math_text", type=bool_type, help="Convert unseen math tokens to sub-trees with tokens from GPT encoder")
+    parser.add_argument("--math_text", type=bool_type, default=True, help="Convert unseen math tokens to sub-trees with tokens from GPT encoder")
     parser.add_argument("--shared_emb", type=bool_type, help="Math token embeddings derived from corresponding text embeddings")
+    parser.add_argument("--cdt", type=bool_type, help="Apply decoding constraint masks during training")
+    parser.add_argument("--freeze_wte", type=bool_type, help="Freeze word token embeddings")
+    parser.add_argument("--init_math_pred", type=bool_type, help="Initialize the math prediction layer with values from the pre-trained text prediction layer")
 
     args = parser.parse_args()
 
