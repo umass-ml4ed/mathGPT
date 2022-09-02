@@ -405,17 +405,57 @@ class ProblemSolvingDataset(Dataset):
         longest_qs = 0
         shortest_sol = 2**31
         longest_sol = 0
+        num_empty_prefixes = 0
+        no_final_sol = 0
 
         for sample in tqdm(samples):
             problem_text = "Question: " + sample["problem"]["text"] + " [SEP] Solution: "
             problem_sequence, cur_missing_formulas = tokenize_sequence("", problem_text, sample["problem"]["formulas"], options)
             self.num_missing_formulas += cur_missing_formulas
-            steps_text = sample["steps"]["text"] + " [SEP] Final Answer: "
-            steps_sequence, cur_missing_formulas = tokenize_sequence("", steps_text, sample["steps"]["formulas"], options)
-            self.num_missing_formulas += cur_missing_formulas
-            answer_text = sample["answer"]["text"] + EOS_TOKEN
-            answer_sequence, cur_missing_formulas = tokenize_sequence("", answer_text, sample["answer"]["formulas"], options)
-            self.num_missing_formulas += cur_missing_formulas
+            if options.eval_final:
+                # The final step is the sentence that contains the \\boxed macro (and up to the end of the sequence)
+                steps_text = sample["steps"]["text"]
+                try:
+                    final_formula_idx = next(
+                        int(formula_idx) for formula_idx, formula in sample["steps"]["formulas"].items()
+                        if "\\boxed" in formula["tex"] or "\\fbox" in formula["tex"]
+                    )
+                except StopIteration: # In a few cases LaTeXML won't capture the \\boxed macro in the tex representation
+                    no_final_sol += 1
+                    continue
+                final_formula_start = steps_text.find(FORMULA_IDENTIFIER)
+                for _ in range(final_formula_idx):
+                    final_formula_start = steps_text.find(FORMULA_IDENTIFIER, final_formula_start + 1)
+                final_step_start = steps_text.rfind(".", 0, final_formula_start) + 1
+                if final_step_start == 0:
+                    final_step_start = steps_text.rfind("\n", 0, final_formula_start) + 1
+                if final_step_start == 0:
+                    num_empty_prefixes += 1
+
+                # Construct sequence of steps up to the final one
+                pre_final_steps_text = steps_text[:final_step_start]
+                steps_sequence, cur_missing_formulas = tokenize_sequence("", pre_final_steps_text, sample["steps"]["formulas"], options)
+                self.num_missing_formulas += cur_missing_formulas
+
+                # Construct sequence with just the final step, rebalance formula indices
+                final_step_text = steps_text[final_step_start:] + EOS_TOKEN
+                num_pre_final_formulas = pre_final_steps_text.count(FORMULA_IDENTIFIER)
+                final_step_formulas = {
+                    str(int(form_idx) - num_pre_final_formulas): formula
+                    for form_idx, formula in sample["steps"]["formulas"].items()
+                    if int(form_idx) >= num_pre_final_formulas
+                }
+                answer_sequence, cur_missing_formulas = tokenize_sequence("", final_step_text, final_step_formulas, options)
+                self.num_missing_formulas += cur_missing_formulas
+            else:
+                steps_text = sample["steps"]["text"] + " [SEP] Final Answer: "
+                steps_sequence, cur_missing_formulas = tokenize_sequence("", steps_text, sample["steps"]["formulas"], options)
+                self.num_missing_formulas += cur_missing_formulas
+
+                answer_text = sample["answer"]["text"] + EOS_TOKEN
+                answer_sequence, cur_missing_formulas = tokenize_sequence("", answer_text, sample["answer"]["formulas"], options)
+                self.num_missing_formulas += cur_missing_formulas
+
             shortest_qs = min(shortest_qs, len(problem_sequence))
             longest_qs = max(longest_qs, len(problem_sequence))
             shortest_sol = min(shortest_sol, len(steps_sequence))
@@ -427,7 +467,8 @@ class ProblemSolvingDataset(Dataset):
                 self.trimmed_sequences += 1
                 continue
             sequence.meta = {
-                "prompt_length": len(problem_sequence)
+                "prompt_length": len(problem_sequence) + len(steps_sequence) if options.eval_final else len(problem_sequence),
+                "level": sample.get("level")
             }
             self.data.append(sequence)
 
@@ -435,6 +476,9 @@ class ProblemSolvingDataset(Dataset):
         print("Skipped", self.trimmed_sequences, "overflowed sequences")
         print("Questions: Shortest:", shortest_qs, "Longest:", longest_qs)
         print("Solutions: Shortest:", shortest_sol, "Longest:", longest_sol)
+        if options.eval_final:
+            print("No Pre-Final Steps:", num_empty_prefixes)
+            print("Skipped because no final solution:", no_final_sol)
 
 def get_data_loader(dataset: Dataset, task: Optional[DownstreamTask], batch_size: int, shuffle: bool, drop_last: bool, options: TrainOptions):
     return DataLoader(

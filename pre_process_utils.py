@@ -75,12 +75,13 @@ def get_formulas(content: str):
         }
     return formulas
 
-def process_article(content: str) -> Article:
+def process_articles(content: str) -> List[Article]:
     """
     Create a sanitized version of the article with text and formulas separated
     Add all encountered math symbols to the vocab
     Article is in HTML format, and formulas are in MathML format in <math> tags
     Use TangentCFT code (https://github.com/BehroozMansouri/TangentCFT) for initial formula conversion
+    Will split into multiple articles if separator is present
     """
     # Get all formulas in the article
     formulas = get_formulas(content)
@@ -112,12 +113,24 @@ def process_article(content: str) -> Article:
     text_content = body.get_text()
     text_content = re.sub(r" +", " ", text_content)
     text_content = re.sub(r"\n[\s↩]+", "\n", text_content)
-    text_content = text_content.strip()
 
-    return {
-        "text": text_content,
-        "formulas": formulas
-    }
+    # Split articles and rebalance formula idxs
+    articles: List[Article] = []
+    article_texts = text_content.split(SAMPLE_SEPARATOR)
+    formula_start = 0
+    for article_text in article_texts:
+        formula_end = formula_start + article_text.count(FORMULA_IDENTIFIER)
+        articles.append({
+            "text": article_text.strip(),
+            "formulas": {
+                formula_idx - formula_start: formula
+                for formula_idx, formula in formulas.items()
+                if formula_start <= formula_idx < formula_end
+            }
+        })
+        formula_start = formula_end
+
+    return articles
 
 def fix_matrix(formula_text: str):
     """
@@ -183,7 +196,7 @@ def process_raw_text(src_text_batch: List[str], err_data: dict) -> List[Optional
             form_start = searchable_text.find("<m>")
         processed_text += searchable_text or " "
         if batch_idx != len(src_text_batch) - 1:
-            processed_text += f"\n{SAMPLE_SEPARATOR}\n"
+            processed_text += f"\n\n{SAMPLE_SEPARATOR}\n\n"
     re.sub(r"([^\\]?)%", r"\g<1>\\%", processed_text) # Escape % if not already escaped
 
     # Convert LaTeX source with LaTeXML
@@ -256,7 +269,7 @@ def process_raw_text(src_text_batch: List[str], err_data: dict) -> List[Optional
         all_content = str(soup)
 
     # Extract text and formulas from processed text
-    articles = [process_article(content) for content in all_content.split(SAMPLE_SEPARATOR)]
+    articles = process_articles(all_content)
     for article in articles:
         exp_num_formulas = article["text"].count(FORMULA_IDENTIFIER)
         if exp_num_formulas > len(article["formulas"]):

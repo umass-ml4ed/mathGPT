@@ -69,6 +69,7 @@ def main():
     parser.add_argument("--min_gen_len", type=int, help="Minimum length for generated sequences")
     parser.add_argument("--eval_formulas", type=bool_type, help="For generative tasks, only treat the labels' formulas as targets")
     parser.add_argument("--eval_text", type=bool_type, help="For generative tasks, only treat the labels' text regions as targets")
+    parser.add_argument("--eval_final", type=bool_type, help="For problem solving tasks, only generate the final step of the solution")
     parser.add_argument("--baseline", type=bool_type, help="Use baseline GPT-2 model")
     parser.add_argument("--post_proc", type=bool_type, help="For baseline - if true, train on post-processed and decoded formulas, else train on original formulas")
     parser.add_argument("--joint", type=bool_type, help="When true, model type/token probability jointly, otherwise model token probability directly")
@@ -149,7 +150,7 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
     if args.train_downstream:
         train_downstream_task(args.name, args.checkpoint_name, args.pretrained_name, enum_value_to_member(args.train_downstream, DownstreamTask), arg_dict)
     if args.evaluate_downstream:
-        evaluate_downstream_task(args.name, enum_value_to_member(args.evaluate_downstream, DownstreamTask), arg_dict)
+        evaluate_downstream_task(args.name, enum_value_to_member(args.evaluate_downstream, DownstreamTask), False, arg_dict)
     if args.test_downstream:
         test_gen_task(args.name, enum_value_to_member(args.test_downstream, DownstreamTask), arg_dict)
     if args.evaluate_ted:

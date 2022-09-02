@@ -332,12 +332,12 @@ def train_downstream_task(model_name: str, checkpoint_name: Optional[str], pretr
     main_proc = not options.ddp or torch.cuda.current_device() == 0
     run = new_neptune_run() if main_proc else None
     train(model, model_name, train_loader, val_data, options, run, task, checkpoint=checkpoint)
-    results = evaluate_downstream_task(model_name, task, options.as_dict())
+    results = evaluate_downstream_task(model_name, task, True, options.as_dict())
     if run:
         run["results"] = results
         run.stop()
 
-def evaluate_downstream_task(model_name: str, task: DownstreamTask, eval_options: dict):
+def evaluate_downstream_task(model_name: str, task: DownstreamTask, overwrite_results: bool, eval_options: dict):
     model, _, options = load_model(model_name, eval_options.get("ddp", False), task)
     options.update(eval_options)
 
@@ -357,7 +357,7 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask, eval_options
     elif task in (DownstreamTask.GSM8K, DownstreamTask.MATH):
         test_samples, _ = problem_solving_data("test", task)
         test_data = ProblemSolvingDataset(test_samples, options)
-        _, results = evaluate_problem_solving_task(model_name, model, test_data, task, options)
+        _, results = evaluate_problem_solving_task(model_name, model, test_data, task, overwrite_results, options)
     else:
         raise Exception(f"Unsupported task {task}")
 

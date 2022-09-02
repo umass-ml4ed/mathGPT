@@ -90,6 +90,7 @@ class TrainOptions:
         self.min_gen_len: int = options.get("min_gen_len", 5)
         self.eval_formulas: bool = options.get("eval_formulas", False)
         self.eval_text: bool = options.get("eval_text", False)
+        self.eval_final: bool = options.get("eval_final", False)
         self.stride: Optional[int] = options.get("stride", None)
         self.ddp: bool = options.get("ddp", False)
         # Model/tree structure config

@@ -1,4 +1,4 @@
-from typing import List, Callable, Tuple, Optional
+from typing import List, Callable, Tuple, Optional, Dict
 import os
 import json
 from itertools import chain
@@ -17,7 +17,7 @@ from decode import decode_batch, get_tree, DecodeTreeNode
 from pre_process_utils import process_raw_text
 from math_tokenize import tokenize_formula
 from utils import TrainOptions
-from data_types import CollatedBatch, Article, OPT
+from data_types import CollatedBatch, Article
 from constants import PADDING_TOKEN_ID, DownstreamTask
 
 def calculate_ted(labels: List[DecodeTreeNode], preds: List[DecodeTreeNode]):
@@ -191,33 +191,75 @@ def get_problem_solving_final_answer(full_solution: str):
         processed_solution = full_solution.split("Final Answer:")[1]
     return processed_solution.strip().replace(" , ", "") # Remove commas from numbers and whitespace around answer
 
-def evaluate_problem_solving_task(model_name: str, model: MathGPTLM, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
+def evaluate_problem_solving_task(model_name: str, model: MathGPTLM, dataset: Dataset, task: DownstreamTask, overwrite_results: bool, options: TrainOptions):
     model.eval()
-    # Only process one sequence at a time since prompts may have different lengths
-    data_loader = get_data_loader(dataset, task, 1, False, False, options)
-    all_labels: List[str] = []
-    all_predictions: List[str] = []
-    with torch.no_grad():
-        for batch in tqdm(data_loader):
-            split_point = batch["prompt_lengths"][0]
-            gen_batch = generate(model, trim_batch(batch, 0, split_point), options)
-            label = trim_batch(batch, split_point, options.max_seq_len)
-            pred = trim_batch(gen_batch, split_point, options.max_seq_len)
-            all_labels.append(decode_batch(label)[0].replace("\n", " "))
-            all_predictions.append(decode_batch(pred)[0].replace("\n", " "))
+    postfix = "_final" if options.eval_final else ""
+    label_filename = f"labels_{model_name}{postfix}.txt"
+    pred_filename = f"preds_{model_name}{postfix}.txt"
 
-    label_filename = f"labels_{model_name}.txt"
-    pred_filename = f"preds_{model_name}.txt"
-    with open(label_filename, "w", encoding="utf-8") as label_file:
-        label_file.write("\n".join(all_labels))
-    with open(pred_filename, "w", encoding="utf-8") as pred_file:
-        pred_file.write("\n".join(all_predictions))
+    if overwrite_results or options.eval_final:
+        # Only process one sequence at a time since prompts may have different lengths
+        data_loader = get_data_loader(dataset, task, 1, False, False, options)
+        all_labels: List[str] = []
+        all_predictions: List[str] = []
+        with torch.no_grad():
+            for batch in tqdm(data_loader):
+                split_point = batch["prompt_lengths"][0]
+                gen_batch = generate(model, trim_batch(batch, 0, split_point), options)
+                label = trim_batch(batch, split_point, options.max_seq_len)
+                pred = trim_batch(gen_batch, split_point, options.max_seq_len)
+                label_str = decode_batch(label)[0].replace("\n", " ").strip()
+                pred_str = decode_batch(pred)[0].replace("\n", " ").strip()
+                if options.eval_final:
+                    pred_str = pred_str.split("[SEP] Final Answer:")[0].strip() or " "
+                all_labels.append(label_str)
+                all_predictions.append(pred_str)
 
-    accuracy = metrics.accuracy_score(
-        [get_problem_solving_final_answer(label) for label in all_labels],
-        [get_problem_solving_final_answer(pred) for pred in all_predictions]
-    )
-    return 0, f"Accuracy: {accuracy:.3f}"
+        with open(label_filename, "w", encoding="utf-8") as label_file:
+            label_file.write("\n".join(all_labels))
+        with open(pred_filename, "w", encoding="utf-8") as pred_file:
+            pred_file.write("\n".join(all_predictions))
+    else:
+        with open(label_filename, encoding="utf-8") as label_file:
+            all_labels = label_file.readlines()
+        with open(pred_filename, encoding="utf-8") as pred_file:
+            all_predictions = pred_file.readlines()
+
+    level_to_results: Dict[str, Dict[str, List]] = {}
+    for label, pred, sample in zip(all_labels, all_predictions, dataset):
+        cur_level = level_to_results.setdefault(sample.meta["level"], {"labels": [], "preds": []})
+        cur_level["labels"].append(label)
+        cur_level["preds"].append(pred)
+
+    if options.eval_final:
+        level_to_metrics = {
+            "Overall": compute_metrics(hypothesis=pred_filename, references=[label_filename], no_skipthoughts=True, no_glove=True)
+        }
+        for level, results in sorted(level_to_results.items()):
+            label_level_filename = f"labels_{model_name}_{level}.txt"
+            pred_level_filename = f"preds_{model_name}_{level}.txt"
+            with open(label_level_filename, "w", encoding="utf-8") as label_file:
+                label_file.write("\n".join(results["labels"]))
+            with open(pred_level_filename, "w", encoding="utf-8") as pred_file:
+                pred_file.write("\n".join(results["preds"]))
+            level_to_metrics[level] = compute_metrics(hypothesis=pred_level_filename, references=[label_level_filename], no_skipthoughts=True, no_glove=True)
+        results = "\n".join([
+            f"{level} - BLEU-4: {metrics['Bleu_4']:.3f}, ROUGE-L: {metrics['ROUGE_L']:.3f}, METEOR: {metrics['METEOR']:.3f}"
+            for level, metrics in sorted(level_to_metrics.items())
+        ])
+    else:
+        results = ", ".join([
+            f"{level}: " + "{:.3f}".format(metrics.accuracy_score(
+                [get_problem_solving_final_answer(label) for label in results["labels"]],
+                [get_problem_solving_final_answer(pred) for pred in results["preds"]]
+            ))
+            for level, results in sorted(level_to_results.items())
+        ]) + ", Overall: " "{:.3f}".format(metrics.accuracy_score(
+            [get_problem_solving_final_answer(label) for label in all_labels],
+            [get_problem_solving_final_answer(pred) for pred in all_predictions]
+        ))
+
+    return 0, results
 
 def evaluate_cls_task(model: MathGPTClassifier, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
     model.eval()

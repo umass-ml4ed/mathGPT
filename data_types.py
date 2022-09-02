@@ -32,15 +32,18 @@ class ProblemSolvingTaskSample(TypedDict):
     problem: Article
     steps: Article
     answer: Article
+    level: Optional[str]
 
 class SequenceMetaData(TypedDict):
     # For gen tasks
     prompt_length: Optional[int]
-    # For classify tasks
+    # For classification
     label: Optional[int]
     # For answer scoring
     problem_id: Optional[int]
     problem_log_id: Optional[int]
+    # For problem solving
+    level: Optional[str]
 
 class Sequence:
     def __init__(self, name: str):

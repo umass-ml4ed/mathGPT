@@ -7,7 +7,7 @@ import pandas
 
 from TangentCFT.TangentS.math_tan.math_document import MathDocument
 
-from pre_process_utils import process_article, process_raw_text, html_to_latex, wrap_formulas, remove_calculator_annotations, get_boxed_answer, all_latexml_errs, all_tangent_cft_errs
+from pre_process_utils import process_articles, process_raw_text, html_to_latex, wrap_formulas, remove_calculator_annotations, get_boxed_answer, all_latexml_errs, all_tangent_cft_errs
 from vocabulary import Vocabulary
 from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, ProblemSolvingTaskSample
 from constants import FORMULA_IDENTIFIER, DATA, WIKI_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, GSM8K_DATA, MATH_DATA
@@ -35,7 +35,7 @@ def process_wikipedia_data():
     max_articles = len(article_filenames)
     for article_filename in tqdm(article_filenames[:max_articles]):
         _, content = MathDocument.read_doc_file(article_filename)
-        article_data = process_article(content)
+        article_data = process_articles(content)[0]
         form_diff = article_data["text"].count(FORMULA_IDENTIFIER) - len(article_data["formulas"])
         if form_diff > 0:
             err_data["articles_missing_formulas"] += 1
@@ -362,6 +362,7 @@ def process_math_data():
         # Extract all questions/solutions from the split
         print("Split:", split)
         batch_text = []
+        levels = []
         for subdir in os.listdir(f"../MATH 2/{split}"):
             print(subdir)
             for problem_filename in tqdm(os.listdir(f"../MATH 2/{split}/{subdir}")):
@@ -370,18 +371,20 @@ def process_math_data():
                     batch_text.append(sample["problem"])
                     batch_text.append(sample["solution"])
                     batch_text.append(get_boxed_answer(sample["solution"]))
+                    levels.append(sample["level"])
 
         # Batch process LaTeXML/TangentCFT
         batch_size = 20
         samples: List[ProblemSolvingTaskSample] = []
         for batch_start_idx in tqdm(range(0, len(batch_text), batch_size * 3)):
             processed_text = process_raw_text(batch_text[batch_start_idx : batch_start_idx + batch_size * 3], err_data)
-            for sample_idx in range(0, len(processed_text), 3):
+            for sample_idx, level in zip(range(0, len(processed_text), 3), levels):
                 if None not in processed_text[sample_idx : sample_idx + 3]:
                     samples.append({
                         "problem": processed_text[sample_idx],
                         "steps": processed_text[sample_idx + 1],
                         "answer": processed_text[sample_idx + 2],
+                        "level": level
                     })
 
         with open(os.path.join(MATH_DATA, f"{split}.json"), "w", encoding="utf-8") as out_file:
