@@ -79,6 +79,20 @@ def tree_to_text(tree_node: DecodeTreeNode) -> str:
     if symbol == get_matrix_symbol("L") or symbol == "form-seq" or symbol == "and":
         return " , ".join(tree_to_text(child) for child in children)
 
+    # Handles most cases with "and", but commented out since added after training text models
+    # if symbol == "and":
+    #     fallback_text = " , ".join(tree_to_text(child) for child in children)
+    #     try:
+    #         assert len(children[0].children) == 2
+    #         result = tree_to_text(children[0].children[0])
+    #         for child in children:
+    #             assert len(child.children) == 2
+    #             child.children = child.children[1:]
+    #             result += tree_to_text(child)
+    #         return result
+    #     except AssertionError:
+    #         return fallback_text
+
     if symbol == get_matrix_symbol("D"):
         return " [ " + " , ".join(tree_to_text(child) for child in children) + " ] "
 

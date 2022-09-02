@@ -197,7 +197,7 @@ def evaluate_problem_solving_task(model_name: str, model: MathGPTLM, dataset: Da
     label_filename = f"labels_{model_name}{postfix}.txt"
     pred_filename = f"preds_{model_name}{postfix}.txt"
 
-    if overwrite_results or options.eval_final:
+    if overwrite_results or not os.path.exists(pred_filename):
         # Only process one sequence at a time since prompts may have different lengths
         data_loader = get_data_loader(dataset, task, 1, False, False, options)
         all_labels: List[str] = []

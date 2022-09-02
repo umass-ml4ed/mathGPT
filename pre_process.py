@@ -373,12 +373,20 @@ def process_math_data():
                     batch_text.append(get_boxed_answer(sample["solution"]))
                     levels.append(sample["level"])
 
+        # Just assign levels if missing
+        # with open(os.path.join(MATH_DATA, f"{split}_backup.json"), encoding="utf-8") as backup_file:
+        #     samples = json.load(backup_file)
+        #     for sample, level in zip(samples, levels):
+        #         sample["level"] = level
+        #     with open(os.path.join(MATH_DATA, f"{split}.json"), "w", encoding="utf-8") as out_file:
+        #         json.dump(samples, out_file, indent=2, ensure_ascii=False)
+
         # Batch process LaTeXML/TangentCFT
         batch_size = 20
         samples: List[ProblemSolvingTaskSample] = []
         for batch_start_idx in tqdm(range(0, len(batch_text), batch_size * 3)):
             processed_text = process_raw_text(batch_text[batch_start_idx : batch_start_idx + batch_size * 3], err_data)
-            for sample_idx, level in zip(range(0, len(processed_text), 3), levels):
+            for sample_idx, level in zip(range(0, len(processed_text), 3), levels[batch_start_idx // 3 : batch_start_idx // 3 + batch_size]):
                 if None not in processed_text[sample_idx : sample_idx + 3]:
                     samples.append({
                         "problem": processed_text[sample_idx],
