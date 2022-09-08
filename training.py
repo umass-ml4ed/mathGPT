@@ -3,6 +3,7 @@ import os
 import json
 from typing import Optional, List, Tuple, Union, Dict
 import random
+import pickle
 import torch
 from torch.utils.data import DataLoader
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -22,7 +23,7 @@ from generate import generate
 from decode import decode_batch
 from utils import TrainOptions, device, is_cls_task, new_neptune_run, load_pretrained
 from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample
-from constants import DownstreamTask, Checkpoint, DOWNSTREAM_TASK_TO_NUM_CLASSES, WIKI_DATA, OFEQ_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, GSM8K_DATA, MATH_DATA
+from constants import DownstreamTask, Checkpoint, DOWNSTREAM_TASK_TO_NUM_CLASSES, WIKI_DATA, OFEQ_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, GSM8K_DATA, MATH_DATA, MWP_DATA
 
 def get_article_names(options: TrainOptions):
     data_dir = options.data_dir or WIKI_DATA
@@ -69,11 +70,18 @@ def get_feedback_data():
     test_len = int(.1 * len(samples))
     return problems, samples[:train_len], samples[train_len : -test_len], samples[-test_len:]
 
-def problem_solving_data(split: str, task: DownstreamTask, ratio: float = 1):
+def get_problem_solving_data(split: str, task: DownstreamTask, ratio: float = 1):
     src_dir = GSM8K_DATA if task == DownstreamTask.GSM8K else MATH_DATA
     with open(os.path.join(src_dir, f"{split}.json"), encoding="utf-8") as data_file:
         data: List[ProblemSolvingTaskSample] = json.load(data_file)
         return data[:int(len(data) * ratio)], data[int(len(data) * ratio):]
+
+def get_mwp_data():
+    with open(MWP_DATA, encoding="utf-8") as data_file:
+        samples: List[GenTaskSample] = json.load(data_file)
+    train_len = int(.9 * len(samples))
+    test_len = int(.05 * len(samples))
+    return samples[:train_len], samples[train_len : -test_len], samples[-test_len:]
 
 def load_options(model_name: str):
     with open(f"{model_name}.json", encoding="utf-8") as config_file:
@@ -310,8 +318,8 @@ def train_downstream_task(model_name: str, checkpoint_name: Optional[str], pretr
 
     # Load and process data
     if task == DownstreamTask.HEADLINES:
-        train_data = GenTaskDataset(get_headline_data("train", options), options)
-        val_data = GenTaskDataset(get_headline_data("val", options), options)
+        train_data = GenTaskDataset(get_headline_data("train", options), task, options)
+        val_data = GenTaskDataset(get_headline_data("val", options), task, options)
     elif task == DownstreamTask.ANSWER_SCORING:
         problems, train_samples, val_samples, _ = get_answer_scoring_data()
         train_data = AnswerScoringDataset(train_samples, problems, options)
@@ -321,9 +329,13 @@ def train_downstream_task(model_name: str, checkpoint_name: Optional[str], pretr
         train_data = FeedbackDataset(train_samples, problems, options)
         val_data = FeedbackDataset(val_samples, problems, options)
     elif task in (DownstreamTask.GSM8K, DownstreamTask.MATH):
-        train_samples, val_samples = problem_solving_data("train", task, .85)
+        train_samples, val_samples = get_problem_solving_data("train", task, .85)
         train_data = ProblemSolvingDataset(train_samples, options)
         val_data = ProblemSolvingDataset(val_samples, options)
+    elif task == DownstreamTask.MWP:
+        train_samples, val_samples, _ = get_mwp_data()
+        train_data = GenTaskDataset(train_samples, task, options)
+        val_data = GenTaskDataset(val_samples, task, options)
     else:
         raise Exception(f"Unsupported task {task}")
     train_loader = get_data_loader(train_data, task, options.batch_size, True, True, options)
@@ -343,7 +355,7 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask, overwrite_re
 
     if task == DownstreamTask.HEADLINES:
         headlines = get_headline_data("test", options)
-        test_data = GenTaskDataset(headlines, options)
+        test_data = GenTaskDataset(headlines, task, options)
         _, results = evaluate_gen_task(model_name, model, test_data, task, options)
     elif task == DownstreamTask.ANSWER_SCORING:
         problems, train_samples, _, test_samples = get_answer_scoring_data()
@@ -355,9 +367,13 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask, overwrite_re
         test_data = FeedbackDataset(test_samples, problems, options)
         _, results = evaluate_gen_task(model_name, model, test_data, task, options)
     elif task in (DownstreamTask.GSM8K, DownstreamTask.MATH):
-        test_samples, _ = problem_solving_data("test", task)
+        test_samples, _ = get_problem_solving_data("test", task)
         test_data = ProblemSolvingDataset(test_samples, options)
         _, results = evaluate_problem_solving_task(model_name, model, test_data, task, overwrite_results, options)
+    elif task == DownstreamTask.MWP:
+        _, _, test_samples = get_mwp_data()
+        test_data = GenTaskDataset(test_samples, task, options)
+        _, results = evaluate_gen_task(model_name, model, test_data, task, options)
     else:
         raise Exception(f"Unsupported task {task}")
 
@@ -372,13 +388,16 @@ def test_gen_task(model_name: str, task: DownstreamTask, test_options: dict):
 
     if task == DownstreamTask.HEADLINES:
         samples = get_headline_data("test", options)
-        dataset = GenTaskDataset(samples[start_idx : start_idx + samples_to_try], options)
+        dataset = GenTaskDataset(samples[start_idx : start_idx + samples_to_try], task, options)
     elif task == DownstreamTask.FEEDBACK:
          problems, _, _, samples = get_feedback_data()
          dataset = FeedbackDataset(samples[start_idx : start_idx + samples_to_try], problems, options)
     elif task in (DownstreamTask.GSM8K, DownstreamTask.MATH):
-        samples, _ = problem_solving_data("test", task)
+        samples, _ = get_problem_solving_data("test", task)
         dataset = ProblemSolvingDataset(samples[start_idx : start_idx + samples_to_try], options)
+    elif task == DownstreamTask.MWP:
+        _, _, samples = get_mwp_data()
+        dataset = GenTaskDataset(samples[start_idx : start_idx + samples_to_try], task, options)
     else:
         raise Exception(f"Unsupported task {task}")
     data_loader = get_data_loader(dataset, task, 1, False, False, options)

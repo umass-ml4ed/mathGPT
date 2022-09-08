@@ -197,7 +197,7 @@ def process_raw_text(src_text_batch: List[str], err_data: dict) -> List[Optional
         processed_text += searchable_text or " "
         if batch_idx != len(src_text_batch) - 1:
             processed_text += f"\n\n{SAMPLE_SEPARATOR}\n\n"
-    re.sub(r"([^\\]?)%", r"\g<1>\\%", processed_text) # Escape % if not already escaped
+    processed_text = re.sub(r"([^\\]?)%", r"\g<1>\\%", processed_text) # Escape % if not already escaped
 
     # Convert LaTeX source with LaTeXML
     temp_filename = "temp.tex"

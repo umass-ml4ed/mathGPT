@@ -1,3 +1,4 @@
+import pickle
 from typing import Dict, Optional, List, Tuple, Set
 import os
 import re
@@ -10,7 +11,7 @@ from TangentCFT.TangentS.math_tan.math_document import MathDocument
 from pre_process_utils import process_articles, process_raw_text, html_to_latex, wrap_formulas, remove_calculator_annotations, get_boxed_answer, all_latexml_errs, all_tangent_cft_errs
 from vocabulary import Vocabulary
 from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, ProblemSolvingTaskSample
-from constants import FORMULA_IDENTIFIER, DATA, WIKI_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, GSM8K_DATA, MATH_DATA
+from constants import FORMULA_IDENTIFIER, DATA, WIKI_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, GSM8K_DATA, MATH_DATA, MWP_DATA
 
 def process_wikipedia_data():
     """
@@ -400,6 +401,39 @@ def process_math_data():
 
     # Dump errors
     with open("math_errs.json", "w", encoding="utf-8") as err_file:
+        json.dump({
+            **err_data,
+            "all_latexml_errs": all_latexml_errs,
+            "all_tangent_cft_errs": all_tangent_cft_errs,
+        }, err_file, indent=2, ensure_ascii=False)
+
+def process_mwp_data():
+    """
+    Process all data in the Math23K dataset
+    """
+    # Get text and equations from samples
+    batch_text = []
+    with open("../math23k_translated.pkl", "rb") as src_file:
+        for sample in tqdm(pickle.load(src_file)):
+            batch_text.append(wrap_formulas(html_to_latex(sample["text_en"])))
+            batch_text.append(wrap_formulas(html_to_latex(sample["equation"])))
+
+    # Batch process LaTeXML/TangentCFT
+    batch_size = 100
+    samples: List[GenTaskSample] = []
+    err_data = {}
+    for batch_start_idx in tqdm(range(0, len(batch_text), batch_size * 2)):
+        processed_text = process_raw_text(batch_text[batch_start_idx : batch_start_idx + batch_size * 2], err_data)
+        for sample_idx in range(0, len(processed_text), 2):
+            samples.append({
+                "prompt": processed_text[sample_idx],
+                "label": processed_text[sample_idx + 1],
+            })
+    with open(MWP_DATA, "w", encoding="utf-8") as out_file:
+        json.dump(samples, out_file, indent=2, ensure_ascii=False)
+
+    # Dump errors
+    with open("mwp_errs.json", "w", encoding="utf-8") as err_file:
         json.dump({
             **err_data,
             "all_latexml_errs": all_latexml_errs,

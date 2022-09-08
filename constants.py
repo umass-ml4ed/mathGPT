@@ -60,12 +60,17 @@ class Checkpoint(TypedDict):
     rng_state: torch.Tensor
     epoch: int
 
+class PretrainDataset(Enum):
+    WIKI = "wiki"
+    KHAN = "khan"
+
 class DownstreamTask(Enum):
     HEADLINES = "headlines"
     ANSWER_SCORING = "answer_scoring"
     FEEDBACK = "feedback"
     GSM8K = "gsm8k"
     MATH = "math"
+    MWP = "mwp"
 
 DOWNSTREAM_TASK_TO_NUM_CLASSES = {
     DownstreamTask.ANSWER_SCORING: 5,
@@ -110,3 +115,4 @@ FEEDBACK_PROBLEMS = "data/feedback/problems.json"
 FEEDBACK_SAMPLES = "data/feedback/samples.json"
 GSM8K_DATA = "data/GSM8K"
 MATH_DATA = "data/MATH"
+MWP_DATA = "data/mwp/samples.json"

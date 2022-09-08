@@ -2,14 +2,14 @@ import argparse
 import torch
 import torch.multiprocessing as mp
 
-from pre_process import process_wikipedia_data, process_probes, process_mathsum_data, process_answer_scoring_data, process_feedback_data, process_gsm8k_data, process_math_data
-from analyze_data import analyze_wiki, analyze_mathsum, analyze_answer_scoring, analyze_feedback, analyze_vocab, analyze_gsm8k, analyze_math
+from pre_process import process_wikipedia_data, process_probes, process_mathsum_data, process_answer_scoring_data, process_feedback_data, process_gsm8k_data, process_math_data, process_mwp_data
+from analyze_data import analyze_wiki, analyze_mathsum, analyze_answer_scoring, analyze_feedback, analyze_vocab, analyze_gsm8k, analyze_math, analyze_mwp
 from analyze_model import visualize_attention
 from training import pretrain, evaluate_pretrained_lm, test_lm, train_downstream_task, evaluate_downstream_task, test_gen_task
 from evaluate import evaluate_ted
 from utils import initialize_seeds, device, enum_choices, enum_value_to_member, setup_proc_group, cleanup_proc_group
 from vocabulary import Vocabulary
-from constants import DownstreamTask, TPE, Gen
+from constants import PretrainDataset, DownstreamTask, TPE, Gen
 
 def bool_type(arg):
     return False if arg == "0" else True
@@ -33,6 +33,7 @@ def main():
     parser.add_argument("--preprocess_feedback", action="store_true", help="Process feedback dataset")
     parser.add_argument("--preprocess_gsm8k", action="store_true", help="Process GSM8K dataset")
     parser.add_argument("--preprocess_math", action="store_true", help="Process MATH dataset")
+    parser.add_argument("--preprocess_mwp", action="store_true", help="Process Math23K dataset")
     parser.add_argument("--process_probes", action="store_true", help="Process LM probes and save to JSON files")
     parser.add_argument("--analyze_wiki", action="store_true", help="Produce stats on pre-processed Wikipedia dataset")
     parser.add_argument("--analyze_mathsum", action="store_true", help="Produce stats on pre-processed MathSum dataset")
@@ -40,6 +41,7 @@ def main():
     parser.add_argument("--analyze_feedback", action="store_true", help="Produce stats on pre-processed feedback dataset")
     parser.add_argument("--analyze_gsm8k", action="store_true", help="Produce stats on pre-processed GSM8K dataset")
     parser.add_argument("--analyze_math", action="store_true", help="Produce stats on pre-processed MATH dataset")
+    parser.add_argument("--analyze_mwp", action="store_true", help="Produce stats on pre-processed Math23K dataset")
     parser.add_argument("--analyze_vocab", action="store_true", help="Produce stats on the math vocab")
     parser.add_argument("--visualize_attention", help="Visualize model's attention weights", choices=["probes"] + enum_choices(DownstreamTask))
     parser.add_argument("--pretrain", action="store_true", help="Pre-train LM")
@@ -53,10 +55,12 @@ def main():
     parser.add_argument("--name", help="Name of current model/experiment, used for saving/loading model and config")
     parser.add_argument("--checkpoint_name", help="Name of model to resume training for")
     parser.add_argument("--pretrained_name", help="Name of pre-trained LM for initializing downstream model parameters")
+    parser.add_argument("--dataset", help="Dataset to pre-train on", choices=enum_choices(PretrainDataset))
     parser.add_argument("--data_dir", help="Override default data directory for pre-training")
     parser.add_argument("--vocab_file", help="Override default vocab file")
     parser.add_argument("--split", type=float, help="Portion of data to use in train set during pre-training")
     parser.add_argument("--lr", type=float, help="Learning rate")
+    parser.add_argument("--weight_decay", type=float, help="Weight decay")
     parser.add_argument("--epochs", type=int, help="Maximum number of training epochs")
     parser.add_argument("--batch_size", type=int, help="Maximum number of sequences per batch")
     parser.add_argument("--grad_accum_batches", type=int, help="Number of batches to accumulate gradients for")
@@ -123,6 +127,8 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
         process_gsm8k_data()
     if args.preprocess_math:
         process_math_data()
+    if args.preprocess_mwp:
+        process_mwp_data()
     if args.process_probes:
         process_probes()
     if args.analyze_wiki:
@@ -137,6 +143,8 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
         analyze_gsm8k()
     if args.analyze_math:
         analyze_math()
+    if args.analyze_mwp:
+        analyze_mwp()
     if args.analyze_vocab:
         analyze_vocab()
     if args.visualize_attention:

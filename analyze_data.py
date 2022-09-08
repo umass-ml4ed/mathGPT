@@ -248,6 +248,10 @@ def analyze_math():
     # TODO
     pass
 
+def analyze_mwp():
+    # TODO
+    pass
+
 def analyze_vocab():
     print("Number of GPT tokens in each vocab symbol...")
     text_tokenizer: GPT2TokenizerFast = GPT2TokenizerFast.from_pretrained("gpt2")

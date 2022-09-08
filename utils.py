@@ -8,7 +8,7 @@ import torch.distributed as dist
 # import neptune.new as neptune
 from transformers import GPT2TokenizerFast
 
-from constants import DownstreamTask, TPE, Gen, DOWNSTREAM_TASK_TO_NUM_CLASSES
+from constants import PretrainDataset, DownstreamTask, TPE, Gen, DOWNSTREAM_TASK_TO_NUM_CLASSES
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -74,14 +74,15 @@ def load_pretrained(model: torch.nn.Module, pretrained_state_dict: Dict[str, tor
 class TrainOptions:
     def __init__(self, options: dict):
         # Training/testing params
+        self.dataset: str = options.get("dataset", PretrainDataset.WIKI.value)
         self.data_dir: Optional[str] = options.get("data_dir", None)
         self.split: float = options.get("split", 0.95)
         self.lr: float = options.get("lr", 1e-5)
         self.weight_decay: float = options.get("weight_decay", 1e-2)
         self.epochs: int = options.get("epochs", 20)
         self.patience: Optional[int] = options.get("patience", None)
-        self.batch_size: int = options.get("batch_size", 64)
-        self.grad_accum_batches: int = options.get("grad_accum_batches", 1)
+        self.batch_size: int = options.get("batch_size", 4)
+        self.grad_accum_batches: int = options.get("grad_accum_batches", 4)
         self.max_seq_len: int = options.get("max_seq_len", 1024)
         self.amp: bool = options.get("amp", True)
         self.gen: str = options.get("gen", Gen.BEAM.value)

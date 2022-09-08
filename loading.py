@@ -162,7 +162,7 @@ class PreTrainDatasetPreloaded(Dataset):
         print("Missing", self.num_missing_formulas, "formulas")
 
 class GenTaskDataset(Dataset):
-    def __init__(self, samples: List[GenTaskSample], options: TrainOptions):
+    def __init__(self, samples: List[GenTaskSample], task: DownstreamTask, options: TrainOptions):
         super().__init__()
         min_label_len = 2**31
         for sample in tqdm(samples):
@@ -170,7 +170,7 @@ class GenTaskDataset(Dataset):
             prompt_text = "Question: " + sample["prompt"]["text"]
             prompt_sequence, cur_missing_formulas = tokenize_sequence("", prompt_text, sample["prompt"]["formulas"], options)
             self.num_missing_formulas += cur_missing_formulas
-            intermediate_text = SEP_TOKEN + " Summary: "
+            intermediate_text = SEP_TOKEN + (" Equation: " if task == DownstreamTask.MWP else " Summary: ")
             intermediate_sequence, _ = tokenize_sequence("", intermediate_text, {}, options)
             label_text = sample["label"]["text"] + EOS_TOKEN
             label_sequence, cur_missing_formulas = tokenize_sequence("", label_text, sample["label"]["formulas"], options)

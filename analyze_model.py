@@ -64,7 +64,7 @@ def visualize_attention(model_name: str, task_str: str, options_dict: dict):
     if task == None:
         dataset = PreTrainDatasetPreloaded(get_probes()[data_idx : data_idx + 1], options, options.max_seq_len)
     elif task == DownstreamTask.HEADLINES:
-        dataset = GenTaskDataset(get_headline_data("val", options)[data_idx : data_idx + 1], options)
+        dataset = GenTaskDataset(get_headline_data("val", options)[data_idx : data_idx + 1], task, options)
     data_loader = get_data_loader(dataset, task, 1, False, False, options)
     with torch.no_grad():
         batch = next(iter(data_loader))
