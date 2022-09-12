@@ -85,7 +85,7 @@ def evaluate_lm(model: MathGPTLM, dataset: Dataset, options: TrainOptions):
 
     perplexity = np.exp(np.sum(nlls) / total_sequence_length)
     # TODO: see why loss is different here vs. evaluate_lm_accuracy
-    return total_loss / num_batches, f"Perplexity: {perplexity:.3f}"
+    return total_loss / num_batches, [perplexity], "Perplexity: {:.3f}"
 
 def process_model_output(model: MathGPTBase, dataset: Dataset, task: Optional[DownstreamTask], options: TrainOptions,
                          output_accumulator: Callable[[Tuple, CollatedBatch], None]):
@@ -139,7 +139,7 @@ def evaluate_lm_accuracy(model: MathGPTLM, dataset: Dataset, task: Optional[Down
     match = all_preds_np == all_labels_np
     match = match[:, 0] & match[:, 1]
     accuracy = sum(match) / len(match)
-    return loss, f"Accuracy: {accuracy:.3f}"
+    return loss, [accuracy], "Accuracy: {:.3f}"
 
 def evaluate_gen_task(model_name: str, model: MathGPTLM, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
     model.eval()
@@ -180,10 +180,12 @@ def evaluate_gen_task(model_name: str, model: MathGPTLM, dataset: Dataset, task:
     with open(label_filename, "w", encoding="utf-8") as label_file:
         label_file.write("\n".join(all_labels))
     metrics = compute_metrics(hypothesis=pred_filename, references=[label_filename], no_skipthoughts=True, no_glove=True)
-    avg_ted = calculate_ted(all_label_trees, all_pred_trees) if compute_ted else None
-    return 0, f"Exact Match Accuracy: {accuracy:.3f}, BLEU-4: {metrics['Bleu_4']:.3f}, " +\
-               f"ROUGE-L: {metrics['ROUGE_L']:.3f}, METEOR: {metrics['METEOR']:.3f}" +\
-               (f", TED: {avg_ted:.3f}" if compute_ted else "")
+    results = [accuracy, metrics['Bleu_4'], metrics['ROUGE_L'], metrics['METEOR']]
+    template = "Exact Match Accuracy: {:.3f}, BLEU-4: {:.3f}, ROUGE-L: {:.3f}, METEOR: {:.3f}"
+    if compute_ted:
+        results.append(calculate_ted(all_label_trees, all_pred_trees))
+        template += ", TED: {:.3f}"
+    return 0, results, template
 
 def get_problem_solving_final_answer(full_solution: str):
     processed_solution = ""
@@ -225,41 +227,39 @@ def evaluate_problem_solving_task(model_name: str, model: MathGPTLM, dataset: Da
         with open(pred_filename, encoding="utf-8") as pred_file:
             all_predictions = pred_file.readlines()
 
+    # Group labels/preds by difficulty level
     level_to_results: Dict[str, Dict[str, List]] = {}
     for label, pred, sample in zip(all_labels, all_predictions, dataset):
         cur_level = level_to_results.setdefault(sample.meta["level"], {"labels": [], "preds": []})
         cur_level["labels"].append(label)
         cur_level["preds"].append(pred)
+    level_to_results["Overall"] = {"labels": all_labels, "preds": all_predictions}
 
     if options.eval_final:
-        level_to_metrics = {
-            "Overall": compute_metrics(hypothesis=pred_filename, references=[label_filename], no_skipthoughts=True, no_glove=True)
-        }
-        for level, results in sorted(level_to_results.items()):
+        level_to_metrics = {}
+        for level, res in sorted(level_to_results.items()):
             label_level_filename = f"labels_{model_name}_{level}.txt"
             pred_level_filename = f"preds_{model_name}_{level}.txt"
             with open(label_level_filename, "w", encoding="utf-8") as label_file:
-                label_file.write("\n".join(results["labels"]))
+                label_file.write("\n".join(res["labels"]))
             with open(pred_level_filename, "w", encoding="utf-8") as pred_file:
-                pred_file.write("\n".join(results["preds"]))
+                pred_file.write("\n".join(res["preds"]))
             level_to_metrics[level] = compute_metrics(hypothesis=pred_level_filename, references=[label_level_filename], no_skipthoughts=True, no_glove=True)
-        results = "\n".join([
-            f"{level} - BLEU-4: {metrics['Bleu_4']:.3f}, ROUGE-L: {metrics['ROUGE_L']:.3f}, METEOR: {metrics['METEOR']:.3f}"
-            for level, metrics in sorted(level_to_metrics.items())
+        template = "\n".join([
+            level + " - BLEU-4: {:.3f}, ROUGE-L: {:.3f}, METEOR: {:.3f}" for level in sorted(level_to_metrics.keys())
         ])
+        results = [mets[stat] for _, mets in sorted(level_to_metrics.items()) for stat in ["Bleu_4", "ROUGE_L", "METEOR"]]
     else:
-        results = ", ".join([
-            f"{level}: " + "{:.3f}".format(metrics.accuracy_score(
-                [get_problem_solving_final_answer(label) for label in results["labels"]],
-                [get_problem_solving_final_answer(pred) for pred in results["preds"]]
-            ))
-            for level, results in sorted(level_to_results.items())
-        ]) + ", Overall: " "{:.3f}".format(metrics.accuracy_score(
-            [get_problem_solving_final_answer(label) for label in all_labels],
-            [get_problem_solving_final_answer(pred) for pred in all_predictions]
-        ))
+        template = ", ".join([level + ": {:.3f}" for level in sorted(level_to_results.keys())])
+        results = [
+            metrics.accuracy_score(
+                [get_problem_solving_final_answer(label) for label in res["labels"]],
+                [get_problem_solving_final_answer(pred) for pred in res["preds"]]
+            )
+            for _, res in sorted(level_to_results.items())
+        ]
 
-    return 0, results
+    return 0, results, template
 
 def evaluate_cls_task(model: MathGPTClassifier, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
     model.eval()
@@ -292,10 +292,9 @@ def evaluate_cls_task(model: MathGPTClassifier, dataset: Dataset, task: Downstre
     accuracy = metrics.accuracy_score(all_labels_np, all_preds_np)
     kappa = metrics.cohen_kappa_score(all_labels_np, all_preds_np, labels=possible_labels)
     _, _, f1, _ = metrics.precision_recall_fscore_support(all_labels_np, all_preds_np)
-    return loss, f"Accuracy: {accuracy:.3f}, AUC: {auc:.3f}, Kappa: {kappa:.3f}, RMSE: {rmse:.3f}, F1: {f1.mean():.3f}"
+    return loss, [accuracy, auc, kappa, rmse, f1.mean()], "Accuracy: {:.3f}, AUC: {:.3f}, Kappa: {:.3f}, RMSE: {:.3f}, F1: {:.3f}"
 
 def evaluate_ted(model_name: str, options_dict: dict):
-    batch_size = 40
     options = TrainOptions(options_dict)
 
     # Load saved labels and predictions
@@ -309,24 +308,19 @@ def evaluate_ted(model_name: str, options_dict: dict):
             preds = ["<m> " + pred.strip() + ("" if pred.strip().endswith("</m>") else " </m>") for pred in pred_file]
 
         # Convert sample strings to OPTs via pre-processing pipeline
+        batch_size = 40
         err_data = {}
-        failed_conversions = []
         processed_labels: List[Article] = []
         processed_preds: List[Article] = []
-        for pred_idx, pred in tqdm(enumerate(preds), total=len(preds)):
-            try:
-                processed_preds.append(process_raw_text([pred], err_data)[0])
-            except Exception as exc:
-                print(exc)
-                failed_conversions.append(pred_idx)
         for batch_start_idx in tqdm(list(range(0, len(labels), batch_size))):
             processed_labels += process_raw_text(labels[batch_start_idx : batch_start_idx + batch_size], err_data)
+        for batch_start_idx in tqdm(list(range(0, len(preds), batch_size))):
+            processed_preds += process_raw_text(preds[batch_start_idx : batch_start_idx + batch_size], err_data)
         print(err_data)
         with open(json_filename, "w", encoding="utf-8") as json_file:
             json.dump({
                 "labels": processed_labels,
                 "preds": processed_preds,
-                "failed": failed_conversions,
             }, json_file, indent=2, ensure_ascii=False)
 
     # Read file even if immediately written for key string type consistency
@@ -334,13 +328,16 @@ def evaluate_ted(model_name: str, options_dict: dict):
         results = json.load(json_file)
         processed_labels = results["labels"]
         processed_preds = results["preds"]
-        failed_conversions = results["failed"]
 
     # Perform post-processing via tokenizer, and then convert back to OPTs and calculate TED
     label_trees: List[DecodeTreeNode] = []
     pred_trees: List[DecodeTreeNode] = []
+    failed_conversions = []
     missing_formula = []
     for sample_idx, (label, pred) in enumerate(zip(processed_labels, processed_preds)):
+        if pred is None:
+            failed_conversions.append(sample_idx)
+            continue
         if not label["formulas"] or not pred["formulas"]:
             missing_formula.append(sample_idx)
             continue

@@ -5,7 +5,7 @@ import torch.multiprocessing as mp
 from pre_process import process_wikipedia_data, process_probes, process_mathsum_data, process_answer_scoring_data, process_feedback_data, process_gsm8k_data, process_math_data, process_mwp_data
 from analyze_data import analyze_wiki, analyze_mathsum, analyze_answer_scoring, analyze_feedback, analyze_vocab, analyze_gsm8k, analyze_math, analyze_mwp
 from analyze_model import visualize_attention
-from training import pretrain, evaluate_pretrained_lm, test_lm, train_downstream_task, evaluate_downstream_task, test_gen_task
+from training import pretrain, evaluate_pretrained_lm, test_lm, train_downstream_task, evaluate_downstream_task, test_gen_task, cross_validate_downstream_task
 from evaluate import evaluate_ted
 from utils import initialize_seeds, device, enum_choices, enum_value_to_member, setup_proc_group, cleanup_proc_group
 from vocabulary import Vocabulary
@@ -50,6 +50,7 @@ def main():
     parser.add_argument("--train_downstream", help="Train downstream task model", choices=enum_choices(DownstreamTask))
     parser.add_argument("--evaluate_downstream", help="Evaluate downstream task model performance on test set", choices=enum_choices(DownstreamTask))
     parser.add_argument("--test_downstream", help="See downstream model output on test samples", choices=enum_choices(DownstreamTask))
+    parser.add_argument("--crossval", help="Run cross-validation on downstream task", choices=enum_choices(DownstreamTask))
     parser.add_argument("--evaluate_ted", action="store_true", help="Evaluate TED metric on pred and label files from formula-only generative task")
     # Config
     parser.add_argument("--name", help="Name of current model/experiment, used for saving/loading model and config")
@@ -161,6 +162,8 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
         evaluate_downstream_task(args.name, enum_value_to_member(args.evaluate_downstream, DownstreamTask), False, arg_dict)
     if args.test_downstream:
         test_gen_task(args.name, enum_value_to_member(args.test_downstream, DownstreamTask), arg_dict)
+    if args.crossval:
+        cross_validate_downstream_task(args.name, args.pretrained_name, enum_value_to_member(args.crossval, DownstreamTask), arg_dict)
     if args.evaluate_ted:
         evaluate_ted(args.name, arg_dict)
 

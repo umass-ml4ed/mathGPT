@@ -129,8 +129,8 @@ def process_answer_scoring_data():
     """
     Process all data in the answer scoring dataset
     """
-    df = pandas.read_csv("../qc_full_meta_clean.csv", encoding="utf-8")
-    # df = pandas.read_csv("../qc_clean.csv", encoding="utf-8")
+    # df = pandas.read_csv("../qc_full_meta_clean.csv", encoding="utf-8")
+    df = pandas.read_csv("../qc_clean.csv", encoding="utf-8")
     # df = pandas.read_csv("../before_rasch.csv", encoding="utf-8")
 
     # Do some initial analysis on the dataset
