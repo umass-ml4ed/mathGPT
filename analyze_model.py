@@ -3,8 +3,8 @@ import math
 import torch
 import numpy as np
 
-from training import load_model, get_headline_data, get_probes
-from loading import PreTrainDatasetPreloaded, GenTaskDataset, get_data_loader
+from training import load_model
+from loading import PreTrainDatasetPreloaded, GenTaskDataset, get_data_loader, get_headline_data, get_probes
 from vocabulary import Vocabulary, MATH_TYPES
 from model_baseline import GPTLMBaseline
 from utils import text_tokenizer, enum_value_to_member, TrainOptions

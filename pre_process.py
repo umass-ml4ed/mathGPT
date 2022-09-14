@@ -276,6 +276,7 @@ def process_feedback_data():
                 continue
             unprocessed_samples.append({
                 "problem_id": row["problem_id"],
+                "problem_code": row["problem_code"],
                 "answer": wrap_formulas(html_to_latex(raw_answer)),
                 "feedback": wrap_formulas(html_to_latex(raw_feedback)),
             })
@@ -300,6 +301,7 @@ def process_feedback_data():
         for sample, answer, feedback in zip(batch, processed_answers, processed_feedback):
             samples.append({
                 "problem_id": str(sample["problem_id"]),
+                "problem_code": str(sample["problem_code"]),
                 "answer": answer,
                 "feedback": feedback,
             })

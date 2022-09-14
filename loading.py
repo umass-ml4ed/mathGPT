@@ -1,16 +1,109 @@
+from typing import List, Optional, Dict, Tuple
 import json
-from typing import List, Optional, Dict
 import random
+import os
 from tqdm import tqdm
 import torch
 from torch.utils.data import Dataset as TorchDataset, DataLoader, BatchSampler, distributed
 import numpy as np
+from sklearn.model_selection import StratifiedKFold, KFold
 
 from math_tokenize import tokenize_formula, EMPTY_POS_VECTOR, get_empty_pos_encoding, encode_pos
 from decode import decode_formula
 from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, ProblemSolvingTaskSample, Formula, Sequence, CollatedBatch
-from constants import TokenType, DownstreamTask, TPE, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, FORMULA_IDENTIFIER, START_FORM_TEXT_TOKS, END_FORM_TEXT_TOK
+from constants import (
+    TokenType, DownstreamTask, TPE, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, FORMULA_IDENTIFIER, START_FORM_TEXT_TOKS, END_FORM_TEXT_TOK,
+    WIKI_DATA, OFEQ_DATA, AS_ANSWERS, AS_PROBLEMS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, GSM8K_DATA, MATH_DATA, MWP_DATA
+)
 from utils import device, is_cls_task, text_tokenizer, TrainOptions
+
+def get_article_names(options: TrainOptions):
+    data_dir = options.data_dir or WIKI_DATA
+    return [os.path.join(data_dir, article_filename) for article_filename in os.listdir(data_dir)]
+
+def get_probes() -> List[Article]:
+    with open("data/probes.json", encoding="utf-8") as probes_file:
+        return json.load(probes_file)
+
+def get_headline_data(split: str, options: TrainOptions) -> List[GenTaskSample]:
+    # Load pre-processed dataset when using the MathGPT model, or using the post_proc option for the baseline model
+    pre_processed = not options.baseline or options.post_proc
+    if pre_processed:
+        with open(os.path.join(OFEQ_DATA, f"{split}.json"), encoding="utf-8") as headlines_file:
+            data = json.load(headlines_file)
+    else:
+        with open(f"../MathSum/OFEQ-10k/post.{split}", encoding="utf-8") as post_file:
+            with open(f"../MathSum/OFEQ-10k/title.{split}", encoding="utf-8") as title_file:
+                data = [
+                    {"prompt": {"text": post, "formulas": {}}, "label": {"text": title, "formulas": {}}}
+                    for post, title in zip(post_file, title_file)
+                ]
+    # random.Random(221).shuffle(data)
+    return data
+
+def get_answer_scoring_data(fold: int = 0) -> Tuple[Dict[str, Article], List[AnswerScoringSample], List[AnswerScoringSample], List[AnswerScoringSample]]:
+    with open(AS_PROBLEMS, encoding="utf-8") as problem_file:
+        problems: Dict[str, Article] = json.load(problem_file)
+    with open(AS_ANSWERS, encoding="utf-8") as answer_file:
+        answers: List[AnswerScoringSample] = json.load(answer_file)
+    random.Random(221).shuffle(answers)
+    # Stratify on problem id so that samples in the training set can be used during test time for meta learning
+    answers_np = np.array(answers)
+    stratify_labels = np.array([answer["problem_id"] for answer in answers])
+    skf = StratifiedKFold(n_splits=5, shuffle=False)
+    train_data_idx, test_data_idx = next(split for idx, split in enumerate(skf.split(answers_np, stratify_labels)) if idx == fold)
+    train_len = int(.9 * len(train_data_idx))
+    return (
+        problems,
+        answers_np[train_data_idx][:train_len],
+        answers_np[train_data_idx][train_len:],
+        answers_np[test_data_idx]
+    )
+
+def get_feedback_data(fold: int = 0):
+    with open(FEEDBACK_PROBLEMS, encoding="utf-8") as problem_file:
+        problems: Dict[str, Article] = json.load(problem_file)
+    with open(FEEDBACK_SAMPLES, encoding="utf-8") as sample_file:
+        samples: List[FeedbackTaskSample] = json.load(sample_file)
+    random.Random(221).shuffle(samples)
+    # Ensure that no problem appears across train/val/test sets - group answers by problem code before splitting and then expand after splitting
+    code_to_samples: Dict[str, List[FeedbackTaskSample]] = {}
+    for sample in samples:
+        code_to_samples.setdefault(sample["problem_code"], []).append(sample)
+    all_codes = list(code_to_samples.keys())
+    samples_np = np.array(list(code_to_samples.values()), dtype=object)
+    kf = KFold(n_splits=5, shuffle=False)
+    train_data_idx, test_data_idx = next(split for idx, split in enumerate(kf.split(all_codes)) if idx == fold)
+    train_len = int(.9 * len(train_data_idx))
+    def expand(sample_groups: List[List[FeedbackTaskSample]]):
+        return [sample for samples in sample_groups for sample in samples]
+    return (
+        problems,
+        expand(samples_np[train_data_idx][:train_len]),
+        expand(samples_np[train_data_idx][train_len:]),
+        expand(samples_np[test_data_idx])
+    )
+
+def get_problem_solving_data(split: str, task: DownstreamTask, ratio: float = 1):
+    src_dir = GSM8K_DATA if task == DownstreamTask.GSM8K else MATH_DATA
+    with open(os.path.join(src_dir, f"{split}.json"), encoding="utf-8") as data_file:
+        data: List[ProblemSolvingTaskSample] = json.load(data_file)
+        random.Random(221).shuffle(data)
+        return data[:int(len(data) * ratio)], data[int(len(data) * ratio):]
+
+def get_mwp_data(fold: int = 0):
+    with open(MWP_DATA, encoding="utf-8") as data_file:
+        samples: List[GenTaskSample] = json.load(data_file)
+    random.Random(221).shuffle(samples)
+    samples_np = np.array(samples)
+    kf = KFold(n_splits=5, shuffle=False)
+    train_data_idx, test_data_idx = next(split for idx, split in enumerate(kf.split(samples_np)) if idx == fold)
+    train_len = int(.9 * len(train_data_idx))
+    return (
+        samples_np[train_data_idx][:train_len],
+        samples_np[train_data_idx][train_len:],
+        samples_np[test_data_idx]
+    )
 
 def split_sequence(sequence: Sequence, max_seq_len: int) -> List[Sequence]:
     """

@@ -163,7 +163,7 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
     if args.test_downstream:
         test_gen_task(args.name, enum_value_to_member(args.test_downstream, DownstreamTask), arg_dict)
     if args.crossval:
-        cross_validate_downstream_task(args.name, args.pretrained_name, enum_value_to_member(args.crossval, DownstreamTask), arg_dict)
+        cross_validate_downstream_task(args.name, args.checkpoint_name, args.pretrained_name, enum_value_to_member(args.crossval, DownstreamTask), arg_dict)
     if args.evaluate_ted:
         evaluate_ted(args.name, arg_dict)
 

@@ -1,9 +1,8 @@
 import time
 import os
 import json
-from typing import Optional, List, Tuple, Union, Dict
+from typing import Optional, List, Tuple, Union
 import random
-import pickle
 import torch
 from torch.utils.data import DataLoader
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -11,80 +10,20 @@ import torch.distributed as dist
 from torch.cuda.amp.grad_scaler import GradScaler
 from tqdm import tqdm
 # from neptune.new.run import Run
-from sklearn.model_selection import StratifiedKFold, KFold
 import numpy as np
-from mathGPT.data_types import ProblemSolvingTaskSample
 
 from model_math_gpt import MathGPTBase, MathGPTLM, MathGPTClassifier
 from model_baseline import GPTLMBaseline, GPTClassifierBaseline
-from loading import Dataset, PreTrainDataset, PreTrainDatasetPreloaded, GenTaskDataset, AnswerScoringDataset, FeedbackDataset, ProblemSolvingDataset, trim_batch, get_data_loader
+from loading import (
+    get_article_names, get_headline_data, get_answer_scoring_data, get_feedback_data, get_problem_solving_data, get_mwp_data, get_probes,
+    Dataset, PreTrainDataset, PreTrainDatasetPreloaded, GenTaskDataset, AnswerScoringDataset, FeedbackDataset, ProblemSolvingDataset,
+    trim_batch, get_data_loader
+)
 from evaluate import evaluate_lm, evaluate_lm_accuracy, evaluate_cls_task, evaluate_gen_task, evaluate_problem_solving_task
 from generate import generate
 from decode import decode_batch
 from utils import TrainOptions, device, is_cls_task, new_neptune_run, load_pretrained
-from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample
-from constants import DownstreamTask, Checkpoint, DOWNSTREAM_TASK_TO_NUM_CLASSES, WIKI_DATA, OFEQ_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, GSM8K_DATA, MATH_DATA, MWP_DATA
-
-def get_article_names(options: TrainOptions):
-    data_dir = options.data_dir or WIKI_DATA
-    return [os.path.join(data_dir, article_filename) for article_filename in os.listdir(data_dir)]
-
-def get_probes() -> List[Article]:
-    with open("data/probes.json", encoding="utf-8") as probes_file:
-        return json.load(probes_file)
-
-def get_headline_data(split: str, options: TrainOptions) -> List[GenTaskSample]:
-    # Load pre-processed dataset when using the MathGPT model, or using the post_proc option for the baseline model
-    pre_processed = not options.baseline or options.post_proc
-    if pre_processed:
-        with open(os.path.join(OFEQ_DATA, f"{split}.json"), encoding="utf-8") as headlines_file:
-            return json.load(headlines_file)
-    else:
-        with open(f"../MathSum/OFEQ-10k/post.{split}", encoding="utf-8") as post_file:
-            with open(f"../MathSum/OFEQ-10k/title.{split}", encoding="utf-8") as title_file:
-                return [
-                    {"prompt": {"text": post, "formulas": {}}, "label": {"text": title, "formulas": {}}}
-                    for post, title in zip(post_file, title_file)
-                ]
-
-def get_answer_scoring_data(fold: int = 0) -> Tuple[Dict[str, Article], List[AnswerScoringSample], List[AnswerScoringSample], List[AnswerScoringSample]]:
-    with open(AS_PROBLEMS, encoding="utf-8") as problem_file:
-        problems: Dict[str, Article] = json.load(problem_file)
-    with open(AS_ANSWERS, encoding="utf-8") as answer_file:
-        answers: List[AnswerScoringSample] = json.load(answer_file)
-    # Stratify on problem id so that samples in the training set can be used during test time for meta learning
-    answers_np = np.array(answers)
-    stratify_labels = np.array([answer["problem_id"] for answer in answers])
-    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=221)
-    train_data_idx, test_data_idx = next(split for idx, split in enumerate(skf.split(answers_np, stratify_labels)) if idx == fold)
-    train_len = int(.9 * len(train_data_idx))
-    return problems, answers_np[train_data_idx][:train_len], answers_np[train_data_idx][train_len:], answers_np[test_data_idx]
-
-def get_feedback_data(fold: int = 0):
-    with open(FEEDBACK_PROBLEMS, encoding="utf-8") as problem_file:
-        problems: Dict[str, Article] = json.load(problem_file)
-    with open(FEEDBACK_SAMPLES, encoding="utf-8") as sample_file:
-        samples: List[FeedbackTaskSample] = json.load(sample_file)
-    samples_np = np.array(samples)
-    kf = KFold(n_splits=5, shuffle=True, random_state=221)
-    train_data_idx, test_data_idx = next(split for idx, split in enumerate(kf.split(samples_np)) if idx == fold)
-    train_len = int(.9 * len(train_data_idx))
-    return problems, samples_np[train_data_idx][:train_len], samples_np[train_data_idx][train_len:], samples_np[test_data_idx]
-
-def get_problem_solving_data(split: str, task: DownstreamTask, ratio: float = 1):
-    src_dir = GSM8K_DATA if task == DownstreamTask.GSM8K else MATH_DATA
-    with open(os.path.join(src_dir, f"{split}.json"), encoding="utf-8") as data_file:
-        data: List[ProblemSolvingTaskSample] = json.load(data_file)
-        return data[:int(len(data) * ratio)], data[int(len(data) * ratio):]
-
-def get_mwp_data(fold: int = 0):
-    with open(MWP_DATA, encoding="utf-8") as data_file:
-        samples: List[GenTaskSample] = json.load(data_file)
-    samples_np = np.array(samples)
-    kf = KFold(n_splits=5, shuffle=True, random_state=221)
-    train_data_idx, test_data_idx = next(split for idx, split in enumerate(kf.split(samples_np)) if idx == fold)
-    train_len = int(.9 * len(train_data_idx))
-    return samples_np[train_data_idx][:train_len], samples_np[train_data_idx][train_len:], samples_np[test_data_idx]
+from constants import DownstreamTask, Checkpoint, DOWNSTREAM_TASK_TO_NUM_CLASSES
 
 def load_options(model_name: str):
     with open(f"{model_name}.json", encoding="utf-8") as config_file:
@@ -331,7 +270,7 @@ def train_downstream_task(model_name: str, checkpoint_name: Optional[str], pretr
         train_data = FeedbackDataset(train_samples, problems, options)
         val_data = FeedbackDataset(val_samples, problems, options)
     elif task in (DownstreamTask.GSM8K, DownstreamTask.MATH):
-        train_samples, val_samples = get_problem_solving_data("train", task, .85)
+        train_samples, val_samples = get_problem_solving_data("train", task, .9)
         train_data = ProblemSolvingDataset(train_samples, options)
         val_data = ProblemSolvingDataset(val_samples, options)
     elif task == DownstreamTask.MWP:
@@ -359,7 +298,7 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask, overwrite_re
     if task == DownstreamTask.HEADLINES:
         headlines = get_headline_data("test", options)
         test_data = GenTaskDataset(headlines, task, options)
-        _, results, template = evaluate_gen_task(model_name, model, test_data, task, options)
+        _, results, template = evaluate_gen_task(model_name, model, test_data, task, fold, options)
     elif task == DownstreamTask.ANSWER_SCORING:
         problems, train_samples, _, test_samples = get_answer_scoring_data(fold)
         train_data = AnswerScoringDataset(train_samples, problems, options)
@@ -368,7 +307,7 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask, overwrite_re
     elif task == DownstreamTask.FEEDBACK:
         problems, _, _, test_samples = get_feedback_data(fold)
         test_data = FeedbackDataset(test_samples, problems, options)
-        _, results, template = evaluate_gen_task(model_name, model, test_data, task, options)
+        _, results, template = evaluate_gen_task(model_name, model, test_data, task, fold, options)
     elif task in (DownstreamTask.GSM8K, DownstreamTask.MATH):
         test_samples, _ = get_problem_solving_data("test", task)
         test_data = ProblemSolvingDataset(test_samples, options)
@@ -376,20 +315,20 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask, overwrite_re
     elif task == DownstreamTask.MWP:
         _, _, test_samples = get_mwp_data(fold)
         test_data = GenTaskDataset(test_samples, task, options)
-        _, results, template = evaluate_gen_task(model_name, model, test_data, task, options)
+        _, results, template = evaluate_gen_task(model_name, model, test_data, task, fold, options)
     else:
         raise Exception(f"Unsupported task {task}")
 
     print(template.format(*results))
     return results, template
 
-def cross_validate_downstream_task(model_name: str, pretrained_name: Optional[str], task: DownstreamTask, options_dict: dict):
-    all_results = [train_downstream_task(model_name, None, pretrained_name, task, options_dict, fold) for fold in range(5)]
+def cross_validate_downstream_task(model_name: str, checkpoint_name: Optional[str], pretrained_name: Optional[str], task: DownstreamTask, options_dict: dict):
+    all_results = [train_downstream_task(model_name, checkpoint_name, pretrained_name, task, options_dict, fold) for fold in range(5)]
     template = all_results[0][1]
     results_np = np.array([results[0] for results in all_results])
     avg = results_np.mean(axis=0)
     std = results_np.std(axis=0)
-    print("Avg:\n", template.format(*avg), "\nStd:\n", template.format(*std))
+    print("Avg:", template.format(*avg), "\nStd:", template.format(*std))
 
 def test_gen_task(model_name: str, task: DownstreamTask, test_options: dict):
     model, _, options = load_model(model_name, test_options.get("ddp", False), task)

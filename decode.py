@@ -18,10 +18,12 @@ class DecodeTreeNode:
 def get_tree(token_ids: torch.Tensor, token_types: torch.Tensor) -> DecodeTreeNode:
     """
     Convert DFS-order list of token IDs and types to nested tree structure
+    Assuming the sequence contains a formula, may exclude start/end formula tokens
     """
-    root = DecodeTreeNode(int(token_types[0]), int(token_ids[0]), [])
+    start_idx = next((idx for idx, token_type in enumerate(token_types) if token_type == TokenType.START_FORMULA), -1) + 1
+    root = DecodeTreeNode(int(token_types[start_idx]), int(token_ids[start_idx]), [])
     ancestors: List[DecodeTreeNode] = []
-    for token_id, token_type in zip(token_ids[1:], token_types[1:]):
+    for token_id, token_type in zip(token_ids[start_idx:], token_types[start_idx:]):
         if token_type == TokenType.OP:
             new_root = DecodeTreeNode(int(token_type), int(token_id), [])
             root.children.append(new_root)
@@ -31,6 +33,8 @@ def get_tree(token_ids: torch.Tensor, token_types: torch.Tensor) -> DecodeTreeNo
             root.children.append(DecodeTreeNode(int(token_type), int(token_id), []))
         elif token_type == TokenType.END and ancestors:
             root = ancestors.pop()
+        elif token_type == TokenType.END_FORMULA:
+            break
     # Return root of formula, may need to look in ancestors in case we're decoding a partial tree
     return ancestors[0] if ancestors else root
 

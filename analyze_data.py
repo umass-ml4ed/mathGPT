@@ -234,6 +234,9 @@ def analyze_feedback():
         all_formulas += [("", formula) for sample in samples for formula in sample[field]["formulas"].values()]
     analyze_data(tqdm(all_formulas))
     print("Total num problems:", len(problems), "; responses:", len(samples))
+    feedback_counter = Counter(str(sample["feedback"]) for sample in samples)
+    repeated_feedback = [feedback for feedback in feedback_counter.items() if feedback[1] > 1]
+    print("Repeated feedback messages:", len(repeated_feedback), "; instances:", sum(feedback[1] for feedback in repeated_feedback))
 
 def analyze_gsm8k():
     all_formulas = []

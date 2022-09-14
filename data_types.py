@@ -1,7 +1,9 @@
-from typing import Dict, Tuple, List, Optional, Union, TypedDict
+from typing import Dict, Tuple, List, Optional, Union, TypedDict, TypeVar
 import torch
 
 from constants import TokenType
+
+T = TypeVar("T") # Generic Type
 
 OPT = Tuple[Union[str, TokenType], Union[str, int], Optional[List['OPT']]] # Type, token, children
 
@@ -25,6 +27,7 @@ class AnswerScoringSample(TypedDict):
 
 class FeedbackTaskSample(TypedDict):
     problem_id: str
+    problem_code: str
     answer: Article
     feedback: Article
 

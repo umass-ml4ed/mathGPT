@@ -48,7 +48,7 @@ TYPE_STR_TO_MAX_NUM_TOKENS: Dict[str, int] = {
     "V": 1000,
     # "T": 2000,
     # "V": 4000,
-    # "F": 600,
+    # "F": 200,
 }
 
 FORMULA_IDENTIFIER = "[_mathGPT_formula_]" # Replace formulas in raw text with this to recover after loading

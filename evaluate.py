@@ -10,7 +10,7 @@ from sklearn import metrics
 from nlgeval import compute_metrics
 import zss
 
-from loading import Dataset, trim_batch, get_data_loader
+from loading import Dataset, GenTaskDataset, FeedbackDataset, trim_batch, get_data_loader, get_headline_data, get_mwp_data, get_feedback_data
 from model_math_gpt import MathGPTBase, MathGPTLM, MathGPTClassifier
 from generate import get_most_likely_predictions, generate
 from decode import decode_batch, get_tree, DecodeTreeNode
@@ -141,9 +141,9 @@ def evaluate_lm_accuracy(model: MathGPTLM, dataset: Dataset, task: Optional[Down
     accuracy = sum(match) / len(match)
     return loss, [accuracy], "Accuracy: {:.3f}"
 
-def evaluate_gen_task(model_name: str, model: MathGPTLM, dataset: Dataset, task: DownstreamTask, options: TrainOptions):
+def evaluate_gen_task(model_name: str, model: MathGPTLM, dataset: Dataset, task: DownstreamTask, fold: int, options: TrainOptions):
     model.eval()
-    compute_ted = options.eval_formulas and not options.baseline
+    compute_ted = (options.eval_formulas or task == DownstreamTask.MWP) and not options.baseline
     # Only process one sequence at a time since prompts may have different lengths
     data_loader = get_data_loader(dataset, task, 1, False, False, options)
     all_labels: List[str] = []
@@ -173,8 +173,9 @@ def evaluate_gen_task(model_name: str, model: MathGPTLM, dataset: Dataset, task:
 
     num_exact_match = sum(pred == label for pred, label in zip(all_predictions, all_labels))
     accuracy = num_exact_match / len(all_labels)
-    pred_filename = f"preds_{model_name}.txt"
-    label_filename = f"labels_{model_name}.txt"
+    postfix = "_formulas" if options.eval_formulas else "_text" if options.eval_text else ""
+    pred_filename = f"preds_{model_name}{postfix}_{fold}.txt"
+    label_filename = f"labels_{model_name}{postfix}_{fold}.txt"
     with open(pred_filename, "w", encoding="utf-8") as pred_file:
         pred_file.write("\n".join(all_predictions))
     with open(label_filename, "w", encoding="utf-8") as label_file:
@@ -294,57 +295,66 @@ def evaluate_cls_task(model: MathGPTClassifier, dataset: Dataset, task: Downstre
     _, _, f1, _ = metrics.precision_recall_fscore_support(all_labels_np, all_preds_np)
     return loss, [accuracy, auc, kappa, rmse, f1.mean()], "Accuracy: {:.3f}, AUC: {:.3f}, Kappa: {:.3f}, RMSE: {:.3f}, F1: {:.3f}"
 
-def evaluate_ted(model_name: str, options_dict: dict):
+def evaluate_ted(model_name: str, task: DownstreamTask, options_dict: dict):
     options = TrainOptions(options_dict)
 
-    # Load saved labels and predictions
-    json_filename = f"results_{model_name}.json"
-    if not os.path.exists(json_filename):
-        label_filename = f"labels_{model_name}.txt"
-        pred_filename = f"preds_{model_name}.txt"
-        with open(label_filename, encoding="utf-8") as label_file:
-            labels = ["<m> " + label.strip() for label in label_file]
-        with open(pred_filename, encoding="utf-8") as pred_file:
-            preds = ["<m> " + pred.strip() + ("" if pred.strip().endswith("</m>") else " </m>") for pred in pred_file]
+    all_teds = []
+    folds = range(5) if task in (DownstreamTask.FEEDBACK, DownstreamTask.MWP) else [0]
+    for fold in folds:
+        # Load saved labels and predictions
+        postfix = "_formulas" if options.eval_formulas else ""
+        json_filename = f"preds_{model_name}{postfix}_{fold}.json"
+        if not os.path.exists(json_filename):
+            pred_filename = f"preds_{model_name}.txt"
+            with open(pred_filename, encoding="utf-8") as pred_file:
+                preds = [("<m> " if options.eval_formulas else "") + pred.strip() + ("" if pred.strip().endswith("</m>") else " </m>") for pred in pred_file]
 
-        # Convert sample strings to OPTs via pre-processing pipeline
-        batch_size = 40
-        err_data = {}
-        processed_labels: List[Article] = []
-        processed_preds: List[Article] = []
-        for batch_start_idx in tqdm(list(range(0, len(labels), batch_size))):
-            processed_labels += process_raw_text(labels[batch_start_idx : batch_start_idx + batch_size], err_data)
-        for batch_start_idx in tqdm(list(range(0, len(preds), batch_size))):
-            processed_preds += process_raw_text(preds[batch_start_idx : batch_start_idx + batch_size], err_data)
-        print(err_data)
-        with open(json_filename, "w", encoding="utf-8") as json_file:
-            json.dump({
-                "labels": processed_labels,
-                "preds": processed_preds,
-            }, json_file, indent=2, ensure_ascii=False)
+            # Convert sample strings to OPTs via pre-processing pipeline
+            batch_size = 40
+            err_data = {}
+            processed_preds: List[Article] = []
+            for batch_start_idx in tqdm(list(range(0, len(preds), batch_size))):
+                processed_preds += process_raw_text(preds[batch_start_idx : batch_start_idx + batch_size], err_data)
+            print(err_data)
+            with open(json_filename, "w", encoding="utf-8") as json_file:
+                json.dump(processed_preds, json_file, indent=2, ensure_ascii=False)
 
-    # Read file even if immediately written for key string type consistency
-    with open(json_filename, encoding="utf-8") as json_file:
-        results = json.load(json_file)
-        processed_labels = results["labels"]
-        processed_preds = results["preds"]
+        # Read file even if immediately written for key string type consistency
+        with open(json_filename, encoding="utf-8") as json_file:
+            processed_preds = json.load(json_file)
 
-    # Perform post-processing via tokenizer, and then convert back to OPTs and calculate TED
-    label_trees: List[DecodeTreeNode] = []
-    pred_trees: List[DecodeTreeNode] = []
-    failed_conversions = []
-    missing_formula = []
-    for sample_idx, (label, pred) in enumerate(zip(processed_labels, processed_preds)):
-        if pred is None:
-            failed_conversions.append(sample_idx)
-            continue
-        if not label["formulas"] or not pred["formulas"]:
-            missing_formula.append(sample_idx)
-            continue
-        if len(label["formulas"]) > 1 or len(pred["formulas"]) > 1:
-            print("More than 1 formula in sample:", sample_idx)
-        label_seq = tokenize_formula(label["formulas"]["0"]["opt"], options)
-        pred_seq = tokenize_formula(pred["formulas"]["0"]["opt"], options)
-        label_trees.append(get_tree(label_seq.token_ids, label_seq.token_types))
-        pred_trees.append(get_tree(pred_seq.token_ids, pred_seq.token_types))
-    print(f"TED: {calculate_ted(label_trees, pred_trees):.3f}, Failed: {failed_conversions}, Missing formula: {missing_formula}")
+        # Load dataset for targets
+        if task == DownstreamTask.HEADLINES:
+            headlines = get_headline_data("test", options)
+            test_data = GenTaskDataset(headlines, task, options)
+        elif task == DownstreamTask.FEEDBACK:
+            problems, _, _, test_samples = get_feedback_data(fold)
+            test_data = FeedbackDataset(test_samples, problems, options)
+        elif task == DownstreamTask.MWP:
+            _, _, test_samples = get_mwp_data(fold)
+            test_data = GenTaskDataset(test_samples, task, options)
+        else:
+            raise Exception(f"Unsupported task {task}")
+
+        # Perform post-processing via tokenizer, and then convert back to OPTs and calculate TED
+        label_trees: List[DecodeTreeNode] = []
+        pred_trees: List[DecodeTreeNode] = []
+        failed_conversions = []
+        missing_formula = []
+        for sample_idx, (label_seq, pred) in enumerate(zip(test_data, processed_preds)):
+            if pred is None:
+                failed_conversions.append(sample_idx)
+                continue
+            if not pred["formulas"]:
+                missing_formula.append(sample_idx)
+                continue
+            if len(pred["formulas"]) > 1:
+                print("More than 1 formula in sample:", sample_idx)
+            pred_seq = tokenize_formula(pred["formulas"]["0"]["opt"], options)
+            label_trees.append(get_tree(label_seq.token_ids, label_seq.token_types))
+            pred_trees.append(get_tree(pred_seq.token_ids, pred_seq.token_types))
+        ted = calculate_ted(label_trees, pred_trees)
+        all_teds.append(ted)
+        print(f"{fold} - TED: {ted:.3f}, Failed: {failed_conversions}, Missing formula: {missing_formula}")
+    teds_np = np.array(all_teds)
+    print("Average:", teds_np.mean(), "STD:", teds_np.std())
