@@ -23,7 +23,7 @@ def get_tree(token_ids: torch.Tensor, token_types: torch.Tensor) -> DecodeTreeNo
     start_idx = next((idx for idx, token_type in enumerate(token_types) if token_type == TokenType.START_FORMULA), -1) + 1
     root = DecodeTreeNode(int(token_types[start_idx]), int(token_ids[start_idx]), [])
     ancestors: List[DecodeTreeNode] = []
-    for token_id, token_type in zip(token_ids[start_idx:], token_types[start_idx:]):
+    for token_id, token_type in zip(token_ids[start_idx + 1:], token_types[start_idx + 1:]):
         if token_type == TokenType.OP:
             new_root = DecodeTreeNode(int(token_type), int(token_id), [])
             root.children.append(new_root)

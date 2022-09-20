@@ -304,13 +304,14 @@ def evaluate_ted(model_name: str, task: DownstreamTask, options_dict: dict):
         # Load saved labels and predictions
         postfix = "_formulas" if options.eval_formulas else ""
         json_filename = f"preds_{model_name}{postfix}_{fold}.json"
-        if not os.path.exists(json_filename):
-            pred_filename = f"preds_{model_name}.txt"
+        # if not os.path.exists(json_filename):
+        if True:
+            pred_filename = f"preds_{model_name}{postfix}_{fold}.txt"
             with open(pred_filename, encoding="utf-8") as pred_file:
                 preds = [("<m> " if options.eval_formulas else "") + pred.strip() + ("" if pred.strip().endswith("</m>") else " </m>") for pred in pred_file]
 
             # Convert sample strings to OPTs via pre-processing pipeline
-            batch_size = 40
+            batch_size = 100
             err_data = {}
             processed_preds: List[Article] = []
             for batch_start_idx in tqdm(list(range(0, len(preds), batch_size))):
@@ -341,7 +342,7 @@ def evaluate_ted(model_name: str, task: DownstreamTask, options_dict: dict):
         pred_trees: List[DecodeTreeNode] = []
         failed_conversions = []
         missing_formula = []
-        for sample_idx, (label_seq, pred) in enumerate(zip(test_data, processed_preds)):
+        for sample_idx, (label, pred) in enumerate(zip(test_data, processed_preds)):
             if pred is None:
                 failed_conversions.append(sample_idx)
                 continue
@@ -351,10 +352,11 @@ def evaluate_ted(model_name: str, task: DownstreamTask, options_dict: dict):
             if len(pred["formulas"]) > 1:
                 print("More than 1 formula in sample:", sample_idx)
             pred_seq = tokenize_formula(pred["formulas"]["0"]["opt"], options)
+            label_seq = label.split_at(label.meta["prompt_length"])[1]
             label_trees.append(get_tree(label_seq.token_ids, label_seq.token_types))
             pred_trees.append(get_tree(pred_seq.token_ids, pred_seq.token_types))
         ted = calculate_ted(label_trees, pred_trees)
         all_teds.append(ted)
         print(f"{fold} - TED: {ted:.3f}, Failed: {failed_conversions}, Missing formula: {missing_formula}")
     teds_np = np.array(all_teds)
-    print("Average:", teds_np.mean(), "STD:", teds_np.std())
+    print(f"Average: {teds_np.mean():.3f}, STD: {teds_np.std():.3f}")

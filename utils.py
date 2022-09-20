@@ -8,7 +8,7 @@ import torch.distributed as dist
 # import neptune.new as neptune
 from transformers import GPT2TokenizerFast
 
-from constants import PretrainDataset, DownstreamTask, TPE, Gen, DOWNSTREAM_TASK_TO_NUM_CLASSES
+from constants import PretrainDataset, DownstreamTask, TPE, Gen, Optimizer, DOWNSTREAM_TASK_TO_NUM_CLASSES
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -77,6 +77,7 @@ class TrainOptions:
         self.dataset: str = options.get("dataset", PretrainDataset.WIKI.value)
         self.data_dir: Optional[str] = options.get("data_dir", None)
         self.split: float = options.get("split", 0.95)
+        self.optim: str = options.get("optim", Optimizer.ADAMW.value)
         self.lr: float = options.get("lr", 1e-5)
         self.weight_decay: float = options.get("weight_decay", 1e-2)
         self.epochs: int = options.get("epochs", 20)
@@ -88,7 +89,7 @@ class TrainOptions:
         self.gen: str = options.get("gen", Gen.BEAM.value)
         self.ns_p: float = options.get("ns_p", 0.90)
         self.beam_width: int = options.get("beam_width", 3)
-        self.min_gen_len: int = options.get("min_gen_len", 5)
+        self.min_gen_len: int = options.get("min_gen_len", 0)
         self.eval_formulas: bool = options.get("eval_formulas", False)
         self.eval_text: bool = options.get("eval_text", False)
         self.eval_final: bool = options.get("eval_final", False)
@@ -108,6 +109,7 @@ class TrainOptions:
         self.cdt: bool = options.get("cdt", True)
         self.freeze_wte: bool = options.get("freeze_wte", False)
         self.init_math_pred: bool = options.get("init_math_pred", False)
+        self.lmhb: bool = options.get("lmhb", True)
 
     def as_dict(self):
         self_dict = self.__dict__

@@ -25,7 +25,7 @@ def get_probes() -> List[Article]:
     with open("data/probes.json", encoding="utf-8") as probes_file:
         return json.load(probes_file)
 
-def get_headline_data(split: str, options: TrainOptions) -> List[GenTaskSample]:
+def get_headline_data(split: str, options: TrainOptions, fold: int = 0) -> List[GenTaskSample]:
     # Load pre-processed dataset when using the MathGPT model, or using the post_proc option for the baseline model
     pre_processed = not options.baseline or options.post_proc
     if pre_processed:
@@ -38,7 +38,8 @@ def get_headline_data(split: str, options: TrainOptions) -> List[GenTaskSample]:
                     {"prompt": {"text": post, "formulas": {}}, "label": {"text": title, "formulas": {}}}
                     for post, title in zip(post_file, title_file)
                 ]
-    # random.Random(221).shuffle(data)
+    rng_seed = (fold + 1) * 1000 % 421 # Modulo with prime that gives sufficiently diverse seeds
+    random.Random(rng_seed).shuffle(data)
     return data
 
 def get_answer_scoring_data(fold: int = 0) -> Tuple[Dict[str, Article], List[AnswerScoringSample], List[AnswerScoringSample], List[AnswerScoringSample]]:

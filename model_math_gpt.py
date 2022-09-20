@@ -219,7 +219,7 @@ class MathGPTLM(MathGPTBase):
                                         self.math_pred_layer.weight[start_idx + token_id] = avg_pred_weights
                         start_idx += self.type_to_size[token_type]
             else:
-                self.math_pred_layer = nn.Linear(EMB_SIZE, sum(self.type_to_size.values()))
+                self.math_pred_layer = nn.Linear(EMB_SIZE, sum(self.type_to_size.values()), bias=self.options.lmhb)
 
     def get_prediction_masks(self, batch: CollatedBatch):
         """

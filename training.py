@@ -1,13 +1,12 @@
 import time
-import os
 import json
 from typing import Optional, List, Tuple, Union
-import random
 import torch
 from torch.utils.data import DataLoader
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 from torch.cuda.amp.grad_scaler import GradScaler
+from transformers import Adafactor
 from tqdm import tqdm
 # from neptune.new.run import Run
 import numpy as np
@@ -23,7 +22,7 @@ from evaluate import evaluate_lm, evaluate_lm_accuracy, evaluate_cls_task, evalu
 from generate import generate
 from decode import decode_batch
 from utils import TrainOptions, device, is_cls_task, new_neptune_run, load_pretrained
-from constants import DownstreamTask, Checkpoint, DOWNSTREAM_TASK_TO_NUM_CLASSES
+from constants import DownstreamTask, Checkpoint, Optimizer, DOWNSTREAM_TASK_TO_NUM_CLASSES
 
 def load_options(model_name: str):
     with open(f"{model_name}.json", encoding="utf-8") as config_file:
@@ -62,7 +61,10 @@ def evaluate_model(model: MathGPTBase, dataset: Dataset, task: Optional[Downstre
 
 def train(model: Union[MathGPTBase, DDP], model_name: str, train_loader: DataLoader, validation_dataset: Dataset, options: TrainOptions,
           run = None, task: Optional[DownstreamTask] = None, checkpoint: Optional[Checkpoint] = None):
-    optimizer = torch.optim.AdamW(model.parameters(), lr=options.lr, weight_decay=options.weight_decay)
+    if options.optim == Optimizer.ADAMW.value:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=options.lr, weight_decay=options.weight_decay)
+    else:
+        optimizer = Adafactor(model.parameters(), scale_parameter=False, relative_step=False, warmup_init=False, lr=options.lr, weight_decay=options.weight_decay)
     if checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         del checkpoint["optimizer_state_dict"]
@@ -81,8 +83,6 @@ def train(model: Union[MathGPTBase, DDP], model_name: str, train_loader: DataLoa
 
     starting_epoch = checkpoint["epoch"] + 1 if checkpoint else 0
     best_metric = None
-    best_stats = None
-    cur_stats = None
     best_epoch = starting_epoch
 
     if checkpoint:
@@ -126,7 +126,6 @@ def train(model: Union[MathGPTBase, DDP], model_name: str, train_loader: DataLoa
         if not best_metric or val_loss < best_metric:
             best_metric = val_loss
             best_epoch = epoch
-            best_stats = cur_stats
             if not options.ddp or torch.cuda.current_device() == 0:
                 print("Saving model")
                 if options.ddp:
@@ -150,7 +149,7 @@ def train(model: Union[MathGPTBase, DDP], model_name: str, train_loader: DataLoa
             print("Early stopping")
             break
 
-    return best_stats
+    return best_metric
 
 def pretrain(model_name: str, checkpoint_name: Optional[str], options_dict: dict):
     if checkpoint_name:
@@ -188,9 +187,9 @@ def evaluate_pretrained_lm(model_name: str, test_options: dict):
     split_point = int(len(articles) * options.split)
     test_articles = articles[split_point:]
     dataset = PreTrainDataset(test_articles, options, max_seq_len=None)
-    loss, results = evaluate_lm(model, dataset, options)
-    print(f"Loss: {loss:.3f}, {results}")
-    return results
+    loss, results, template = evaluate_lm(model, dataset, options)
+    print(f"Loss: {loss:.3f}, {template.format(*results)}")
+    return template.format(*results)
 
 def test_lm(model_name: str, test_article: str, test_options: dict):
     model, _, options = load_model(model_name, test_options.get("ddp", False))
@@ -259,7 +258,7 @@ def train_downstream_task(model_name: str, checkpoint_name: Optional[str], pretr
 
     # Load and process data
     if task == DownstreamTask.HEADLINES:
-        train_data = GenTaskDataset(get_headline_data("train", options), task, options)
+        train_data = GenTaskDataset(get_headline_data("train", options, fold), task, options)
         val_data = GenTaskDataset(get_headline_data("val", options), task, options)
     elif task == DownstreamTask.ANSWER_SCORING:
         problems, train_samples, val_samples, _ = get_answer_scoring_data(fold)
@@ -284,12 +283,12 @@ def train_downstream_task(model_name: str, checkpoint_name: Optional[str], pretr
     # Start training
     main_proc = not options.ddp or torch.cuda.current_device() == 0
     run = new_neptune_run() if main_proc else None
-    train(model, model_name, train_loader, val_data, options, run, task, checkpoint=checkpoint)
+    val_loss = train(model, model_name, train_loader, val_data, options, run, task, checkpoint=checkpoint)
     results, template = evaluate_downstream_task(model_name, task, True, options.as_dict(), fold)
     if run:
         run["results"] = template.format(*results)
         run.stop()
-    return results, template
+    return val_loss, results, template
 
 def evaluate_downstream_task(model_name: str, task: DownstreamTask, overwrite_results: bool, eval_options: dict, fold: int = 0) -> Tuple[List[float], str]:
     model, _, options = load_model(model_name, eval_options.get("ddp", False), task)
@@ -323,12 +322,34 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask, overwrite_re
     return results, template
 
 def cross_validate_downstream_task(model_name: str, checkpoint_name: Optional[str], pretrained_name: Optional[str], task: DownstreamTask, options_dict: dict):
-    all_results = [train_downstream_task(model_name, checkpoint_name, pretrained_name, task, options_dict, fold) for fold in range(5)]
-    template = all_results[0][1]
-    results_np = np.array([results[0] for results in all_results])
+    all_results: List[List[float]] = []
+    template = ""
+    for fold in range(5):
+        print("\nFold", fold + 1)
+        options_dict["eval_formulas"] = False
+        options_dict["eval_text"] = False
+        val_loss, results, template = train_downstream_task(model_name, checkpoint_name, pretrained_name, task, options_dict, fold)
+        if task == DownstreamTask.HEADLINES:
+            options_dict["eval_formulas"] = True
+            f_results, f_template = evaluate_downstream_task(model_name, task, True, options_dict, fold)
+            results += f_results
+            template += "\nFormula-Only: " + f_template
+            options_dict["eval_formulas"] = False
+            options_dict["eval_text"] = True
+            t_results, t_template = evaluate_downstream_task(model_name, task, True, options_dict, fold)
+            results += t_results
+            template += "\nText-Only: " + t_template
+        all_results.append([val_loss] + results)
+    template = "Val Loss: {:.3f}, " + template
+    with open(f"results_{model_name}.txt", "w", encoding="utf-8") as results_file:
+        results_file.write(f"{template}\n" + "\n".join([
+            ",".join([f"{res:.3f}" for res in trial])
+            for trial in all_results
+        ]))
+    results_np = np.array(all_results)
     avg = results_np.mean(axis=0)
     std = results_np.std(axis=0)
-    print("Avg:", template.format(*avg), "\nStd:", template.format(*std))
+    print("Avg:\n" + template.format(*avg) + "\nStd:\n", template.format(*std))
 
 def test_gen_task(model_name: str, task: DownstreamTask, test_options: dict):
     model, _, options = load_model(model_name, test_options.get("ddp", False), task)

@@ -9,7 +9,7 @@ from training import pretrain, evaluate_pretrained_lm, test_lm, train_downstream
 from evaluate import evaluate_ted
 from utils import initialize_seeds, device, enum_choices, enum_value_to_member, setup_proc_group, cleanup_proc_group
 from vocabulary import Vocabulary
-from constants import PretrainDataset, DownstreamTask, TPE, Gen
+from constants import PretrainDataset, DownstreamTask, TPE, Gen, Optimizer
 
 def bool_type(arg):
     return False if arg == "0" else True
@@ -51,7 +51,7 @@ def main():
     parser.add_argument("--evaluate_downstream", help="Evaluate downstream task model performance on test set", choices=enum_choices(DownstreamTask))
     parser.add_argument("--test_downstream", help="See downstream model output on test samples", choices=enum_choices(DownstreamTask))
     parser.add_argument("--crossval", help="Run cross-validation on downstream task", choices=enum_choices(DownstreamTask))
-    parser.add_argument("--evaluate_ted", action="store_true", help="Evaluate TED metric on pred and label files from formula-only generative task")
+    parser.add_argument("--evaluate_ted", help="Evaluate TED metric on pred files from formula-only generative task", choices=enum_choices(DownstreamTask))
     # Config
     parser.add_argument("--name", help="Name of current model/experiment, used for saving/loading model and config")
     parser.add_argument("--checkpoint_name", help="Name of model to resume training for")
@@ -60,6 +60,7 @@ def main():
     parser.add_argument("--data_dir", help="Override default data directory for pre-training")
     parser.add_argument("--vocab_file", help="Override default vocab file")
     parser.add_argument("--split", type=float, help="Portion of data to use in train set during pre-training")
+    parser.add_argument("--optim", help="Optimizer to use", choices=enum_choices(Optimizer))
     parser.add_argument("--lr", type=float, help="Learning rate")
     parser.add_argument("--weight_decay", type=float, help="Weight decay")
     parser.add_argument("--epochs", type=int, help="Maximum number of training epochs")
@@ -88,6 +89,7 @@ def main():
     parser.add_argument("--cdt", type=bool_type, help="Apply decoding constraint masks during training")
     parser.add_argument("--freeze_wte", type=bool_type, help="Freeze word token embeddings")
     parser.add_argument("--init_math_pred", type=bool_type, help="Initialize the math prediction layer with values from the pre-trained text prediction layer")
+    parser.add_argument("--lmhb", type=bool_type, help="Use bias for the math LM head")
 
     args = parser.parse_args()
 
@@ -165,7 +167,7 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
     if args.crossval:
         cross_validate_downstream_task(args.name, args.checkpoint_name, args.pretrained_name, enum_value_to_member(args.crossval, DownstreamTask), arg_dict)
     if args.evaluate_ted:
-        evaluate_ted(args.name, arg_dict)
+        evaluate_ted(args.name, enum_value_to_member(args.evaluate_ted, DownstreamTask), arg_dict)
 
     if args.ddp:
         cleanup_proc_group()

@@ -2,6 +2,10 @@ from typing import Dict, Optional, TypedDict, Tuple
 from enum import IntEnum, Enum
 import torch
 
+class Optimizer(Enum):
+    ADAMW = "adamw"
+    ADA = "ada"
+
 class TokenType(IntEnum):
     TEXT = 0
     START_FORMULA = 1

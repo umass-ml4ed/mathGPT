@@ -59,7 +59,7 @@ def process_mathsum_data(dataset: str):
     """
     Process all data files in the MathSum datasets
     """
-    batch_size: Optional[int] = 20 # 20 seems fastest!
+    batch_size: Optional[int] = 40
     err_data: Dict[str, Dict[str, int]] = {}
     root_dir = "../MathSum"
     print("Processing", dataset)
