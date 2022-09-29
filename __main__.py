@@ -2,7 +2,10 @@ import argparse
 import torch
 import torch.multiprocessing as mp
 
-from pre_process import process_wikipedia_data, process_probes, process_mathsum_data, process_answer_scoring_data, process_feedback_data, process_gsm8k_data, process_math_data, process_mwp_data
+from pre_process import (
+    process_wikipedia_data, process_probes, process_mathsum_data, process_answer_scoring_data, process_feedback_data,
+    process_gsm8k_data, process_math_data, process_mwp_data, process_khan
+)
 from analyze_data import analyze_wiki, analyze_mathsum, analyze_answer_scoring, analyze_feedback, analyze_vocab, analyze_gsm8k, analyze_math, analyze_mwp
 from analyze_model import visualize_attention
 from training import pretrain, evaluate_pretrained_lm, test_lm, train_downstream_task, evaluate_downstream_task, test_gen_task, cross_validate_downstream_task
@@ -28,6 +31,7 @@ def main():
     parser = argparse.ArgumentParser("MathGPT")
     # Modes
     parser.add_argument("--preprocess_wiki", action="store_true", help="Process raw Wikipedia data and save to JSON files; generate raw vocab file")
+    parser.add_argument("--preprocess_khan", action="store_true", help="Process Khan Academy datset")
     parser.add_argument("--preprocess_mathsum", help="Process raw MathSum data and save to JSON files", choices=["OFEQ-10k", "EXEQ-300k"])
     parser.add_argument("--preprocess_answer_scoring", action="store_true", help="Process answer scoring dataset")
     parser.add_argument("--preprocess_feedback", action="store_true", help="Process feedback dataset")
@@ -36,7 +40,7 @@ def main():
     parser.add_argument("--preprocess_mwp", action="store_true", help="Process Math23K dataset")
     parser.add_argument("--process_probes", action="store_true", help="Process LM probes and save to JSON files")
     parser.add_argument("--analyze_wiki", action="store_true", help="Produce stats on pre-processed Wikipedia dataset")
-    parser.add_argument("--analyze_mathsum", action="store_true", help="Produce stats on pre-processed MathSum dataset")
+    parser.add_argument("--analyze_mathsum", help="Produce stats on pre-processed MathSum dataset", choices=["OFEQ-10k", "EXEQ-300k"])
     parser.add_argument("--analyze_answer_scoring", action="store_true", help="Produce stats on pre-processed answer scoring dataset")
     parser.add_argument("--analyze_feedback", action="store_true", help="Produce stats on pre-processed feedback dataset")
     parser.add_argument("--analyze_gsm8k", action="store_true", help="Produce stats on pre-processed GSM8K dataset")
@@ -120,6 +124,8 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
 
     if args.preprocess_wiki:
         process_wikipedia_data()
+    if args.preprocess_khan:
+        process_khan()
     if args.preprocess_mathsum:
         process_mathsum_data(args.preprocess_mathsum)
     if args.preprocess_answer_scoring:
@@ -137,7 +143,7 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
     if args.analyze_wiki:
         analyze_wiki()
     if args.analyze_mathsum:
-        analyze_mathsum()
+        analyze_mathsum(args.analyze_mathsum)
     if args.analyze_answer_scoring:
         analyze_answer_scoring()
     if args.analyze_feedback:

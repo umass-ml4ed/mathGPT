@@ -167,7 +167,7 @@ def fix_matrix(formula_text: str):
         final_text = fix_matrix(final_text)
     return final_text
 
-def process_raw_text(src_text_batch: List[str], err_data: dict) -> List[Optional[Article]]:
+def process_raw_text(src_text_batch: List[str], err_data: dict, recover: bool = True) -> List[Optional[Article]]:
     """
     Extract text and processed formulas from batch of raw text
     """
@@ -238,14 +238,23 @@ def process_raw_text(src_text_batch: List[str], err_data: dict) -> List[Optional
         if len(src_text_batch) == 1:
             err_data["samples_with_latexml_failures"] += 1
             return [None]
-        print("LaTeXML failed, processing each sample individually...")
-        return [process_raw_text([sample], err_data)[0] for sample in src_text_batch]
+        if recover:
+            print("LaTeXML failed, processing each sample individually...")
+            return [process_raw_text([sample], err_data)[0] for sample in src_text_batch]
+        else:
+            print("LaTeXML failed, skipping batch...")
+            err_data["samples_with_latexml_failures"] += len(src_text_batch)
+            return [None] * len(src_text_batch)
 
     _, all_content = MathDocument.read_doc_file(math_output_filename)
     if all_content.count(SAMPLE_SEPARATOR) != len(src_text_batch) - 1:
         err_data["batches_failed_to_split"] += 1
-        print("Failed to split batch, processing each sample individually...")
-        return [process_raw_text([sample], err_data)[0] for sample in src_text_batch]
+        if recover:
+            print("Failed to split batch, processing each sample individually...")
+            return [process_raw_text([sample], err_data)[0] for sample in src_text_batch]
+        else:
+            print("Failed to split batch, skipping batch...")
+            return [None] * len(src_text_batch)
 
     # Resolve share elements since TangentCFT doesn't handle them
     # TangentCFT doesn't handle matrix structure <apply><csymbol>matrix</csymbol><matrix>...</matrix></apply>, so collapse to <matrix>...</matrix>

@@ -8,18 +8,27 @@ from torch.utils.data import Dataset as TorchDataset, DataLoader, BatchSampler, 
 import numpy as np
 from sklearn.model_selection import StratifiedKFold, KFold
 
-from math_tokenize import tokenize_formula, EMPTY_POS_VECTOR, get_empty_pos_encoding, encode_pos
+from math_tokenize import tokenize_formula, EMPTY_POS_VECTOR, get_empty_pos_encoding, encode_pos, ExceedMaxDepth
 from decode import decode_formula
 from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, ProblemSolvingTaskSample, Formula, Sequence, CollatedBatch
 from constants import (
-    TokenType, DownstreamTask, TPE, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, FORMULA_IDENTIFIER, START_FORM_TEXT_TOKS, END_FORM_TEXT_TOK,
-    WIKI_DATA, OFEQ_DATA, AS_ANSWERS, AS_PROBLEMS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, GSM8K_DATA, MATH_DATA, MWP_DATA
+    TokenType, DownstreamTask, TPE, PretrainDataset, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, FORMULA_IDENTIFIER, START_FORM_TEXT_TOKS, END_FORM_TEXT_TOK,
+    WIKI_DATA, KHAN_DATA, OFEQ_DATA, EXEQ_DATA, AS_ANSWERS, AS_PROBLEMS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, GSM8K_DATA, MATH_DATA, MWP_DATA
 )
 from utils import device, is_cls_task, text_tokenizer, TrainOptions
 
 def get_article_names(options: TrainOptions):
-    data_dir = options.data_dir or WIKI_DATA
-    return [os.path.join(data_dir, article_filename) for article_filename in os.listdir(data_dir)]
+    if options.dataset == PretrainDataset.WIKI.value:
+        data_dir = options.data_dir or WIKI_DATA
+        return [os.path.join(data_dir, article_filename) for article_filename in os.listdir(data_dir)]
+    if options.dataset == PretrainDataset.KHAN.value:
+        data_dir = options.data_dir or KHAN_DATA
+        return [
+            os.path.join(data_dir, subdir, article_filename)
+            for subdir in os.listdir(data_dir)
+            for article_filename in os.listdir(os.path.join(data_dir, subdir))
+        ]
+    return []
 
 def get_probes() -> List[Article]:
     with open("data/probes.json", encoding="utf-8") as probes_file:
@@ -145,8 +154,10 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], option
     text_chunks = text.split(FORMULA_IDENTIFIER)
     num_missing_formulas = 0
     for text_chunk_idx, text_chunk in enumerate(text_chunks):
+        # Ensure that formulas are never perfectly adjacent to simplify decoding constraints
+        if text_chunk_idx > 1:
+            text_chunk = text_chunk or " "
         # Tokenize the text chunk and add it to the sequence
-        text_chunk = text_chunk or " " # Ensure that formulas are never perfectly adjacent to simplify decoding constraints
         text_token_ids: List[int] = text_tokenizer()(text_chunk)["input_ids"]
         sequence.token_ids += text_token_ids
         sequence.token_types += [TokenType.TEXT] * len(text_token_ids)
@@ -169,7 +180,11 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], option
         if options.baseline:
             # Decode formula back into text, with start and stop latex tokens, and add to the sequence
             if options.post_proc:
-                formula_sequence = tokenize_formula(formula["opt"], options)
+                try:
+                    formula_sequence = tokenize_formula(formula["opt"], options)
+                except ExceedMaxDepth:
+                    num_missing_formulas += 1
+                    continue
                 formula_text = decode_formula(formula_sequence.token_ids, formula_sequence.token_types)
             else:
                 formula_text = formula["tex"]
@@ -191,7 +206,11 @@ def tokenize_sequence(name: str, text: str, formulas: Dict[str, Formula], option
                 sequence.gpt_tokens.append([])
 
             # Add formula
-            formula_sequence = tokenize_formula(formula["opt"], options)
+            try:
+                formula_sequence = tokenize_formula(formula["opt"], options)
+            except ExceedMaxDepth:
+                num_missing_formulas += 1
+                continue
             sequence.token_ids += formula_sequence.token_ids
             sequence.token_types += formula_sequence.token_types
             sequence.pos_vecs += formula_sequence.pos_vecs
@@ -227,18 +246,33 @@ class PreTrainDataset(Dataset):
         super().__init__()
         for article_name in tqdm(article_filenames):
             with open(article_name, encoding="utf-8") as article_file:
-                article: Article = json.load(article_file)
+                if options.dataset == PretrainDataset.WIKI.value:
+                    article: Article = json.load(article_file)
+                    article_text = article["text"] + EOS_TOKEN
+                    sequence, cur_missing_formulas = tokenize_sequence(article_name, article_text, article["formulas"], options)
+                    self.num_missing_formulas += cur_missing_formulas
+                    if max_seq_len:
+                        split_sequences = split_sequence(sequence, max_seq_len)
+                        self.data += split_sequences
+                    else:
+                        self.data.append(sequence)
 
-            article_text = article["text"] + EOS_TOKEN
-            sequence, cur_missing_formulas = tokenize_sequence(article_name, article_text, article["formulas"], options)
-            self.num_missing_formulas += cur_missing_formulas
+                elif options.dataset == PretrainDataset.KHAN.value:
+                    sample: GenTaskSample = json.load(article_file)
+                    problem_text = "Problem: " + sample["prompt"]["text"] + " Solution: "
+                    problem_sequence, cur_missing_formulas = tokenize_sequence(article_file, problem_text, sample["prompt"]["formulas"], options)
+                    self.num_missing_formulas += cur_missing_formulas
+                    answer_text = sample["label"]["text"] + EOS_TOKEN
+                    answer_sequence, cur_missing_formulas = tokenize_sequence(article_file, answer_text, sample["label"]["formulas"], options)
+                    self.num_missing_formulas += cur_missing_formulas
+                    sequence = problem_sequence + answer_sequence
+                    if len(sequence) > options.max_seq_len:
+                        self.trimmed_sequences += 1
+                        continue
+                    self.data.append(sequence)
 
-            if max_seq_len:
-                split_sequences = split_sequence(sequence, max_seq_len)
-                self.data += split_sequences
-            else:
-                self.data.append(sequence)
         print("Missing", self.num_missing_formulas, "formulas")
+        print("Skipped", self.trimmed_sequences, "long sequences")
 
 class PreTrainDatasetPreloaded(Dataset):
     def __init__(self, articles: List[Article], options: TrainOptions, max_seq_len: Optional[int]):

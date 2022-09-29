@@ -18,6 +18,9 @@ _EMPTY_POS_ENCODING_FORTE = [0] * POS_ENCODING_SIZE_FORTE
 _EMPTY_POS_ENCODING_SIN = [0] * EMB_SIZE
 _EMPTY_POS_ENCODING_RNN = [[0] * MAX_FORMULA_WIDTH] * MAX_FORMULA_DEPTH
 
+class ExceedMaxDepth(Exception):
+    pass
+
 def get_empty_pos_encoding(tpe: str):
     if tpe == TPE.FORTE.value:
         return _EMPTY_POS_ENCODING_FORTE
@@ -108,6 +111,9 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
     If formula is None, interpret as END token.
     Returns if the provided node got added to the running list (was not skipped).
     """
+
+    if cur_level >= MAX_FORMULA_DEPTH:
+        raise ExceedMaxDepth()
 
     children = formula and formula[2]
     token_type = None

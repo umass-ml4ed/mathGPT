@@ -202,6 +202,14 @@ def decode_formula(token_ids: torch.Tensor, token_types: torch.Tensor):
 
     return ""
 
+def decode_formula_and_cycle(token_ids: torch.Tensor, token_types: torch.Tensor):
+    """
+    Decode a formula and cycle through the text tokenizer for consistency with baseline output
+    Necessary because text tokenizer is not idempotent because of white space stripping
+    """
+    formula_text = decode_formula(token_ids, token_types)
+    return text_tokenizer().decode(text_tokenizer()(formula_text)["input_ids"])
+
 def decode_batch(batch: CollatedBatch) -> List[str]:
     """
     Given a batch, decode it into human-readable text
@@ -229,7 +237,7 @@ def decode_batch(batch: CollatedBatch) -> List[str]:
             # At end formula, switch to text context
             if token_type == TokenType.END_FORMULA:
                 if sub_seq_start != sub_seq_end:
-                    result += decode_formula(
+                    result += decode_formula_and_cycle(
                         batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end],
                         batch["token_types"][seq_idx][sub_seq_start : sub_seq_end]
                     )
@@ -246,13 +254,14 @@ def decode_batch(batch: CollatedBatch) -> List[str]:
 
         # Decode any trailing tokens at the end
         if sub_seq_start != sub_seq_end:
-            if not all(batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end] == PADDING_TOKEN_ID): # TODO: probably a more elegant way to handle this
-                token_ids = batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end]
-                non_padding_idx = token_ids != PADDING_TOKEN_ID # TODO: why would we have padding that is not preceded by EOS?
+            token_ids = batch["token_ids"][seq_idx][sub_seq_start : sub_seq_end]
+            # Trailing padding can be side effect of beam search and formula-only/text-only eval, different conditions for our model and baseline
+            if not all(token_ids == PADDING_TOKEN_ID):
+                non_padding_idx = token_ids != PADDING_TOKEN_ID
                 if is_text:
                     result += text_tokenizer().decode(token_ids[non_padding_idx])
                 else:
-                    result += decode_formula(
+                    result += decode_formula_and_cycle(
                         token_ids[non_padding_idx],
                         batch["token_types"][seq_idx][sub_seq_start : sub_seq_end][non_padding_idx]
                     )

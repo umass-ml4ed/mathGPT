@@ -10,7 +10,10 @@ from transformers import GPT2TokenizerFast
 
 from vocabulary import Vocabulary, UNK_MAP
 from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, ProblemSolvingTaskSample, Formula, OPT
-from constants import TYPE_STR_TO_INT, WIKI_DATA, OFEQ_DATA, AS_ANSWERS, AS_PROBLEMS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, GSM8K_DATA, SpecialNumToken, SpecialOpToken, SpecialVarToken
+from constants import(
+    TYPE_STR_TO_INT, WIKI_DATA, OFEQ_DATA, EXEQ_DATA, AS_ANSWERS, AS_PROBLEMS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, GSM8K_DATA,
+    SpecialNumToken, SpecialOpToken, SpecialVarToken
+)
 
 START_PARENS = ("normal-(", "normal-[", "normal-{")
 END_PARENS = ("normal-)", "normal-]", "normal-}")
@@ -197,12 +200,13 @@ def analyze_wiki():
                 yield article_name, formula
     analyze_data(get_wiki_formulas())
 
-def analyze_mathsum():
-    with open(os.path.join(OFEQ_DATA, "train.json"), encoding="utf-8") as train_file:
+def analyze_mathsum(dataset: str):
+    data_dir = OFEQ_DATA if dataset == "OFEQ-10k" else EXEQ_DATA
+    with open(os.path.join(data_dir, "train.json"), encoding="utf-8") as train_file:
         train_data: List[GenTaskSample] = json.load(train_file)
-    with open(os.path.join(OFEQ_DATA, "val.json"), encoding="utf-8") as val_file:
+    with open(os.path.join(data_dir, "val.json"), encoding="utf-8") as val_file:
         val_data: List[GenTaskSample] = json.load(val_file)
-    with open(os.path.join(OFEQ_DATA, "test.json"), encoding="utf-8") as test_file:
+    with open(os.path.join(data_dir, "test.json"), encoding="utf-8") as test_file:
         test_data: List[GenTaskSample] = json.load(test_file)
     all_formulas = []
     for src in [train_data, val_data, test_data]:

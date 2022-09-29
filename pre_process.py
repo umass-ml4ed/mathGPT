@@ -8,10 +8,24 @@ import pandas
 
 from TangentCFT.TangentS.math_tan.math_document import MathDocument
 
-from pre_process_utils import process_articles, process_raw_text, html_to_latex, wrap_formulas, remove_calculator_annotations, get_boxed_answer, all_latexml_errs, all_tangent_cft_errs
+from pre_process_utils import (
+    process_articles, process_raw_text, html_to_latex, wrap_formulas, remove_calculator_annotations, get_boxed_answer,
+    all_latexml_errs, all_tangent_cft_errs
+)
 from vocabulary import Vocabulary
 from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, ProblemSolvingTaskSample
-from constants import FORMULA_IDENTIFIER, DATA, WIKI_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, GSM8K_DATA, MATH_DATA, MWP_DATA
+from constants import (
+    FORMULA_IDENTIFIER, DATA, WIKI_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, GSM8K_DATA, MATH_DATA, MWP_DATA, KHAN_DATA
+)
+
+def dump_errs(err_filename: str, err_data: dict):
+    os.makedirs("results", exist_ok=True)
+    with open(os.path.join("results", err_filename), "w", encoding="utf-8") as err_file:
+        json.dump({
+            **err_data,
+            "all_latexml_errs": all_latexml_errs,
+            "all_tangent_cft_errs": all_tangent_cft_errs,
+        }, err_file, indent=2, ensure_ascii=False)
 
 def process_wikipedia_data():
     """
@@ -48,12 +62,7 @@ def process_wikipedia_data():
     # Dump vocab to file
     Vocabulary.dump()
 
-    with open("wiki_errs.json", "w") as err_file:
-        json.dump({
-            **err_data,
-            "all_latexml_errs": all_latexml_errs,
-            "all_tangent_cft_errs": all_tangent_cft_errs,
-        }, err_file, indent=2)
+    dump_errs("wiki_errs.json", err_data)
 
 def process_mathsum_data(dataset: str):
     """
@@ -104,12 +113,7 @@ def process_mathsum_data(dataset: str):
         with open(out_filename, "w", encoding="utf-8") as out_file:
             json.dump(samples, out_file, indent=2, ensure_ascii=False)
 
-    with open("mathsum_errs.json", "w") as err_file:
-        json.dump({
-            **err_data,
-            "all_latexml_errs": all_latexml_errs,
-            "all_tangent_cft_errs": all_tangent_cft_errs,
-        }, err_file, indent=2)
+    dump_errs(f"{dataset}_errs.json", err_data)
 
 def process_probes():
     """
@@ -208,13 +212,7 @@ def process_answer_scoring_data():
     with open(AS_ANSWERS, "w", encoding="utf-8") as answer_file:
         json.dump(samples, answer_file, indent=2, ensure_ascii=False)
 
-    # Dump errors
-    with open("answer_scoring_errs.json", "w", encoding="utf-8") as err_file:
-        json.dump({
-            **err_data,
-            "all_latexml_errs": all_latexml_errs,
-            "all_tangent_cft_errs": all_tangent_cft_errs,
-        }, err_file, indent=2, ensure_ascii=False)
+    dump_errs("answer_scoring_errs.json", err_data)
 
 def process_feedback_data():
     """
@@ -308,14 +306,8 @@ def process_feedback_data():
     with open(FEEDBACK_SAMPLES, "w", encoding="utf-8") as sample_file:
         json.dump(samples, sample_file, indent=2, ensure_ascii=False)
 
-    # Dump errors
     print("Skipped", skipped)
-    with open("feedback_errs.json", "w", encoding="utf-8") as err_file:
-        json.dump({
-            **err_data,
-            "all_latexml_errs": all_latexml_errs,
-            "all_tangent_cft_errs": all_tangent_cft_errs,
-        }, err_file, indent=2, ensure_ascii=False)
+    dump_errs("feedback_errs.json", err_data)
 
 def process_gsm8k_data():
     """
@@ -348,13 +340,7 @@ def process_gsm8k_data():
         with open(os.path.join(GSM8K_DATA, f"{split}.json"), "w", encoding="utf-8") as out_file:
             json.dump(samples, out_file, indent=2, ensure_ascii=False)
 
-    # Dump errors
-    with open("gsm8k_errs.json", "w", encoding="utf-8") as err_file:
-        json.dump({
-            **err_data,
-            "all_latexml_errs": all_latexml_errs,
-            "all_tangent_cft_errs": all_tangent_cft_errs,
-        }, err_file, indent=2, ensure_ascii=False)
+    dump_errs("gsm8k_errs.json", err_data)
 
 def process_math_data():
     """
@@ -401,13 +387,7 @@ def process_math_data():
         with open(os.path.join(MATH_DATA, f"{split}.json"), "w", encoding="utf-8") as out_file:
             json.dump(samples, out_file, indent=2, ensure_ascii=False)
 
-    # Dump errors
-    with open("math_errs.json", "w", encoding="utf-8") as err_file:
-        json.dump({
-            **err_data,
-            "all_latexml_errs": all_latexml_errs,
-            "all_tangent_cft_errs": all_tangent_cft_errs,
-        }, err_file, indent=2, ensure_ascii=False)
+    dump_errs("math_errs.json", err_data)
 
 def process_mwp_data():
     """
@@ -434,10 +414,38 @@ def process_mwp_data():
     with open(MWP_DATA, "w", encoding="utf-8") as out_file:
         json.dump(samples, out_file, indent=2, ensure_ascii=False)
 
-    # Dump errors
-    with open("mwp_errs.json", "w", encoding="utf-8") as err_file:
-        json.dump({
-            **err_data,
-            "all_latexml_errs": all_latexml_errs,
-            "all_tangent_cft_errs": all_tangent_cft_errs,
-        }, err_file, indent=2, ensure_ascii=False)
+    dump_errs("mwp_errs.json", err_data)
+
+def process_khan():
+    """
+    Process all data in the Khan Academy dataset
+    """
+    # Gather all problems
+    batch_text = []
+    filenames = []
+    for subdir in tqdm(os.listdir("../amps/khan")):
+        if not os.path.isdir(f"../amps/khan/{subdir}"):
+            continue
+        os.makedirs(os.path.join(KHAN_DATA, subdir), exist_ok=True)
+        for problem_filename in os.listdir(f"../amps/khan/{subdir}"):
+            with open(f"../amps/khan/{subdir}/{problem_filename}", encoding="utf-8") as problem_file:
+                sample = json.load(problem_file)
+            filenames.append(f"{subdir}/{problem_filename}")
+            batch_text.append(sample["problem"])
+            batch_text.append(" ".join(sample["hints"]))
+
+    # Batch process
+    batch_size = 50
+    err_data = {}
+    for batch_start_idx in tqdm(range(0, len(batch_text), batch_size * 2)):
+        processed_text = process_raw_text(batch_text[batch_start_idx : batch_start_idx + batch_size * 2], err_data, False)
+        for sample_idx, filename in zip(range(0, len(processed_text), 2), filenames[batch_start_idx // 2 : batch_start_idx // 2 + batch_size]):
+            if None in processed_text[sample_idx : sample_idx + 2]:
+                continue
+            with open(os.path.join(KHAN_DATA, filename), "w", encoding="utf-8") as out_file:
+                json.dump({
+                    "prompt": processed_text[sample_idx],
+                    "label": processed_text[sample_idx + 1],
+                }, out_file, indent=2, ensure_ascii=False)
+
+    dump_errs("khan_errs.json", err_data)
