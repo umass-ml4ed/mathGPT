@@ -42,10 +42,23 @@ def replace_text(sequence: str):
     return final_sequence
 
 def sanitize(sequence: str):
-    return text_tokenizer().decode(text_tokenizer()(sequence)["input_ids"])
+    final_sequence = ""
+    start_form_idx = sequence.find(" <m> ")
+    end_form_idx = 0
+    while start_form_idx >= 0:
+        final_sequence += sequence[end_form_idx : start_form_idx]
+        end_form_idx = sequence.find(" </m> ", start_form_idx)
+        if end_form_idx != -1:
+            end_form_idx += 6
+        else:
+            end_form_idx = len(sequence)
+        final_sequence += text_tokenizer().decode(text_tokenizer()(sequence[start_form_idx : end_form_idx])["input_ids"])
+        start_form_idx = sequence.find(" <m> ", end_form_idx)
+    final_sequence += sequence[end_form_idx:]
+    return final_sequence
 
 def eval_with_substitution(model_name: str, fold: int, eval: str):
-    fn = replace_formulas if eval == "text" else replace_text if eval == "math" else lambda x: x
+    fn = replace_formulas if eval == "text" else replace_text if eval == "math" else sanitize
     with open(f"labels_{model_name}_{fold}.txt", encoding="utf-8") as label_file:
         labels = [fn(label.strip()) for label in label_file.readlines()]
     with open(f"preds_{model_name}_{fold}.txt", encoding="utf-8") as pred_file:
@@ -115,5 +128,5 @@ def error_analysis(model_1: str, model_2: str):
         print("")
 
 if __name__ == "__main__":
-    # eval_with_substitution(sys.argv[1], sys.argv[2], sys.argv[3])
-    error_analysis(sys.argv[1], sys.argv[2])
+    eval_with_substitution(sys.argv[1], sys.argv[2], sys.argv[3])
+    # error_analysis(sys.argv[1], sys.argv[2])

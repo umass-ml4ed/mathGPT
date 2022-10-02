@@ -13,9 +13,9 @@ from pre_process_utils import (
     all_latexml_errs, all_tangent_cft_errs
 )
 from vocabulary import Vocabulary
-from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, ProblemSolvingTaskSample
+from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, ProblemSolvingTaskSample, CTTaskSample
 from constants import (
-    FORMULA_IDENTIFIER, DATA, WIKI_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, GSM8K_DATA, MATH_DATA, MWP_DATA, KHAN_DATA
+    FORMULA_IDENTIFIER, DATA, WIKI_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, GSM8K_DATA, MATH_DATA, MWP_DATA, KHAN_DATA, CT_DATA
 )
 
 def dump_errs(err_filename: str, err_data: dict):
@@ -449,3 +449,90 @@ def process_khan():
                 }, out_file, indent=2, ensure_ascii=False)
 
     dump_errs("khan_errs.json", err_data)
+
+def process_ct():
+    """
+    Process Cognitive Tutor dataset
+    """
+    # Load data and do initial analysis
+    df = pandas.read_csv("../ds660.csv", encoding="utf-8")
+    # print("Special steps:", df["Step Name"][df["Step Name"].apply(lambda x: "=" not in x if isinstance(x, str) else False)].unique().tolist())
+    print("Unique actions:", df["Action"].unique().tolist())
+    print("Unique outcomes:", df["Outcome"].unique().tolist())
+    print("Unique problems:", df["Problem Name"].unique().size)
+    print("Unique students:", df["Anon Student Id"].unique().size)
+    student_problem_counts = df[["Anon Student Id", "Problem Name"]].drop_duplicates().groupby("Anon Student Id").count().reset_index()["Problem Name"]
+    print("Problems per student- min:", student_problem_counts.min(), "max:", student_problem_counts.max(), "avg:", student_problem_counts.mean())
+    # Outcome = nan iff Action = SWITCH
+    # Action = nan iff Step Name is not equation or Outcome is HINT
+    # Step Name = FinalAnswer and Input = nan iff Outcome is HINT
+
+    # Extract relevant attributes from each row
+    problem_id_to_text: Dict[str, str] = {}
+    batch_text: List[str] = []
+    raw_samples: List[dict] = []
+    for _, row in tqdm(df.iterrows(), total=df.shape[0]):
+        if not isinstance(row["Step Name"], str) or not ("=" in row["Step Name"] or row["Step Name"] == "FinalAnswer"):
+            continue
+        if not isinstance(row["Outcome"], str) or row["Outcome"] == "INITIAL_HINT" or row["Outcome"] == "HINT_LEVEL_CHANGE":
+            continue
+        problem_text = "<m> " + row["Problem Name"].split(" ", 1)[1] + " </m>" # Remove label preceding formula
+        problem_id_to_text[row["Problem Name"]] = problem_text
+        batch_text.append(
+            row["Step Name"]
+            if row["Step Name"] == "FinalAnswer" else
+            "<m> " + row["Step Name"].rsplit(" ", 1)[0] + " </m>"
+        ) # Remove label following formula
+        batch_text.append(
+            "<m> " + row["Input"] + " </m>"
+            if isinstance(row["Input"], str) else "")
+        batch_text.append(
+            row["Feedback Text"].replace("<expression>", "<m>").replace("</expression>", "</m>")
+            if isinstance(row["Feedback Text"], str) else "")
+        raw_samples.append({
+            "action": row["Action"] if isinstance(row["Action"], str) else "",
+            "outcome": row["Outcome"],
+            "student_id": row["Anon Student Id"],
+            "problem_id": row["Problem Name"]
+        })
+
+    batch_size = 50
+    err_data = {}
+
+    # Process all problems
+    print("Process problems")
+    problem_id_to_processed: Dict[str, Article] = {}
+    problem_ids = list(problem_id_to_text.keys())
+    problem_texts = list(problem_id_to_text.values())
+    for batch_start_idx in tqdm(range(0, len(problem_texts), batch_size)):
+        processed_text = process_raw_text(problem_texts[batch_start_idx : batch_start_idx + batch_size], err_data)
+        for problem, problem_id in zip(processed_text, problem_ids[batch_start_idx : batch_start_idx + batch_size]):
+            problem_id_to_processed[problem_id] = problem
+
+    # Process and aggregate all steps by student/problem pairs
+    print("Process steps")
+    samples: List[CTTaskSample] = []
+    cur_sample: Optional[CTTaskSample] = None
+    for batch_start_idx in tqdm(range(0, len(batch_text), batch_size * 3)):
+        processed_text = process_raw_text(batch_text[batch_start_idx : batch_start_idx + batch_size * 3], err_data)
+        for sample_idx, raw_sample in zip(range(0, len(processed_text), 3), raw_samples[batch_start_idx // 3 : batch_start_idx // 3 + batch_size]):
+            if not cur_sample or (raw_sample["student_id"], raw_sample["problem_id"]) != (cur_sample["student_id"], cur_sample["problem_id"]):
+                cur_sample = {
+                    "student_id": raw_sample["student_id"],
+                    "problem_id": raw_sample["problem_id"],
+                    "problem": problem_id_to_processed[raw_sample["problem_id"]],
+                    "steps": []
+                }
+                samples.append(cur_sample)
+            cur_sample["steps"].append({
+                "step": processed_text[sample_idx],
+                "input": processed_text[sample_idx + 1],
+                "feedback": processed_text[sample_idx + 2],
+                "action": raw_sample["action"],
+                "outcome": raw_sample["outcome"],
+            })
+
+    with open(CT_DATA, "w", encoding="utf-8") as out_file:
+        json.dump(samples, out_file, indent=2, ensure_ascii=False)
+
+    dump_errs("ct_errs.json", err_data)

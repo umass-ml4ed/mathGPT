@@ -37,6 +37,19 @@ class ProblemSolvingTaskSample(TypedDict):
     answer: Article
     level: Optional[str]
 
+class CTStep(TypedDict):
+    step: Article
+    input: Article
+    feedback: Article
+    action: str
+    outcome: str
+
+class CTTaskSample(TypedDict):
+    student_id: str
+    problem_id: str
+    problem: Article
+    steps: List[CTStep]
+
 class SequenceMetaData(TypedDict):
     # For gen tasks
     prompt_length: Optional[int]

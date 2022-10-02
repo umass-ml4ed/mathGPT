@@ -14,8 +14,8 @@ import numpy as np
 from model_math_gpt import MathGPTBase, MathGPTLM, MathGPTClassifier
 from model_baseline import GPTLMBaseline, GPTClassifierBaseline
 from loading import (
-    get_article_names, get_headline_data, get_answer_scoring_data, get_feedback_data, get_problem_solving_data, get_mwp_data, get_probes,
-    Dataset, PreTrainDataset, PreTrainDatasetPreloaded, GenTaskDataset, AnswerScoringDataset, FeedbackDataset, ProblemSolvingDataset,
+    get_article_names, get_headline_data, get_answer_scoring_data, get_feedback_data, get_problem_solving_data, get_mwp_data, get_ct_data, get_probes,
+    Dataset, PreTrainDataset, PreTrainDatasetPreloaded, GenTaskDataset, AnswerScoringDataset, FeedbackDataset, ProblemSolvingDataset, CTDataset,
     trim_batch, get_data_loader
 )
 from evaluate import evaluate_lm, evaluate_lm_accuracy, evaluate_cls_task, evaluate_gen_task, evaluate_problem_solving_task
@@ -151,17 +151,26 @@ def train(model: Union[MathGPTBase, DDP], model_name: str, train_loader: DataLoa
 
     return best_metric
 
-def pretrain(model_name: str, checkpoint_name: Optional[str], options_dict: dict):
+def pretrain(model_name: str, checkpoint_name: Optional[str], pretrained_name: Optional[str], options_dict: dict):
     if checkpoint_name:
         model, checkpoint, options = load_model(checkpoint_name, options_dict.get("ddp", False))
         options.update(options_dict)
     else:
         checkpoint = None
-        options = TrainOptions(options_dict)
+        if pretrained_name:
+            options = load_options(pretrained_name)
+            options.update(options_dict)
+        else:
+            options = TrainOptions(options_dict)
         if options.baseline:
             model = GPTLMBaseline().to(device)
         else:
             model = MathGPTLM(options).to(device)
+        if pretrained_name:
+            print("Loading pre-trained model...")
+            checkpoint: Checkpoint = torch.load(f"{pretrained_name}.pt", map_location=device)
+            load_pretrained(model, checkpoint["model_state_dict"] if "model_state_dict" in checkpoint else checkpoint)
+            checkpoint = None
         if options.ddp:
             model = DDP(model, device_ids=[torch.cuda.current_device()], find_unused_parameters=True)
 
@@ -276,6 +285,10 @@ def train_downstream_task(model_name: str, checkpoint_name: Optional[str], pretr
         train_samples, val_samples, _ = get_mwp_data(fold)
         train_data = GenTaskDataset(train_samples, task, options)
         val_data = GenTaskDataset(val_samples, task, options)
+    elif task == DownstreamTask.CT:
+        train_samples, val_samples, _ = get_ct_data(fold)
+        train_data = CTDataset(train_samples, options)
+        val_data = CTDataset(val_samples, options)
     else:
         raise Exception(f"Unsupported task {task}")
     train_loader = get_data_loader(train_data, task, options.batch_size, True, True, options)
@@ -314,6 +327,10 @@ def evaluate_downstream_task(model_name: str, task: DownstreamTask, overwrite_re
     elif task == DownstreamTask.MWP:
         _, _, test_samples = get_mwp_data(fold)
         test_data = GenTaskDataset(test_samples, task, options)
+        _, results, template = evaluate_gen_task(model_name, model, test_data, task, fold, options)
+    elif task == DownstreamTask.CT:
+        _, _, test_samples = get_ct_data(fold)
+        test_data = CTDataset(test_samples, options)
         _, results, template = evaluate_gen_task(model_name, model, test_data, task, fold, options)
     else:
         raise Exception(f"Unsupported task {task}")
@@ -369,6 +386,9 @@ def test_gen_task(model_name: str, task: DownstreamTask, test_options: dict):
     elif task == DownstreamTask.MWP:
         _, _, samples = get_mwp_data()
         dataset = GenTaskDataset(samples[start_idx : start_idx + samples_to_try], task, options)
+    elif task == DownstreamTask.CT:
+        _, _, samples = get_ct_data()
+        dataset = CTDataset(samples[start_idx : start_idx + samples_to_try], options)
     else:
         raise Exception(f"Unsupported task {task}")
     data_loader = get_data_loader(dataset, task, 1, False, False, options)

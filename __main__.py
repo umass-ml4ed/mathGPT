@@ -4,7 +4,7 @@ import torch.multiprocessing as mp
 
 from pre_process import (
     process_wikipedia_data, process_probes, process_mathsum_data, process_answer_scoring_data, process_feedback_data,
-    process_gsm8k_data, process_math_data, process_mwp_data, process_khan
+    process_gsm8k_data, process_math_data, process_mwp_data, process_khan, process_ct
 )
 from analyze_data import analyze_wiki, analyze_mathsum, analyze_answer_scoring, analyze_feedback, analyze_vocab, analyze_gsm8k, analyze_math, analyze_mwp
 from analyze_model import visualize_attention
@@ -38,6 +38,7 @@ def main():
     parser.add_argument("--preprocess_gsm8k", action="store_true", help="Process GSM8K dataset")
     parser.add_argument("--preprocess_math", action="store_true", help="Process MATH dataset")
     parser.add_argument("--preprocess_mwp", action="store_true", help="Process Math23K dataset")
+    parser.add_argument("--preprocess_ct", action="store_true", help="Process Cognitive Tutor dataset")
     parser.add_argument("--process_probes", action="store_true", help="Process LM probes and save to JSON files")
     parser.add_argument("--analyze_wiki", action="store_true", help="Produce stats on pre-processed Wikipedia dataset")
     parser.add_argument("--analyze_mathsum", help="Produce stats on pre-processed MathSum dataset", choices=["OFEQ-10k", "EXEQ-300k"])
@@ -138,6 +139,8 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
         process_math_data()
     if args.preprocess_mwp:
         process_mwp_data()
+    if args.preprocess_ct:
+        process_ct()
     if args.process_probes:
         process_probes()
     if args.analyze_wiki:
@@ -159,7 +162,7 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
     if args.visualize_attention:
         visualize_attention(args.name, args.visualize_attention, arg_dict)
     if args.pretrain:
-        pretrain(args.name, args.checkpoint_name, arg_dict)
+        pretrain(args.name, args.checkpoint_name, args.pretrained_name, arg_dict)
     if args.evaluate_lm:
         evaluate_pretrained_lm(args.name, arg_dict)
     if args.test_lm:

@@ -75,6 +75,7 @@ class DownstreamTask(Enum):
     GSM8K = "gsm8k"
     MATH = "math"
     MWP = "mwp"
+    CT = "ct"
 
 DOWNSTREAM_TASK_TO_NUM_CLASSES = {
     DownstreamTask.ANSWER_SCORING: 5,
@@ -121,3 +122,4 @@ GSM8K_DATA = "data/GSM8K"
 MATH_DATA = "data/MATH"
 MWP_DATA = "data/mwp/samples.json"
 KHAN_DATA = "data/khan"
+CT_DATA = "data/ct/samples.json"
