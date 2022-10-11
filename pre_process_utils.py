@@ -377,7 +377,7 @@ esc_to_latex = [
 
 latex_math_macros = {latex[1] for latex in esc_to_latex if latex[2]}.union({"^", "_"})
 
-math_ops = {"=", "<", ">", "+", "-", "*", "/", ":", "(", ")", "\\{", "\\}", "[", "]", "\\$", "%"}
+math_ops = {"=", "<", ">", "+", "-", "*", "/", "^", ":", "(", ")", "\\{", "\\}", "[", "]", "\\$", "%"}
 
 latex_ops = {"\\times", "\\div", "\\ne", "\\ge", "\\le", "\\angle", "\\forall", "\\equiv", "\\exists", "\\notin", "\\in", "\\prod", "\\cdot", "\\degree", "\\approx", "\\surd", "\\vee"}
 

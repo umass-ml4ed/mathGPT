@@ -9,7 +9,10 @@ from loading import trim_batch
 from vocabulary import Vocabulary, UNK_MAP, MATH_TYPES
 from math_tokenize import POS_ENCODING_SIZE_FORTE
 from data_types import CollatedBatch
-from constants import TokenType, TPE, SpecialOpToken, PastKeyValues, EMB_SIZE, PADDING_TOKEN_ID, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH, TEXT_VOCAB_SIZE
+from constants import (
+    TokenType, TPE, SpecialOpToken, PastKeyValues,
+    MODEL_SIZE_TO_EMB_SIZE, MODEL_SIZE_TO_NAME, PADDING_TOKEN_ID, MAX_FORMULA_DEPTH, MAX_FORMULA_WIDTH, TEXT_VOCAB_SIZE
+)
 from utils import device, TrainOptions, text_tokenizer
 
 # Leverages pre-trained GPT2 from transformers library
@@ -19,14 +22,8 @@ from utils import device, TrainOptions, text_tokenizer
 # Map of type to allowed types for next token
 ALLOWED_TRANSITIONS: Dict[TokenType, List[TokenType]] = {
     TokenType.TEXT: [TokenType.TEXT, TokenType.START_FORMULA],
-    TokenType.START_FORMULA: [TokenType.VAR, TokenType.NUM, TokenType.OP],
     TokenType.END_FORMULA: [TokenType.TEXT],
-    TokenType.VAR: [TokenType.VAR, TokenType.NUM, TokenType.OP, TokenType.END],
-    TokenType.NUM: [TokenType.VAR, TokenType.NUM, TokenType.OP, TokenType.END],
-    TokenType.OP: [TokenType.VAR, TokenType.NUM, TokenType.OP, TokenType.END],
-    TokenType.END: [TokenType.VAR, TokenType.NUM, TokenType.OP, TokenType.END],
-    TokenType.MATH_TEXT: [TokenType.MATH_TEXT, TokenType.END],
-    # Some transitions are not just based on preceding type, so those are handled with additional rules
+    # Remaining transition rules depend on model settings or local context
 }
 
 def apply_unks(token_ids: torch.Tensor, batch: CollatedBatch):
@@ -63,20 +60,21 @@ class MathGPTBase(nn.Module):
         super().__init__()
         self.options = options
         self.num_types = len(TokenType) if options.math_text else len(TokenType) - 1
+        self.emb_size = MODEL_SIZE_TO_EMB_SIZE[options.model_size]
 
         # Extract pre-trained GPT2 transformer and text prediction head
-        self.gpt2_lm: GPT2LMHeadModel = GPT2LMHeadModel.from_pretrained("gpt2")
+        self.gpt2_lm: GPT2LMHeadModel = GPT2LMHeadModel.from_pretrained(MODEL_SIZE_TO_NAME[options.model_size])
         self.transformer: GPT2Model = self.gpt2_lm.transformer
         if self.options.freeze_wte:
             self.transformer.wte.weight.requires_grad = False
 
         # Create type embeddings
-        self.type_embeddings = nn.Embedding(self.num_types, EMB_SIZE) # TODO: also try just have text, math, and transition type embeddings
+        self.type_embeddings = nn.Embedding(self.num_types, self.emb_size) # TODO: also try just have text, math, and transition type embeddings
         init_small_weights(self.type_embeddings)
 
         # Create token embedding matrix for each type
         self.token_embeddings = nn.ModuleDict({
-            str(token_type.value): nn.Embedding(Vocabulary.num_tokens_in_type(token_type), EMB_SIZE)
+            str(token_type.value): nn.Embedding(Vocabulary.num_tokens_in_type(token_type), self.emb_size)
             for token_type in MATH_TYPES
         })
         # Use pre-trained text token embeddings
@@ -84,24 +82,41 @@ class MathGPTBase(nn.Module):
         if self.options.math_text:
             self.token_embeddings[str(TokenType.MATH_TEXT.value)] = self.transformer.wte
         # Single embedding each for special single-tokens types
-        self.token_embeddings[str(TokenType.START_FORMULA.value)] = nn.Embedding(1, EMB_SIZE)
-        self.token_embeddings[str(TokenType.END_FORMULA.value)] = nn.Embedding(1, EMB_SIZE)
-        self.token_embeddings[str(TokenType.END.value)] = nn.Embedding(1, EMB_SIZE)
+        self.token_embeddings[str(TokenType.START_FORMULA.value)] = nn.Embedding(1, self.emb_size)
+        self.token_embeddings[str(TokenType.END_FORMULA.value)] = nn.Embedding(1, self.emb_size)
+        self.token_embeddings[str(TokenType.END.value)] = nn.Embedding(1, self.emb_size)
 
         if options.shared_emb:
             sep_hidden_size = 10
             self.shared_emb_perturbation = nn.Sequential(
-                nn.Linear(EMB_SIZE, sep_hidden_size, bias=False),
+                nn.Linear(self.emb_size, sep_hidden_size, bias=False),
                 nn.Tanh(),
-                nn.Linear(sep_hidden_size, EMB_SIZE, bias=False)
+                nn.Linear(sep_hidden_size, self.emb_size, bias=False)
             )
             self.shared_emb_perturbation.apply(init_small_weights)
 
         # Linear projection to convert raw math pos encoding into one that can be added to the input embeddings
         if options.tpe == TPE.FORTE.value:
-            self.math_embedding_projection = nn.Linear(POS_ENCODING_SIZE_FORTE, EMB_SIZE, bias=False)
+            self.math_embedding_projection = nn.Linear(POS_ENCODING_SIZE_FORTE, self.emb_size, bias=False)
         elif options.tpe == TPE.RNN.value:
-            self.math_embedding_model = RNNPosEncoder()
+            self.math_embedding_model = RNNPosEncoder(self.emb_size)
+
+        # Set allowed transitions based on settings
+        self.allowed_transitions = {src: allowed.copy() for src, allowed in ALLOWED_TRANSITIONS.items()}
+        if options.num_to_tree and options.sd_to_tree:
+            self.allowed_transitions[TokenType.NUM] = [TokenType.NUM, TokenType.END]
+            self.allowed_transitions[TokenType.VAR] = [TokenType.VAR, TokenType.OP, TokenType.END]
+            self.allowed_transitions[TokenType.OP] = [TokenType.VAR, TokenType.OP, TokenType.END]
+            self.allowed_transitions[TokenType.END] = [TokenType.VAR, TokenType.OP, TokenType.END]
+            self.allowed_transitions[TokenType.START_FORMULA] = [TokenType.VAR, TokenType.OP]
+        else:
+            self.allowed_transitions[TokenType.NUM] = [TokenType.VAR, TokenType.NUM, TokenType.OP, TokenType.END]
+            self.allowed_transitions[TokenType.VAR] = [TokenType.VAR, TokenType.NUM, TokenType.OP, TokenType.END]
+            self.allowed_transitions[TokenType.OP] = [TokenType.VAR, TokenType.NUM, TokenType.OP, TokenType.END]
+            self.allowed_transitions[TokenType.END] = [TokenType.VAR, TokenType.NUM, TokenType.OP, TokenType.END]
+            self.allowed_transitions[TokenType.START_FORMULA] = [TokenType.VAR, TokenType.NUM, TokenType.OP]
+        if options.math_text:
+            self.allowed_transitions[TokenType.MATH_TEXT] = [TokenType.MATH_TEXT, TokenType.END]
 
     def get_math_embeddings(self, batch: CollatedBatch, math_idxs: torch.Tensor) -> torch.Tensor:
         """
@@ -123,7 +138,7 @@ class MathGPTBase(nn.Module):
             input_embeddings = self.type_embeddings(batch["token_types"])
         else:
             batch_size, max_seq_len = batch["token_ids"].shape
-            input_embeddings = torch.zeros((batch_size, max_seq_len, EMB_SIZE)).to(device)
+            input_embeddings = torch.zeros((batch_size, max_seq_len, self.emb_size)).to(device)
 
         # Add token embeddings for each type
         token_ids = apply_unks(batch["token_ids"], batch)
@@ -141,7 +156,7 @@ class MathGPTBase(nn.Module):
             selected_tokens = batch["gpt_tokens"][batch["use_shared_emb"]]
             # Get GPT token embeddings, excluding the padding regions
             text_emb_mask = selected_tokens != PADDING_TOKEN_ID
-            text_embs = torch.zeros((selected_tokens.shape[0], selected_tokens.shape[1], EMB_SIZE)).to(device)
+            text_embs = torch.zeros((selected_tokens.shape[0], selected_tokens.shape[1], self.emb_size)).to(device)
             text_embs[text_emb_mask] = self.token_embeddings[str(TokenType.TEXT.value)](selected_tokens[text_emb_mask])
             # Get average of GPT token embeddings for each math token
             emb_avgs = torch.sum(text_embs, dim=1) / torch.sum(text_emb_mask, dim=-1).unsqueeze(1)
@@ -179,11 +194,11 @@ class MathGPTLM(MathGPTBase):
 
         if options.joint:
             # Predictive type layer for generation
-            self.type_pred_layer = nn.Linear(EMB_SIZE, self.num_types)
+            self.type_pred_layer = nn.Linear(self.emb_size, self.num_types)
 
             # Predictive token layers for generation
             self.type_to_token_pred_layer = nn.ModuleDict({
-                str(token_type.value): nn.Linear(EMB_SIZE, Vocabulary.num_tokens_in_type(token_type))
+                str(token_type.value): nn.Linear(self.emb_size, Vocabulary.num_tokens_in_type(token_type))
                 for token_type in MATH_TYPES
             })
             # Use pre-trained predictive head for text tokens
@@ -203,7 +218,7 @@ class MathGPTLM(MathGPTBase):
                 TokenType.END_FORMULA: 1,
             }
             if self.options.init_math_pred:
-                self.math_pred_layer = nn.Linear(EMB_SIZE, sum(self.type_to_size.values()), bias=False)
+                self.math_pred_layer = nn.Linear(self.emb_size, sum(self.type_to_size.values()), bias=False)
                 with torch.no_grad():
                     start_idx = 0
                     for token_type in TokenType:
@@ -219,7 +234,7 @@ class MathGPTLM(MathGPTBase):
                                         self.math_pred_layer.weight[start_idx + token_id] = avg_pred_weights
                         start_idx += self.type_to_size[token_type]
             else:
-                self.math_pred_layer = nn.Linear(EMB_SIZE, sum(self.type_to_size.values()), bias=self.options.lmhb)
+                self.math_pred_layer = nn.Linear(self.emb_size, sum(self.type_to_size.values()), bias=self.options.lmhb)
 
     def get_prediction_masks(self, batch: CollatedBatch):
         """
@@ -245,12 +260,7 @@ class MathGPTLM(MathGPTBase):
         """
         batch_size, max_seq_len = batch["token_ids"].shape
         type_mask = torch.full((batch_size, max_seq_len, self.num_types), True).to(device)
-        for token_type, allowed_types in ALLOWED_TRANSITIONS.items():
-            if not self.options.math_text and token_type == TokenType.MATH_TEXT:
-                continue
-            if self.options.num_to_tree and self.options.sd_to_tree and token_type == TokenType.NUM:
-                # If using num trees (including for single digits), only allow num tokens in those trees
-                allowed_types = [TokenType.NUM, TokenType.END]
+        for token_type, allowed_types in self.allowed_transitions.items():
             for allowed_type in allowed_types:
                 type_mask[:, :, allowed_type][type_idxs[token_type]] = False
         # Tokens that finish a formula can only generate END_FORMULA
@@ -456,7 +466,7 @@ class MathGPTLM(MathGPTBase):
 class MathGPTClassifier(MathGPTBase):
     def __init__(self, options: TrainOptions):
         super().__init__(options)
-        self.classifier_head = nn.Linear(EMB_SIZE, options.num_classes)
+        self.classifier_head = nn.Linear(self.emb_size, options.num_classes)
 
     def forward(self, batch: CollatedBatch):
         batch_size = batch["token_ids"].shape[0]
@@ -475,14 +485,14 @@ class MathGPTClassifier(MathGPTBase):
 class RNNPosEncoder(nn.Module):
     hidden_size = 50
 
-    def __init__(self):
+    def __init__(self, emb_size: int):
         super().__init__()
         self.rnn = nn.GRU(
             input_size=MAX_FORMULA_WIDTH,
             hidden_size=self.hidden_size,
             batch_first=True
         )
-        self.output_layer = nn.Linear(self.hidden_size, EMB_SIZE)
+        self.output_layer = nn.Linear(self.hidden_size, emb_size)
 
     def forward(self, batch: CollatedBatch, math_idxs: torch.Tensor):
         # Unroll the batch's position encodings, and only process math tokens

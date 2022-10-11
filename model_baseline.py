@@ -6,12 +6,12 @@ from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttenti
 
 from loading import CollatedBatch
 from utils import device, TrainOptions
-from constants import TokenType, PastKeyValues, PADDING_TOKEN_ID, EMB_SIZE
+from constants import TokenType, PastKeyValues, PADDING_TOKEN_ID, MODEL_SIZE_TO_EMB_SIZE, MODEL_SIZE_TO_NAME
 
 class GPTLMBaseline(nn.Module):
-    def __init__(self):
+    def __init__(self, options: TrainOptions):
         super().__init__()
-        self.gpt2_lm: GPT2LMHeadModel = GPT2LMHeadModel.from_pretrained("gpt2")
+        self.gpt2_lm: GPT2LMHeadModel = GPT2LMHeadModel.from_pretrained(MODEL_SIZE_TO_NAME[options.model_size])
 
     def forward(self, batch: CollatedBatch, labels: Optional[torch.Tensor] = None, output_attentions: bool = False,
                 decoding: bool = False, past_key_values: PastKeyValues = None):
@@ -43,10 +43,11 @@ class GPTLMBaseline(nn.Module):
 class GPTClassifierBaseline(nn.Module):
     def __init__(self, options: TrainOptions):
         super().__init__()
-        self.gpt2 = GPT2Model.from_pretrained("gpt2")
-        self.classifier_head = nn.Linear(EMB_SIZE, options.num_classes)
+        self.gpt2 = GPT2Model.from_pretrained(MODEL_SIZE_TO_NAME[options.model_size])
+        self.classifier_head = nn.Linear(MODEL_SIZE_TO_EMB_SIZE[options.model_size], options.num_classes)
 
     def transform_pretrained_state_dict(self, pretrained_state_dict: Dict[str, torch.Tensor]):
+        # Rename keys for transfer from GPTLMBaseline to this model
         return {key.replace("gpt2_lm.transformer", "gpt2"): value for key, value in pretrained_state_dict.items()}
 
     def forward(self, batch: CollatedBatch):

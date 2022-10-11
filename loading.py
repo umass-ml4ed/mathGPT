@@ -12,43 +12,54 @@ from math_tokenize import tokenize_formula, EMPTY_POS_VECTOR, get_empty_pos_enco
 from decode import decode_formula
 from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, ProblemSolvingTaskSample, CTTaskSample, Formula, Sequence, CollatedBatch
 from constants import (
-    TokenType, DownstreamTask, TPE, PretrainDataset, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, FORMULA_IDENTIFIER, START_FORM_TEXT_TOKS, END_FORM_TEXT_TOK,
+    TokenType, DownstreamTask, TPE, PADDING_TOKEN_ID, EOS_TOKEN, SEP_TOKEN, FORMULA_IDENTIFIER, START_FORM_TEXT_TOKS, END_FORM_TEXT_TOK,
     WIKI_DATA, KHAN_DATA, OFEQ_DATA, EXEQ_DATA, AS_ANSWERS, AS_PROBLEMS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, GSM8K_DATA, MATH_DATA, MWP_DATA, CT_DATA
 )
 from utils import device, is_cls_task, text_tokenizer, TrainOptions
 
 def get_article_names(options: TrainOptions):
-    if options.dataset == PretrainDataset.WIKI.value:
+    dataset = options.dataset or "wiki"
+    if dataset == "wiki":
         data_dir = options.data_dir or WIKI_DATA
         return [os.path.join(data_dir, article_filename) for article_filename in os.listdir(data_dir)]
-    if options.dataset == PretrainDataset.KHAN.value:
+    if dataset == "khan":
         data_dir = options.data_dir or KHAN_DATA
         return [
             os.path.join(data_dir, subdir, article_filename)
             for subdir in os.listdir(data_dir)
             for article_filename in os.listdir(os.path.join(data_dir, subdir))
         ]
-    return []
+    raise Exception(f"Invalid dataset {options.dataset}")
 
 def get_probes() -> List[Article]:
     with open("data/probes.json", encoding="utf-8") as probes_file:
         return json.load(probes_file)
 
+def rng_seed(fold: int):
+    return (fold + 1) * 1000 % 421 # Modulo with prime that gives sufficiently diverse seeds
+
 def get_headline_data(split: str, options: TrainOptions, fold: int = 0) -> List[GenTaskSample]:
+    dataset = options.dataset or "OFEQ-10k"
+    if dataset == "OFEQ-10k":
+        proc_data_path = OFEQ_DATA
+    elif dataset == "EXEQ-300k":
+        proc_data_path = EXEQ_DATA
+    else:
+        raise Exception(f"Invalid datset {options.dataset}")
+
     # Load pre-processed dataset when using the MathGPT model, or using the post_proc option for the baseline model
     pre_processed = not options.baseline or options.post_proc
     if pre_processed:
-        with open(os.path.join(OFEQ_DATA, f"{split}.json"), encoding="utf-8") as headlines_file:
+        with open(os.path.join(proc_data_path, f"{split}.json"), encoding="utf-8") as headlines_file:
             data = json.load(headlines_file)
     else:
-        with open(f"../MathSum/OFEQ-10k/post.{split}", encoding="utf-8") as post_file:
-            with open(f"../MathSum/OFEQ-10k/title.{split}", encoding="utf-8") as title_file:
+        with open(f"../MathSum/{dataset}/post.{split}", encoding="utf-8") as post_file:
+            with open(f"../MathSum/{dataset}/title.{split}", encoding="utf-8") as title_file:
                 data = [
                     {"prompt": {"text": post, "formulas": {}}, "label": {"text": title, "formulas": {}}}
                     for post, title in zip(post_file, title_file)
                 ]
-    rng_seed = (fold + 1) * 1000 % 421 # Modulo with prime that gives sufficiently diverse seeds
-    random.Random(rng_seed).shuffle(data)
+    random.Random(rng_seed(fold)).shuffle(data)
     return data
 
 def get_answer_scoring_data(fold: int = 0) -> Tuple[Dict[str, Article], List[AnswerScoringSample], List[AnswerScoringSample], List[AnswerScoringSample]]:
@@ -94,11 +105,11 @@ def get_feedback_data(fold: int = 0):
         expand(samples_np[test_data_idx])
     )
 
-def get_problem_solving_data(split: str, task: DownstreamTask, ratio: float = 1):
+def get_problem_solving_data(split: str, task: DownstreamTask, ratio: float = 1, fold: int = 0):
     src_dir = GSM8K_DATA if task == DownstreamTask.GSM8K else MATH_DATA
     with open(os.path.join(src_dir, f"{split}.json"), encoding="utf-8") as data_file:
         data: List[ProblemSolvingTaskSample] = json.load(data_file)
-        random.Random(221).shuffle(data)
+        random.Random(rng_seed(fold)).shuffle(data)
         return data[:int(len(data) * ratio)], data[int(len(data) * ratio):]
 
 def get_mwp_data(fold: int = 0):
@@ -257,9 +268,10 @@ class Dataset(TorchDataset):
 class PreTrainDataset(Dataset):
     def __init__(self, article_filenames: List[str], options: TrainOptions, max_seq_len: Optional[int]):
         super().__init__()
+        dataset = options.dataset or "wiki"
         for article_name in tqdm(article_filenames):
             with open(article_name, encoding="utf-8") as article_file:
-                if options.dataset == PretrainDataset.WIKI.value:
+                if dataset == "wiki":
                     article: Article = json.load(article_file)
                     article_text = article["text"] + EOS_TOKEN
                     sequence = self.tokenize_sequence(article_name, article_text, article["formulas"], options)
@@ -269,7 +281,7 @@ class PreTrainDataset(Dataset):
                     else:
                         self.data.append(sequence)
 
-                elif options.dataset == PretrainDataset.KHAN.value:
+                elif dataset == "khan":
                     sample: GenTaskSample = json.load(article_file)
                     problem_text = "Problem: " + sample["prompt"]["text"] + " Solution: "
                     problem_sequence = self.tokenize_sequence(article_file, problem_text, sample["prompt"]["formulas"], options)
@@ -609,6 +621,12 @@ class CTDataset(Dataset):
     def __init__(self, samples: List[CTTaskSample], options: TrainOptions):
         super().__init__()
 
+        # Keep track of sequences for comparative model's dataset to ensure same set of examples are evaluated
+        if options.baseline:
+            alt_options = TrainOptions({**options.as_dict(), "baseline": False})
+        else:
+            alt_options = TrainOptions({**options.as_dict(), "baseline": True, "post_proc": False})
+
         # For each sample:
         # Provide the problem, followed by the steps the student took
         # The format of a step is Step: <current formula> <outcome>: <action> <input> Feedback: <feedback>
@@ -619,6 +637,7 @@ class CTDataset(Dataset):
         for sample in tqdm(samples):
             problem_text = "Problem: " + sample["problem"]["text"] + " Solution: "
             sequence = self.tokenize_sequence("", problem_text, sample["problem"]["formulas"], options)
+            alt_seq = self.tokenize_sequence("", problem_text, sample["problem"]["formulas"], alt_options)
             preceding_err = False
             preceding_feedback = False
             for step_idx, step in enumerate(sample["steps"]):
@@ -626,30 +645,36 @@ class CTDataset(Dataset):
                 if step_idx > 0 and not preceding_err and step["step"]["text"] != "FinalAnswer":
                     step_text = " Step: " + step["step"]["text"]
                     sequence += self.tokenize_sequence("", step_text, step["step"]["formulas"], options)
+                    alt_seq += self.tokenize_sequence("", step_text, step["step"]["formulas"], alt_options)
                 preceding_err = step["outcome"] in ("ERROR", "BUG")
                 if step["step"]["text"] == "FinalAnswer":
                     step_text = f" {step['outcome']}: as {step['input']['text']}"
                 else:
                     step_text = f" {step['outcome']}: {step['action']} {step['input']['text']}"
                 action_sequence = self.tokenize_sequence("", step_text, step["input"]["formulas"], options)
+                alt_action_sequence = self.tokenize_sequence("", step_text, step["input"]["formulas"], alt_options)
                 if preceding_feedback:
                     label_sequence = sequence + action_sequence + self.tokenize_sequence("", EOS_TOKEN, {}, options)
+                    alt_label_sequence = alt_seq + alt_action_sequence + self.tokenize_sequence("", EOS_TOKEN, {}, alt_options)
+                    if len(label_sequence) > options.max_seq_len or len(alt_label_sequence) > options.max_seq_len:
+                        self.trimmed_sequences += 1
+                        break
                     label_sequence.meta = {
                         "prompt_length": len(sequence)
                     }
-                    if len(label_sequence) > options.max_seq_len:
-                        self.trimmed_sequences += 1
-                        break
                     self.data.append(label_sequence)
                     preceding_feedback = False
                 sequence += action_sequence
+                alt_seq += alt_action_sequence
                 if step["feedback"]["text"]:
                     feedback_text = " Feedback: " + step["feedback"]["text"]
                     sequence += self.tokenize_sequence("", feedback_text, step["feedback"]["formulas"], options)
+                    alt_seq += self.tokenize_sequence("", feedback_text, step["feedback"]["formulas"], alt_options)
                     preceding_feedback = True
 
         print("Missing", self.num_missing_formulas, "formulas")
         print("Skipped remaining labels in", self.trimmed_sequences, "sequences")
+        print("Data size:", len(self.data))
 
 def get_data_loader(dataset: Dataset, task: Optional[DownstreamTask], batch_size: int, shuffle: bool, drop_last: bool, options: TrainOptions):
     return DataLoader(

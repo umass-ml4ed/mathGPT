@@ -135,7 +135,7 @@ def tokenize_formula_rec(formula: Optional[OPT], parent_pos: List[int], cur_leve
                     token_type, token_id = TokenType.OP, SpecialOpToken.NUM_SUB_TREE_HEAD.value
                     children = [["NC", char, None] for char in symbol if char in NUM_SYMBOLS][:MAX_FORMULA_WIDTH - 1]
                 elif type_str == "NC":
-                    type_str = "N"
+                    type_str = "N" # Will get translated to digit by vocab below
             else:
                 if type_str == "N" and len(symbol) > 1:
                     # Insert a special num op token and set its children to the digits of the number

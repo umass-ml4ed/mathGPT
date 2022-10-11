@@ -6,13 +6,15 @@ from pre_process import (
     process_wikipedia_data, process_probes, process_mathsum_data, process_answer_scoring_data, process_feedback_data,
     process_gsm8k_data, process_math_data, process_mwp_data, process_khan, process_ct
 )
-from analyze_data import analyze_wiki, analyze_mathsum, analyze_answer_scoring, analyze_feedback, analyze_vocab, analyze_gsm8k, analyze_math, analyze_mwp
+from analyze_data import (
+    analyze_wiki, analyze_mathsum, analyze_answer_scoring, analyze_feedback, analyze_vocab, analyze_gsm8k, analyze_math, analyze_mwp, analyze_ct
+)
 from analyze_model import visualize_attention
 from training import pretrain, evaluate_pretrained_lm, test_lm, train_downstream_task, evaluate_downstream_task, test_gen_task, cross_validate_downstream_task
-from evaluate import evaluate_ted
+from evaluate import evaluate_ted, evaluate_ct
 from utils import initialize_seeds, device, enum_choices, enum_value_to_member, setup_proc_group, cleanup_proc_group
 from vocabulary import Vocabulary
-from constants import PretrainDataset, DownstreamTask, TPE, Gen, Optimizer
+from constants import DownstreamTask, TPE, Gen, Optimizer, ModelSize
 
 def bool_type(arg):
     return False if arg == "0" else True
@@ -47,6 +49,7 @@ def main():
     parser.add_argument("--analyze_gsm8k", action="store_true", help="Produce stats on pre-processed GSM8K dataset")
     parser.add_argument("--analyze_math", action="store_true", help="Produce stats on pre-processed MATH dataset")
     parser.add_argument("--analyze_mwp", action="store_true", help="Produce stats on pre-processed Math23K dataset")
+    parser.add_argument("--analyze_ct", action="store_true", help="Produce stats on pre-processed Cognitive Tutor dataset")
     parser.add_argument("--analyze_vocab", action="store_true", help="Produce stats on the math vocab")
     parser.add_argument("--visualize_attention", help="Visualize model's attention weights", choices=["probes"] + enum_choices(DownstreamTask))
     parser.add_argument("--pretrain", action="store_true", help="Pre-train LM")
@@ -57,12 +60,14 @@ def main():
     parser.add_argument("--test_downstream", help="See downstream model output on test samples", choices=enum_choices(DownstreamTask))
     parser.add_argument("--crossval", help="Run cross-validation on downstream task", choices=enum_choices(DownstreamTask))
     parser.add_argument("--evaluate_ted", help="Evaluate TED metric on pred files from formula-only generative task", choices=enum_choices(DownstreamTask))
+    parser.add_argument("--evaluate_ct", action="store_true", help="Evaluate CT task from generated files")
     # Config
     parser.add_argument("--name", help="Name of current model/experiment, used for saving/loading model and config")
     parser.add_argument("--checkpoint_name", help="Name of model to resume training for")
     parser.add_argument("--pretrained_name", help="Name of pre-trained LM for initializing downstream model parameters")
-    parser.add_argument("--dataset", help="Dataset to pre-train on", choices=enum_choices(PretrainDataset))
+    parser.add_argument("--dataset", help="Override default dataset, task-specific")
     parser.add_argument("--data_dir", help="Override default data directory for pre-training")
+    parser.add_argument("--fold", type=int, default=0, help="Override cross-val fold for single run")
     parser.add_argument("--vocab_file", help="Override default vocab file")
     parser.add_argument("--split", type=float, help="Portion of data to use in train set during pre-training")
     parser.add_argument("--optim", help="Optimizer to use", choices=enum_choices(Optimizer))
@@ -81,6 +86,7 @@ def main():
     parser.add_argument("--eval_formulas", type=bool_type, help="For generative tasks, only treat the labels' formulas as targets")
     parser.add_argument("--eval_text", type=bool_type, help="For generative tasks, only treat the labels' text regions as targets")
     parser.add_argument("--eval_final", type=bool_type, help="For problem solving tasks, only generate the final step of the solution")
+    parser.add_argument("--model_size", help="GPT-2 model size to use", choices=enum_choices(ModelSize))
     parser.add_argument("--baseline", type=bool_type, help="Use baseline GPT-2 model")
     parser.add_argument("--post_proc", type=bool_type, help="For baseline - if true, train on post-processed and decoded formulas, else train on original formulas")
     parser.add_argument("--joint", type=bool_type, help="When true, model type/token probability jointly, otherwise model token probability directly")
@@ -157,6 +163,8 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
         analyze_math()
     if args.analyze_mwp:
         analyze_mwp()
+    if args.analyze_ct:
+        analyze_ct()
     if args.analyze_vocab:
         analyze_vocab()
     if args.visualize_attention:
@@ -168,15 +176,17 @@ def main_worker(rank: int, world_size: int, args: argparse.Namespace):
     if args.test_lm:
         test_lm(args.name, args.test_lm, arg_dict)
     if args.train_downstream:
-        train_downstream_task(args.name, args.checkpoint_name, args.pretrained_name, enum_value_to_member(args.train_downstream, DownstreamTask), arg_dict)
+        train_downstream_task(args.name, args.checkpoint_name, args.pretrained_name, enum_value_to_member(args.train_downstream, DownstreamTask), arg_dict, args.fold)
     if args.evaluate_downstream:
-        evaluate_downstream_task(args.name, enum_value_to_member(args.evaluate_downstream, DownstreamTask), False, arg_dict)
+        evaluate_downstream_task(args.name, enum_value_to_member(args.evaluate_downstream, DownstreamTask), False, arg_dict, args.fold)
     if args.test_downstream:
         test_gen_task(args.name, enum_value_to_member(args.test_downstream, DownstreamTask), arg_dict)
     if args.crossval:
         cross_validate_downstream_task(args.name, args.checkpoint_name, args.pretrained_name, enum_value_to_member(args.crossval, DownstreamTask), arg_dict)
     if args.evaluate_ted:
         evaluate_ted(args.name, enum_value_to_member(args.evaluate_ted, DownstreamTask), arg_dict)
+    if args.evaluate_ct:
+        evaluate_ct(args.name)
 
     if args.ddp:
         cleanup_proc_group()

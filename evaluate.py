@@ -1,7 +1,9 @@
 from typing import List, Callable, Tuple, Optional, Dict
 import os
 import json
+import math
 from itertools import chain
+from functools import reduce
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -11,6 +13,7 @@ from nlgeval import compute_metrics
 import zss
 
 from loading import Dataset, GenTaskDataset, FeedbackDataset, trim_batch, get_data_loader, get_headline_data, get_mwp_data, get_feedback_data
+from vocabulary import Vocabulary, get_matrix_symbol
 from model_math_gpt import MathGPTBase, MathGPTLM, MathGPTClassifier
 from generate import get_most_likely_predictions, generate
 from decode import decode_batch, get_tree, DecodeTreeNode
@@ -18,7 +21,7 @@ from pre_process_utils import process_raw_text
 from math_tokenize import tokenize_formula
 from utils import TrainOptions
 from data_types import CollatedBatch, Article
-from constants import PADDING_TOKEN_ID, DownstreamTask
+from constants import PADDING_TOKEN_ID, DownstreamTask, TokenType, SpecialOpToken
 
 def calculate_ted(labels: List[DecodeTreeNode], preds: List[DecodeTreeNode]):
     """
@@ -34,6 +37,60 @@ def calculate_ted(labels: List[DecodeTreeNode], preds: List[DecodeTreeNode]):
         zss.simple_distance(label, pred, get_children, get_label, label_dist)
         for label, pred in zip(labels, preds)
     ])
+
+def trees_equal(tree_1: DecodeTreeNode, tree_2: DecodeTreeNode):
+    """
+    Test if two decoded trees are equal
+    """
+    if tree_1.token_id != tree_2.token_id or tree_1.token_type != tree_2.token_type:
+        return False
+    if len(tree_1.children) != len(tree_2.children):
+        return False
+    for child_1, child_2 in zip(tree_1.children, tree_2.children):
+        if not trees_equal(child_1, child_2):
+            return False
+    return True
+
+def eval_tree_value(tree_node: DecodeTreeNode, options: TrainOptions) -> float:
+    """
+    Get numeric value that tree evaluates to
+    Just for trees structured like MWP to eq task labels
+    """
+    if options.num_to_tree and tree_node.token_type == TokenType.OP and tree_node.token_id == SpecialOpToken.NUM_SUB_TREE_HEAD:
+        symbol = "".join([Vocabulary.get_symbol(child.token_type, child.token_id) for child in tree_node.children])
+        return float(symbol)
+    symbol = Vocabulary.get_symbol(tree_node.token_type, tree_node.token_id)
+    if tree_node.token_type == TokenType.NUM:
+        return float(symbol)
+    if symbol == "eq":
+        assert len(tree_node.children) == 2
+        return eval_tree_value(tree_node.children[1], options)
+    if symbol == "plus":
+        return sum([eval_tree_value(child, options) for child in tree_node.children])
+    if symbol == "minus":
+        return eval_tree_value(tree_node.children[0], options) - sum([eval_tree_value(child, options) for child in tree_node.children[1:]])
+    if symbol == "times":
+        return math.prod([eval_tree_value(child, options) for child in tree_node.children])
+    if symbol == "divide":
+        if len(tree_node.children) == 0:
+            return 1
+        return reduce(
+            lambda prev, cur: prev / cur,
+            [eval_tree_value(child, options) for child in tree_node.children[1:]],
+            eval_tree_value(tree_node.children[0], options)
+        )
+    if symbol == "SUP":
+        assert len(tree_node.children) == 2
+        return eval_tree_value(tree_node.children[0], options) ** eval_tree_value(tree_node.children[1], options)
+    if symbol == "percent":
+        assert len(tree_node.children) == 1
+        return eval_tree_value(tree_node.children[0], options) / 100
+    if symbol == get_matrix_symbol("D"):
+        assert len(tree_node.children) == 1
+        return eval_tree_value(tree_node.children[0], options)
+    if symbol == "limit-from": # Won't occur in gold labels but could occur in preds from copying parsing errors
+        return eval_tree_value(tree_node.children[0], options)
+    raise Exception(f"Unsupported token: type={tree_node.token_type}, id={tree_node.token_id}, symbol={symbol}")
 
 def evaluate_lm(model: MathGPTLM, dataset: Dataset, options: TrainOptions):
     """
@@ -171,8 +228,8 @@ def evaluate_gen_task(model_name: str, model: MathGPTLM, dataset: Dataset, task:
         all_predictions = list(chain(*[result["all_predictions"] for result in all_results]))
         all_labels = list(chain(*[result["all_labels"] for result in all_results]))
 
-    num_exact_match = sum(pred == label for pred, label in zip(all_predictions, all_labels))
-    accuracy = num_exact_match / len(all_labels)
+    exact_match = [pred == label for pred, label in zip(all_predictions, all_labels)]
+    accuracy = sum(exact_match) / len(all_labels)
     postfix = "_formulas" if options.eval_formulas else "_text" if options.eval_text else ""
     pred_filename = f"preds_{model_name}{postfix}_{fold}.txt"
     label_filename = f"labels_{model_name}{postfix}_{fold}.txt"
@@ -185,7 +242,26 @@ def evaluate_gen_task(model_name: str, model: MathGPTLM, dataset: Dataset, task:
     template = "Exact Match Accuracy: {:.3f}, BLEU-4: {:.3f}, ROUGE-L: {:.3f}, METEOR: {:.3f}"
     if compute_ted:
         results.append(calculate_ted(all_label_trees, all_pred_trees))
-        template += ", TED: {:.3f}"
+        tree_exact_match = [trees_equal(label_tree, pred_tree) for label_tree, pred_tree in zip(all_label_trees, all_pred_trees)]
+        results.append(sum(tree_exact_match) / len(tree_exact_match))
+        template += ", TED: {:.3f}, Tree Match: {:.3f}"
+        if task == DownstreamTask.MWP:
+            pred_tree_vals = []
+            for pred_tree in all_pred_trees:
+                try:
+                    pred_tree_vals.append(eval_tree_value(pred_tree, options))
+                except Exception:
+                    pred_tree_vals.append(None)
+            tree_vals_eq = [
+                eval_tree_value(label_tree, options) == pred_tree_val
+                for label_tree, pred_tree_val in zip(all_label_trees, pred_tree_vals)
+            ]
+            results.append(sum(tree_vals_eq) / len(tree_vals_eq))
+            text_and_val_match = [tree_val_match and text_match for tree_val_match, text_match in zip(tree_vals_eq, exact_match)]
+            results.append(sum(text_and_val_match) / len(text_and_val_match))
+            tree_and_val_match = [tree_val_match and tree_match for tree_val_match, tree_match in zip(tree_vals_eq, tree_exact_match)]
+            results.append(sum(tree_and_val_match) / len(tree_and_val_match))
+            template += ", Value Match: {:.3f}, Text + Value Match {:.3f}, Tree + Value Match {:.3f}"
     return 0, results, template
 
 def get_problem_solving_final_answer(full_solution: str):
@@ -230,10 +306,11 @@ def evaluate_problem_solving_task(model_name: str, model: MathGPTLM, dataset: Da
 
     # Group labels/preds by difficulty level
     level_to_results: Dict[str, Dict[str, List]] = {}
-    for label, pred, sample in zip(all_labels, all_predictions, dataset):
-        cur_level = level_to_results.setdefault(sample.meta["level"], {"labels": [], "preds": []})
-        cur_level["labels"].append(label)
-        cur_level["preds"].append(pred)
+    if task == DownstreamTask.MATH:
+        for label, pred, sample in zip(all_labels, all_predictions, dataset):
+            cur_level = level_to_results.setdefault(sample.meta["level"], {"labels": [], "preds": []})
+            cur_level["labels"].append(label)
+            cur_level["preds"].append(pred)
     level_to_results["Overall"] = {"labels": all_labels, "preds": all_predictions}
 
     if options.eval_final:
@@ -295,34 +372,69 @@ def evaluate_cls_task(model: MathGPTClassifier, dataset: Dataset, task: Downstre
     _, _, f1, _ = metrics.precision_recall_fscore_support(all_labels_np, all_preds_np)
     return loss, [accuracy, auc, kappa, rmse, f1.mean()], "Accuracy: {:.3f}, AUC: {:.3f}, Kappa: {:.3f}, RMSE: {:.3f}, F1: {:.3f}"
 
+def evaluate_ct(model_name: str):
+    matches: List[Dict[str, int]] = []
+    sizes: List[Dict[str, int]] = []
+    for fold in range(5):
+        cur_matches = {
+            "_overall": 0,
+            "BUG/ERR": 0,
+        }
+        matches.append(cur_matches)
+        cur_sizes = {
+            "_overall": 0,
+            "BUG/ERR": 0,
+        }
+        sizes.append(cur_sizes)
+        with open(f"results/preds_{model_name}_{fold}.txt", encoding="utf-8") as pred_file:
+            with open(f"results/labels_{model_name}_{fold}.txt", encoding="utf-8") as label_file:
+                for pred, label in zip(pred_file, label_file):
+                    pred_act_in = pred.split(":", 1)[1].strip()
+                    outcome, label_act_in = label.split(":", 1)
+                    outcome = outcome.strip()
+                    label_act_in = label_act_in.strip()
+                    action = label_act_in.split(" ", 1)[0]
+                    cur_sizes["_overall"] += 1
+                    cur_sizes.setdefault(outcome, 0)
+                    cur_sizes[outcome] += 1
+                    cur_sizes.setdefault(action, 0)
+                    cur_sizes[action] += 1
+                    if outcome in ("BUG", "ERROR"):
+                        cur_sizes["BUG/ERR"] += 1
+                    if pred_act_in == label_act_in:
+                        cur_matches["_overall"] += 1
+                        cur_matches.setdefault(outcome, 0)
+                        cur_matches[outcome] += 1
+                        cur_matches.setdefault(action, 0)
+                        cur_matches[action] += 1
+                        if outcome in ("BUG", "ERROR"):
+                            cur_matches["BUG/ERR"] += 1
+    print(sizes)
+    all_keys = {key for cur_matches in matches for key in cur_matches}
+    for key in sorted(all_keys):
+        accs = np.array([cur_matches[key] / cur_sizes[key] for cur_matches, cur_sizes in zip(matches, sizes) if key in cur_matches])
+        print(f"{key} - avg: {accs.mean():.3f}, std: {accs.std():.3f}")
+
 def evaluate_ted(model_name: str, task: DownstreamTask, options_dict: dict):
     options = TrainOptions(options_dict)
-
     all_teds = []
+    all_accs = []
+    all_val_match = []
     folds = range(5) if task in (DownstreamTask.FEEDBACK, DownstreamTask.MWP) else [0]
     for fold in folds:
         # Load saved labels and predictions
         postfix = "_formulas" if options.eval_formulas else ""
-        json_filename = f"preds_{model_name}{postfix}_{fold}.json"
-        # if not os.path.exists(json_filename):
-        if True:
-            pred_filename = f"preds_{model_name}{postfix}_{fold}.txt"
-            with open(pred_filename, encoding="utf-8") as pred_file:
-                preds = [("<m> " if options.eval_formulas else "") + pred.strip() + ("" if pred.strip().endswith("</m>") else " </m>") for pred in pred_file]
+        pred_filename = f"results/preds_{model_name}{postfix}_{fold}.txt"
+        with open(pred_filename, encoding="utf-8") as pred_file:
+            preds = [("<m> " if options.eval_formulas else "") + pred.strip() + ("" if pred.strip().endswith("</m>") else " </m>") for pred in pred_file]
 
-            # Convert sample strings to OPTs via pre-processing pipeline
-            batch_size = 100
-            err_data = {}
-            processed_preds: List[Article] = []
-            for batch_start_idx in tqdm(list(range(0, len(preds), batch_size))):
-                processed_preds += process_raw_text(preds[batch_start_idx : batch_start_idx + batch_size], err_data)
-            print(err_data)
-            with open(json_filename, "w", encoding="utf-8") as json_file:
-                json.dump(processed_preds, json_file, indent=2, ensure_ascii=False)
-
-        # Read file even if immediately written for key string type consistency
-        with open(json_filename, encoding="utf-8") as json_file:
-            processed_preds = json.load(json_file)
+        # Convert sample strings to OPTs via pre-processing pipeline
+        batch_size = 100
+        err_data = {}
+        processed_preds: List[Article] = []
+        for batch_start_idx in tqdm(list(range(0, len(preds), batch_size))):
+            processed_preds += process_raw_text(preds[batch_start_idx : batch_start_idx + batch_size], err_data)
+        print(err_data)
 
         # Load dataset for targets
         if task == DownstreamTask.HEADLINES:
@@ -351,12 +463,30 @@ def evaluate_ted(model_name: str, task: DownstreamTask, options_dict: dict):
                 continue
             if len(pred["formulas"]) > 1:
                 print("More than 1 formula in sample:", sample_idx)
-            pred_seq = tokenize_formula(pred["formulas"]["0"]["opt"], options)
+            pred_seq = tokenize_formula(pred["formulas"][0]["opt"], options)
             label_seq = label.split_at(label.meta["prompt_length"])[1]
             label_trees.append(get_tree(label_seq.token_ids, label_seq.token_types))
             pred_trees.append(get_tree(pred_seq.token_ids, pred_seq.token_types))
         ted = calculate_ted(label_trees, pred_trees)
+        acc = sum([trees_equal(label_tree, pred_tree) for label_tree, pred_tree in zip(label_trees, pred_trees)]) / len(label_trees)
+        pred_vals = []
+        for pred_tree in pred_trees:
+            try:
+                pred_vals.append(eval_tree_value(pred_tree, options))
+            except Exception as exc:
+                print(exc)
+                pred_vals.append(None)
+        val_match = sum([
+            eval_tree_value(label_tree, options) == pred_val
+            for label_tree, pred_val in zip(label_trees, pred_vals)
+        ]) / len(label_trees)
         all_teds.append(ted)
-        print(f"{fold} - TED: {ted:.3f}, Failed: {failed_conversions}, Missing formula: {missing_formula}")
+        all_accs.append(acc)
+        all_val_match.append(val_match)
+        print(f"{fold} - TED: {ted:.3f}, Tree Match: {acc:.3f}, Val Match: {val_match:.3f}, Failed: {failed_conversions}, Missing formula: {missing_formula}")
     teds_np = np.array(all_teds)
-    print(f"Average: {teds_np.mean():.3f}, STD: {teds_np.std():.3f}")
+    accs_np = np.array(all_accs)
+    val_np = np.array(all_val_match)
+    print(f"TED - Average: {teds_np.mean():.3f}, STD: {teds_np.std():.3f}")
+    print(f"Tree Match - Average: {accs_np.mean():.3f}, STD: {accs_np.std():.3f}")
+    print(f"Val Match - Average: {val_np.mean():.3f}, STD: {val_np.std():.3f}")

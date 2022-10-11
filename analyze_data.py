@@ -9,9 +9,9 @@ import numpy as np
 from transformers import GPT2TokenizerFast
 
 from vocabulary import Vocabulary, UNK_MAP
-from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, ProblemSolvingTaskSample, Formula, OPT
+from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTaskSample, ProblemSolvingTaskSample, CTTaskSample, Formula, OPT
 from constants import(
-    TYPE_STR_TO_INT, WIKI_DATA, OFEQ_DATA, EXEQ_DATA, AS_ANSWERS, AS_PROBLEMS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, GSM8K_DATA,
+    TYPE_STR_TO_INT, WIKI_DATA, OFEQ_DATA, EXEQ_DATA, AS_ANSWERS, AS_PROBLEMS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, GSM8K_DATA, CT_DATA,
     SpecialNumToken, SpecialOpToken, SpecialVarToken
 )
 
@@ -258,6 +258,14 @@ def analyze_math():
 def analyze_mwp():
     # TODO
     pass
+
+def analyze_ct():
+    with open(CT_DATA, encoding="utf-8") as data_file:
+        samples: List[CTTaskSample] = json.load(data_file)
+    key_to_samples = {}
+    for sample in samples:
+        key_to_samples.setdefault((sample["student_id"], sample["problem_id"]), []).append(sample)
+    print(len(key_to_samples), len(samples))
 
 def analyze_vocab():
     print("Number of GPT tokens in each vocab symbol...")

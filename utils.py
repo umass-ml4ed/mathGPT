@@ -8,7 +8,7 @@ import torch.distributed as dist
 # import neptune.new as neptune
 from transformers import GPT2TokenizerFast
 
-from constants import PretrainDataset, DownstreamTask, TPE, Gen, Optimizer, DOWNSTREAM_TASK_TO_NUM_CLASSES
+from constants import DownstreamTask, TPE, Gen, Optimizer, ModelSize, DOWNSTREAM_TASK_TO_NUM_CLASSES
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -23,10 +23,6 @@ def initialize_seeds(seed_num: int):
         torch.cuda.manual_seed_all(seed_num)
 
 def new_neptune_run():
-    # return neptune.init(
-    #     project="ajscarlatos/MGPT",
-    #     api_token="eyJhcGlfYWRkcmVzcyI6Imh0dHBzOi8vYXBwLm5lcHR1bmUuYWkiLCJhcGlfdXJsIjoiaHR0cHM6Ly9hcHAubmVwdHVuZS5haSIsImFwaV9rZXkiOiIwNDhjNTZiYS04YTU2LTQ2MTQtOWMxNy1jOTliYTZlNTJlYmEifQ==",
-    # )
     return None
 
 def setup_proc_group(rank: int, world_size: int):
@@ -55,6 +51,10 @@ def is_cls_task(task: Optional[DownstreamTask]):
 
 @lru_cache
 def text_tokenizer():
+    """
+    Retrieve the GPT-2 text tokenizer
+    Note that all model sizes have exactly the same vocabulary
+    """
     return GPT2TokenizerFast.from_pretrained("gpt2")
 
 def load_pretrained(model: torch.nn.Module, pretrained_state_dict: Dict[str, torch.Tensor]):
@@ -74,7 +74,7 @@ def load_pretrained(model: torch.nn.Module, pretrained_state_dict: Dict[str, tor
 class TrainOptions:
     def __init__(self, options: dict):
         # Training/testing params
-        self.dataset: str = options.get("dataset", PretrainDataset.WIKI.value)
+        self.dataset: Optional[str] = options.get("dataset", None)
         self.data_dir: Optional[str] = options.get("data_dir", None)
         self.split: float = options.get("split", 0.95)
         self.optim: str = options.get("optim", Optimizer.ADAMW.value)
@@ -96,6 +96,7 @@ class TrainOptions:
         self.stride: Optional[int] = options.get("stride", None)
         self.ddp: bool = options.get("ddp", False)
         # Model/tree structure config
+        self.model_size: str = options.get("model_size", ModelSize.SMALL.value)
         self.baseline: bool = options.get("baseline", False)
         self.post_proc: bool = options.get("post_proc", False)
         self.joint: bool = options.get("joint", False)

@@ -395,10 +395,12 @@ def process_mwp_data():
     """
     # Get text and equations from samples
     batch_text = []
+    answers = []
     with open("../math23k_translated.pkl", "rb") as src_file:
         for sample in tqdm(pickle.load(src_file)):
             batch_text.append(wrap_formulas(html_to_latex(sample["text_en"])))
-            batch_text.append(wrap_formulas(html_to_latex(sample["equation"])))
+            batch_text.append("<m> " + sample["equation"] + " </m>")
+            answers.append(sample["ans"])
 
     # Batch process LaTeXML/TangentCFT
     batch_size = 100
@@ -411,6 +413,8 @@ def process_mwp_data():
                 "prompt": processed_text[sample_idx],
                 "label": processed_text[sample_idx + 1],
             })
+    for sample, answer in zip(samples, answers):
+        sample["answer"] = answer
     with open(MWP_DATA, "w", encoding="utf-8") as out_file:
         json.dump(samples, out_file, indent=2, ensure_ascii=False)
 

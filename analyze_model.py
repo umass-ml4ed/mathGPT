@@ -56,8 +56,8 @@ def visualize_attention(model_name: str, task_str: str, options_dict: dict):
 
     task = None if task_str == "probes" else enum_value_to_member(task_str, DownstreamTask)
     if model_name == "baseline":
-        model = GPTLMBaseline()
         options = TrainOptions({"baseline": True, **options_dict})
+        model = GPTLMBaseline(options)
     else:
         model, _, options = load_model(model_name, False, task)
         options.update(options_dict)

@@ -38,7 +38,7 @@ def load_model(model_name: str, ddp: bool, task: Optional[DownstreamTask] = None
             model = MathGPTClassifier(options).to(device)
     else:
         if options.baseline:
-            model = GPTLMBaseline().to(device)
+            model = GPTLMBaseline(options).to(device)
         else:
             model = MathGPTLM(options).to(device)
     checkpoint: Checkpoint = torch.load(f"{model_name}.pt", map_location=device)
@@ -163,7 +163,7 @@ def pretrain(model_name: str, checkpoint_name: Optional[str], pretrained_name: O
         else:
             options = TrainOptions(options_dict)
         if options.baseline:
-            model = GPTLMBaseline().to(device)
+            model = GPTLMBaseline(options).to(device)
         else:
             model = MathGPTLM(options).to(device)
         if pretrained_name:
@@ -254,7 +254,7 @@ def train_downstream_task(model_name: str, checkpoint_name: Optional[str], pretr
                 model = MathGPTClassifier(options).to(device)
         else:
             if options.baseline:
-                model = GPTLMBaseline().to(device)
+                model = GPTLMBaseline(options).to(device)
             else:
                 model = MathGPTLM(options).to(device)
         if pretrained_name:
@@ -278,7 +278,7 @@ def train_downstream_task(model_name: str, checkpoint_name: Optional[str], pretr
         train_data = FeedbackDataset(train_samples, problems, options)
         val_data = FeedbackDataset(val_samples, problems, options)
     elif task in (DownstreamTask.GSM8K, DownstreamTask.MATH):
-        train_samples, val_samples = get_problem_solving_data("train", task, .9)
+        train_samples, val_samples = get_problem_solving_data("train", task, .9, fold)
         train_data = ProblemSolvingDataset(train_samples, options)
         val_data = ProblemSolvingDataset(val_samples, options)
     elif task == DownstreamTask.MWP:

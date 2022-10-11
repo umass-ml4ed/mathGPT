@@ -72,6 +72,18 @@ def eval_with_substitution(model_name: str, fold: int, eval: str):
         pred_file.write("\n".join(preds))
     metrics = compute_metrics(hypothesis=temp_pred_file, references=[temp_label_file], no_skipthoughts=True, no_glove=True)
     print(metrics)
+    return metrics
+
+def eval_folds_with_substitution(model_name: str, eval: str):
+    results = []
+    for fold in range(5):
+        metrics = eval_with_substitution(model_name, fold, eval)
+        results.append([metrics["Bleu_4"], metrics["ROUGE_L"], metrics["METEOR"]])
+    results_np = np.array(results)
+    avg = results_np.mean(axis=0)
+    std = results_np.std(axis=0)
+    print(f"Avg: BLEU-4: {avg[0]:.3f}, ROUGE-L: {avg[1]:.3f}, METEOR: {avg[2]:.3f}")
+    print(f"STD: BLEU-4: {std[0]:.3f}, ROUGE-L: {std[1]:.3f}, METEOR: {std[2]:.3f}")
 
 def error_analysis(model_1: str, model_2: str):
     with open(f"results/labels_{model_1}.txt", encoding="utf-8") as label_file:
@@ -128,5 +140,6 @@ def error_analysis(model_1: str, model_2: str):
         print("")
 
 if __name__ == "__main__":
-    eval_with_substitution(sys.argv[1], sys.argv[2], sys.argv[3])
+    eval_folds_with_substitution(sys.argv[1], "none")
+    # eval_with_substitution(sys.argv[1], sys.argv[2], sys.argv[3])
     # error_analysis(sys.argv[1], sys.argv[2])

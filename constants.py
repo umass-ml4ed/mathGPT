@@ -6,6 +6,12 @@ class Optimizer(Enum):
     ADAMW = "adamw"
     ADA = "ada"
 
+class ModelSize(Enum):
+    SMALL = "small"
+    MED = "med"
+    LARGE = "large"
+    XL = "xl"
+
 class TokenType(IntEnum):
     TEXT = 0
     START_FORMULA = 1
@@ -64,10 +70,6 @@ class Checkpoint(TypedDict):
     rng_state: torch.Tensor
     epoch: int
 
-class PretrainDataset(Enum):
-    WIKI = "wiki"
-    KHAN = "khan"
-
 class DownstreamTask(Enum):
     HEADLINES = "headlines"
     ANSWER_SCORING = "answer_scoring"
@@ -100,6 +102,20 @@ MAX_FORMULA_WIDTH = 64
 
 EMB_SIZE = 768
 TEXT_VOCAB_SIZE = 50257
+
+MODEL_SIZE_TO_NAME = {
+    ModelSize.SMALL.value: "gpt2",
+    ModelSize.MED.value: "gpt2-medium",
+    ModelSize.LARGE.value: "gpt2-large",
+    ModelSize.XL.value: "gpt2-xl",
+}
+
+MODEL_SIZE_TO_EMB_SIZE = {
+    ModelSize.SMALL.value: 768,
+    ModelSize.MED.value: 1024,
+    ModelSize.LARGE.value: 1280,
+    ModelSize.XL.value: 1600,
+}
 
 # The following are the defaults for the transformers tokenizer
 PADDING_TOKEN_ID = -100
