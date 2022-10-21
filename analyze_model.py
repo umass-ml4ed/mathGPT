@@ -2,13 +2,17 @@ from typing import List, Optional
 import math
 import torch
 import numpy as np
+from sklearn import manifold
 
 from training import load_model
-from loading import PreTrainDatasetPreloaded, GenTaskDataset, get_data_loader, get_headline_data, get_probes
+from loading import PreTrainDatasetPreloaded, GenTaskDataset, Collator, get_data_loader, get_headline_data, get_probes, get_mwp_data
 from vocabulary import Vocabulary, MATH_TYPES
 from model_baseline import GPTLMBaseline
+from math_tokenize import tokenize_formula
+from symbol_map import SYMBOL_MAP_ANALYSIS, SYMBOL_MAP_DISPLAY
 from utils import text_tokenizer, enum_value_to_member, TrainOptions
-from constants import DownstreamTask, TokenType
+from data_types import OPT
+from constants import DownstreamTask, TokenType, TPE, SpecialOpToken
 
 # Wrapping this in try/catch since compute cluster is missing a relevant library
 try:
@@ -95,3 +99,181 @@ def visualize_attention(model_name: str, task_str: str, options_dict: dict):
         attention_weights = [attn[:num_tokens, :num_tokens] for attn in attention_weights]
         x_labels, y_labels = x_labels[:num_tokens], y_labels[:num_tokens]
         show_heatmap(attention_weights, x_labels, y_labels, len(attention_weights) == 1)
+
+def visualize_tokens(model_name: str):
+    # Get most frequently occurring math tokens
+    ops = Vocabulary.most_frequent(TokenType.OP, 100)
+    # Remove ops that can't be represented as standalone symbols by the baseline model
+    # Symbol map has one-to-one operator mapping, and single-character symbols are already in their final form
+    # Filter out symbols that map to empty string/whitespace or can't render
+    # Filter out "T" type (just assigned op type as a formality)
+    ops = [
+        op for op in ops
+        if (op[1] in SYMBOL_MAP_ANALYSIS or len(op[1]) == 1) and\
+            op[0] != "T" and SYMBOL_MAP_ANALYSIS.get(op[1], op[1]) and\
+                op[1] != "⏟" and\
+                    not SYMBOL_MAP_ANALYSIS.get(op[1], op[1]).isspace()
+    ]
+    print("Keeping", len(ops), "ops")
+    print(ops)
+    # print(" ".join([f"${SYMBOL_MAP_ANALYSIS.get(op[1], op[1])}$" for op in ops]))
+    # tokens = ops + Vocabulary.most_frequent(TokenType.VAR, 50) + Vocabulary.most_frequent(TokenType.NUM) # Ops, vars and nums
+    # tokens = ops # Just ops
+    tokens = Vocabulary.most_frequent(TokenType.VAR, 50) # Just vars
+
+    # Create single formula sequence with all those tokens
+    formula = ["O", "eq", [ # Arbitrary head node, will get removed
+        [type_str, symbol.replace("matrix-", ""), None]
+        for type_str, symbol in tokens
+    ]]
+
+    # Get token representations from model
+    with torch.no_grad():
+        if model_name == "baseline":
+            options = TrainOptions({"baseline": True})
+            model = GPTLMBaseline(options)
+            # Take average of token embeddings for each symbol (post mapping)
+            embeddings = torch.stack([
+                model.gpt2_lm.transformer.wte(
+                    torch.LongTensor(text_tokenizer()(SYMBOL_MAP_ANALYSIS.get(symbol, symbol))["input_ids"])
+                ).mean(dim=0)
+                for (_, symbol, _) in formula[2]
+            ]).detach().numpy()
+        else:
+            model, _, options = load_model(model_name, False, None)
+            options.tpe = TPE.NONE.value # Not visualizing tree positions
+            formula_seq = tokenize_formula(formula, options)
+            formula_seq = formula_seq.split_at(1)[1] # Remove head node
+            batch = Collator(None, options)([formula_seq])
+            embeddings = model.get_input_embeddings(batch)
+            embeddings = embeddings[~(batch["token_types"] == TokenType.END)]
+            embeddings = embeddings.detach().numpy()
+
+    # Transform with TSNE
+    # Chosen seeds show visually pleasing representations and represent a variety of patterns
+    rseed = 100 if model_name == "baseline" else 0
+    # rseed = 67 if model_name == "baseline" else 115
+    # rseed = 391 if model_name == "baseline" else 50
+    transformer = manifold.TSNE(2, perplexity=10, learning_rate="auto", n_iter=1000, init="pca", random_state=rseed)
+    reduced_states = transformer.fit_transform(embeddings)
+
+    # Visualize
+    x_vals = reduced_states[:,0]
+    y_vals = reduced_states[:,1]
+    plt.scatter(x_vals, y_vals, picker=True)
+    # Label with display symbols
+    for (_, symbol, _), x, y in zip(formula[2], x_vals, y_vals):
+        symbol = SYMBOL_MAP_ANALYSIS.get(symbol, symbol)
+        symbol = SYMBOL_MAP_DISPLAY.get(symbol, symbol)
+        plt.annotate(symbol, (x, y + 1), fontsize=30)
+    # Define click handler - print information associated with clicked point
+    def onpick(event):
+        ind = event.ind
+        print(formula[2][ind[0]])
+    plt.connect('pick_event', onpick)
+    plt.axis("off")
+    plt.show()
+
+def traverse_tree(formula: OPT, parent_node: Optional[dict], parent_pos: List[int], child_idx: int):
+    cur_node = {
+        "symbol": SYMBOL_MAP_ANALYSIS.get(formula[1], formula[1]),
+        "pos": parent_pos + [child_idx],
+        "parent_node": parent_node
+    }
+    if not formula[2]:
+        return [cur_node]
+    assert len(formula[2]) >= 2
+    results: List[dict] = traverse_tree(formula[2][0], cur_node, cur_node["pos"], 0)
+    results.append(cur_node)
+    results += traverse_tree(formula[2][1], cur_node, cur_node["pos"], 1)
+    for child_idx in range(2, len(formula[2])):
+        cur_node = cur_node.copy()
+        cur_node["pos"] = cur_node["pos"].copy()
+        cur_node["pos"][-1] += 1
+        results.append(cur_node)
+        results += traverse_tree(formula[2][child_idx], cur_node, cur_node["pos"], child_idx)
+    return results
+
+def visualize_tpe(model_name: str):
+    samples, _, _ = get_mwp_data()
+    idx, sample = next((idx, sample) for idx, sample in enumerate(samples) if len(sample["label"]["formulas"]["0"]["tex"]) > 20)
+    print(sample["label"]["formulas"]["0"]["tex"])
+    print(idx)
+
+    if model_name == "baseline":
+        # TODO: explain method and assumptions
+        options = TrainOptions({"baseline": True})
+        model = GPTLMBaseline(options)
+        tree_data = traverse_tree(sample["label"]["formulas"]["0"]["opt"], None, [], 0)
+        with torch.no_grad():
+            tpe = model.gpt2_lm.transformer.wpe(torch.arange(len(tree_data)))
+            tpe = tpe.detach().numpy()
+    else:
+        model, _, options = load_model(model_name, False, None)
+        # options.tpe = TPE.SIN_PART.value
+        formula_seq = tokenize_formula(sample["label"]["formulas"]["0"]["opt"], options)
+        batch = Collator(None, options)([formula_seq])
+        with torch.no_grad():
+            tpe = model.get_math_embeddings(batch, torch.ones_like(batch["token_ids"]).type(torch.bool))
+            tpe += model.gpt2_lm.transformer.wpe(torch.arange(len(batch["token_ids"])))
+            tpe = tpe.detach().numpy()
+
+    # Transform with TSNE
+    # rseed = 50 if model_name == "baseline" else 300 # Seeds chosen to put root node roughly in upper left
+    rseed = 127 if model_name == "baseline" else 671 # Vertical orientation
+    transformer = manifold.TSNE(2, perplexity=10, learning_rate="auto", n_iter=1000, init="pca", random_state=rseed)
+    reduced_states = transformer.fit_transform(tpe)
+
+    # Visualize
+    x_vals = reduced_states[:,0]
+    y_vals = reduced_states[:,1]
+    plt.scatter(x_vals, y_vals)
+
+    if model_name == "baseline":
+        # Assign token idx to each node
+        for idx in range(len(tree_data)):
+            tree_data[idx]["token_idx"] = idx
+        # Draw connection between each child and parent
+        for idx in range(len(tree_data)):
+            if tree_data[idx]["parent_node"] is not None:
+                parent_idx = tree_data[idx]["parent_node"]["token_idx"]
+                plt.plot(
+                    [x_vals[parent_idx], x_vals[idx]],
+                    [y_vals[parent_idx], y_vals[idx]],
+                    "b"
+                )
+        # Annotate, done after to render symbols on top of lines
+        for idx in range(len(tree_data)):
+            # plt.annotate(f'{tree_data[idx]["symbol"]} {tree_data[idx]["pos"]}', (x_vals[idx], y_vals[idx] + 1), fontsize=30)
+            plt.annotate(tree_data[idx]["symbol"], (x_vals[idx] - 1, y_vals[idx] + 2), fontsize=30)
+    else:
+        # Label with position vectors and symbols
+        for idx in range(len(formula_seq)):
+            token_type = formula_seq.token_types[idx]
+            token_id = formula_seq.token_ids[idx]
+            gpt_tokens = formula_seq.gpt_tokens[idx]
+            pos_vec = formula_seq.pos_vecs[idx]
+            pos_level = formula_seq.pos_levels[idx]
+            symbol = "E" if token_type == TokenType.END else\
+                "N" if token_type == TokenType.OP and token_id == SpecialOpToken.NUM_SUB_TREE_HEAD else\
+                    text_tokenizer().decode(gpt_tokens)
+            symbol = SYMBOL_MAP_ANALYSIS.get(symbol, symbol)
+            # plt.annotate(f'{symbol} {pos_vec[:pos_level + 1]}', (x_vals[idx], y_vals[idx] + 1), fontsize=30)
+            plt.annotate(symbol, (x_vals[idx] - 1, y_vals[idx] + 2), fontsize=30)
+        # Connect parents to children, keep parent history in stack and use DFS order to do in one pass
+        parents = []
+        for idx, pos_level in enumerate(formula_seq.pos_levels):
+            if parents:
+                plt.plot(
+                    [x_vals[parents[-1][0]], x_vals[idx]],
+                    [y_vals[parents[-1][0]], y_vals[idx]],
+                    "b"
+                )
+            if idx == len(formula_seq) - 1:
+                break
+            if formula_seq.pos_levels[idx + 1] > pos_level:
+                parents.append((idx, pos_level))
+            elif formula_seq.pos_levels[idx + 1] < pos_level:
+                parents.pop()
+    plt.axis("off")
+    plt.show()

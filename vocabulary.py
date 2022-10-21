@@ -1,4 +1,4 @@
-from typing import Dict, Tuple, Union
+from typing import Dict, Tuple, Union, List
 import json
 
 from constants import TYPE_STR_TO_INT, TYPE_STR_TO_MAX_NUM_TOKENS, TokenType, SpecialOpToken, SpecialVarToken, SpecialNumToken
@@ -38,6 +38,8 @@ class Vocabulary:
     _vocab: Vocab = {}
     # Maps TokenType to token ID to symbol
     _vocab_inv: VocabInv = {}
+    # Maps TokenType to (type str, symbol) to frequency
+    _frequency: Dict[TokenType, Dict[Tuple[str, str], int]] = {}
     # Subset of the full vocab that just contains tokens with special meaning
     _special_tokens: VocabInv = {}
     # Maps TokenType to number of tokens in that type (at the time of loading)
@@ -119,6 +121,10 @@ class Vocabulary:
         """
         Get if the given token has special meaning, i.e. does not direclty map to a symbol in the data
         """
+        # Load data if not yet loaded
+        if not cls._loaded:
+            cls.load()
+
         if token_type not in cls._special_tokens:
             return False
         return token_id in cls._special_tokens[token_type]
@@ -133,6 +139,22 @@ class Vocabulary:
             cls.load()
 
         return cls._sizes[token_type]
+
+    @classmethod
+    def most_frequent(cls, token_type: TokenType, num: int = 0):
+        """
+        Get <num> most frequent tokens for given type
+        Returns all digits for NUM type if using num_to_tree
+        """
+        # Load data if not yet loaded
+        if not cls._loaded:
+            cls.load()
+
+        if token_type == TokenType.NUM and cls._num_to_tree:
+            return [("N", symbol) for symbol in NUM_SYMBOLS]
+
+        most_freq: List[Tuple[Tuple[str, str], int]] = sorted(cls._frequency[token_type].items(), key=lambda freq: freq[1], reverse=True)[:num]
+        return [symbol_tup for symbol_tup, _ in most_freq]
 
     @classmethod
     def dump(cls):
@@ -178,6 +200,7 @@ class Vocabulary:
             token_type = TYPE_STR_TO_INT[str_type]
             type_dict = cls._vocab.setdefault(token_type, {})
             inv_type_dict = cls._vocab_inv.setdefault(token_type, {})
+            freq_dict = cls._frequency.setdefault(token_type, {})
 
             # If expanding numbers to trees, no need to save individual numbers in the vocab
             if token_type == TokenType.NUM and cls._num_to_tree:
@@ -191,16 +214,18 @@ class Vocabulary:
                 symbols_to_keep = symbols.items()
 
             # Generate token ID for each symbol and add to vocab
-            for symbol, _ in sorted(symbols_to_keep):
+            for symbol, frequency in sorted(symbols_to_keep):
                 # Special processing for matrix symbols
                 if str_type == "M":
                     symbol = get_matrix_symbol(symbol)
                 # Skip if symbol already seen (from other matching base type) to avoid gaps in the token ID list
                 if symbol in type_dict:
+                    freq_dict[(str_type, symbol)] = frequency
                     continue
                 new_token_id = len(type_dict)
                 type_dict[symbol] = new_token_id
                 inv_type_dict[new_token_id] = symbol
+                freq_dict[(str_type, symbol)] = frequency
 
         # If expanding numbers to trees, just assign token IDs for each digit and the period character
         if cls._num_to_tree:

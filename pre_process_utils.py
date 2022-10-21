@@ -234,7 +234,7 @@ def process_raw_text(src_text_batch: List[str], err_data: dict, recover: bool = 
             all_latexml_errs.append(errs.decode("utf-8"))
 
     if not latexml_success:
-        print(errs.decode("utf-8"))
+        # print(errs.decode("utf-8"))
         if len(src_text_batch) == 1:
             err_data["samples_with_latexml_failures"] += 1
             return [None]

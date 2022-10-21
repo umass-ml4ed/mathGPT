@@ -71,7 +71,7 @@ class Sequence:
         self.gpt_tokens: List[List[int]] = []
         self.meta: SequenceMetaData = {}
 
-    def split_at(self, split_point):
+    def split_at(self, split_point: int):
         pre_split = Sequence(self.name)
         pre_split.token_ids = self.token_ids[:split_point]
         pre_split.token_types = self.token_types[:split_point]

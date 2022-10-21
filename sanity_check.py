@@ -4,6 +4,7 @@ import pandas
 from tqdm import tqdm
 from nlgeval import compute_metrics
 from nlgeval.pycocoevalcap.bleu.bleu import Bleu
+from scipy import stats
 from utils import text_tokenizer
 
 def replace_formulas(sequence: str):
@@ -122,24 +123,56 @@ def error_analysis(model_1: str, model_2: str):
     # print(results_2, trees_2)
     # print(same_start)
 
+    def final_ans(seq: str):
+        split = seq.split("Final Answer:")
+        if len(split) > 1:
+            return split[1].strip()
+        return ""
+
     bleu = Bleu(4)
     bleu_1 = [bleu.compute_score({0: [label]}, {0: [pred]})[0][3] for label, pred in tqdm(zip(labels_1, preds_1), total=len(labels_1))]
     bleu_2 = [bleu.compute_score({0: [label]}, {0: [pred]})[0][3] for label, pred in tqdm(zip(labels_2, preds_2), total=len(labels_2))]
     df = pandas.DataFrame({
-        "labels": labels_1,
+        "labels_1": labels_1,
         "preds_1": preds_1,
         "bleu_1": bleu_1,
+        "labels_2": labels_2,
         "preds_2": preds_2,
         "bleu_2": bleu_2,
     })
     print(f'Avg Lens: {df["preds_1"].apply(len).mean():.3f}, {df["preds_2"].apply(len).mean():.3f}')
     for _, sample in df[(df["bleu_1"] > 0.7) & (df["bleu_2"] < 0.5)][:20].iterrows():
-        print(sample["labels"])
+    # for _, sample in df[(df["preds_1"].apply(final_ans) == df["labels_1"].apply(final_ans)) & (df["preds_2"].apply(final_ans) != df["labels_2"].apply(final_ans))][:20].iterrows():
+        print(sample["labels_1"])
         print(sample["preds_1"], f'({sample["bleu_1"]:.3f})')
         print(sample["preds_2"], f'({sample["bleu_2"]:.3f})')
         print("")
 
+def evaluate_stat_sig(model_1_name: str, model_2_name: str):
+    with open(f"results/results_{model_1_name}.txt") as res_file:
+        results_1 = res_file.readlines()
+        results_1 = results_1[-5:]
+    with open(f"results/results_{model_2_name}.txt") as res_file:
+        results_2 = res_file.readlines()
+        results_2 = results_2[-5:]
+    results_1_np = np.array([[float(val) for val in row.strip().split(",")] for row in results_1])
+    results_2_np = np.array([[float(val) for val in row.strip().split(",")] for row in results_2])
+    for metric_idx in range(results_1_np.shape[1]):
+        print(f"{results_1_np[:,metric_idx].mean()} \\pm {results_1_np[:,metric_idx].std()}, "
+            f"{results_2_np[:,metric_idx].mean()} \\pm {results_2_np[:,metric_idx].std()}")
+        print(stats.ttest_ind(results_1_np[:,metric_idx], results_2_np[:,metric_idx], equal_var=False))
+        print(stats.ttest_rel(results_1_np[:,metric_idx], results_2_np[:,metric_idx]))
+
+def evaluate_welchs(mean_1: str, std_1: str, mean_2: str, std_2: str):
+    n = 5
+    # Since we've been collecting stats with ddof=0, convert to ddof=1 before computing significance
+    std_1 = np.sqrt((float(std_1)**2)*n/(n-1))
+    std_2 = np.sqrt((float(std_2)**2)*n/(n-1))
+    print(stats.ttest_ind_from_stats(float(mean_1), float(std_1), n, float(mean_2), float(std_2), n))
+
 if __name__ == "__main__":
-    eval_folds_with_substitution(sys.argv[1], "none")
+    # evaluate_welchs(*sys.argv[1:])
+    # evaluate_stat_sig(sys.argv[1], sys.argv[2])
+    # eval_folds_with_substitution(sys.argv[1], "none")
     # eval_with_substitution(sys.argv[1], sys.argv[2], sys.argv[3])
-    # error_analysis(sys.argv[1], sys.argv[2])
+    error_analysis(sys.argv[1], sys.argv[2])

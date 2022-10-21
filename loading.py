@@ -112,7 +112,7 @@ def get_problem_solving_data(split: str, task: DownstreamTask, ratio: float = 1,
         random.Random(rng_seed(fold)).shuffle(data)
         return data[:int(len(data) * ratio)], data[int(len(data) * ratio):]
 
-def get_mwp_data(fold: int = 0):
+def get_mwp_data(fold: int = 0) -> Tuple[List[GenTaskSample], List[GenTaskSample], List[GenTaskSample]]:
     with open(MWP_DATA, encoding="utf-8") as data_file:
         samples: List[GenTaskSample] = json.load(data_file)
     random.Random(221).shuffle(samples)
@@ -126,7 +126,7 @@ def get_mwp_data(fold: int = 0):
         samples_np[test_data_idx]
     )
 
-def get_ct_data(fold: int = 0):
+def get_ct_data(fold: int = 0) -> Tuple[List[CTTaskSample], List[CTTaskSample], List[CTTaskSample]]:
     with open(CT_DATA, encoding="utf-8") as data_file:
         samples: List[CTTaskSample] = json.load(data_file)
     random.Random(221).shuffle(samples)
@@ -415,17 +415,17 @@ class AnswerScoringDataset(Dataset):
         self.example_bank: Dict[int, Dict[int, List[Sequence]]] = {}
 
         # Static sequences that get added to each sample
-        self.qs_prefix_seq = self.tokenize_sequence("", "Question: ", {}, self.options)[0]
-        self.scores_seq = self.tokenize_sequence("", " [SEP] Possible scores: Wrong Poor Fair Good Excellent", {}, self.options)[0]
-        self.example_prefix_seq = self.tokenize_sequence("", " [SEP] Example: ", {}, self.options)[0]
-        self.answer_prefix_seq = self.tokenize_sequence("", " [SEP] Score this answer: ", {}, self.options)[0]
-        self.cls_seq = self.tokenize_sequence("", " [CLS]", {}, self.options)[0]
+        self.qs_prefix_seq = self.tokenize_sequence("", "Question: ", {}, self.options)
+        self.scores_seq = self.tokenize_sequence("", " [SEP] Possible scores: Wrong Poor Fair Good Excellent", {}, self.options)
+        self.example_prefix_seq = self.tokenize_sequence("", " [SEP] Example: ", {}, self.options)
+        self.answer_prefix_seq = self.tokenize_sequence("", " [SEP] Score this answer: ", {}, self.options)
+        self.cls_seq = self.tokenize_sequence("", " [CLS]", {}, self.options)
         self.grade_to_score_seq = {
-            0: self.tokenize_sequence("", " Score: Wrong", {}, self.options)[0],
-            1: self.tokenize_sequence("", " Score: Poor", {}, self.options)[0],
-            2: self.tokenize_sequence("", " Score: Fair", {}, self.options)[0],
-            3: self.tokenize_sequence("", " Score: Good", {}, self.options)[0],
-            4: self.tokenize_sequence("", " Score: Excellent", {}, self.options)[0],
+            0: self.tokenize_sequence("", " Score: Wrong", {}, self.options),
+            1: self.tokenize_sequence("", " Score: Poor", {}, self.options),
+            2: self.tokenize_sequence("", " Score: Fair", {}, self.options),
+            3: self.tokenize_sequence("", " Score: Good", {}, self.options),
+            4: self.tokenize_sequence("", " Score: Excellent", {}, self.options),
         }
 
         # To avoid exceeding max len, cap answer and problem seq lens to half the remaining space

@@ -1,6 +1,5 @@
 from typing import List, Callable, Tuple, Optional, Dict
 import os
-import json
 import math
 from itertools import chain
 from functools import reduce
@@ -13,12 +12,13 @@ from nlgeval import compute_metrics
 import zss
 
 from loading import Dataset, GenTaskDataset, FeedbackDataset, trim_batch, get_data_loader, get_headline_data, get_mwp_data, get_feedback_data
+from mathGPT.utils import text_tokenizer
 from vocabulary import Vocabulary, get_matrix_symbol
 from model_math_gpt import MathGPTBase, MathGPTLM, MathGPTClassifier
 from generate import get_most_likely_predictions, generate
 from decode import decode_batch, get_tree, DecodeTreeNode
 from pre_process_utils import process_raw_text
-from math_tokenize import tokenize_formula
+from math_tokenize import tokenize_formula, ExceedMaxDepth
 from utils import TrainOptions
 from data_types import CollatedBatch, Article
 from constants import PADDING_TOKEN_ID, DownstreamTask, TokenType, SpecialOpToken
@@ -55,9 +55,13 @@ def eval_tree_value(tree_node: DecodeTreeNode, options: TrainOptions) -> float:
     """
     Get numeric value that tree evaluates to
     Just for trees structured like MWP to eq task labels
+    i.e. x = <numbers and algebraic ops>
     """
     if options.num_to_tree and tree_node.token_type == TokenType.OP and tree_node.token_id == SpecialOpToken.NUM_SUB_TREE_HEAD:
         symbol = "".join([Vocabulary.get_symbol(child.token_type, child.token_id) for child in tree_node.children])
+        return float(symbol)
+    if options.math_text and tree_node.token_type == TokenType.OP and tree_node.token_id == SpecialOpToken.MATH_TEXT_HEAD:
+        symbol = text_tokenizer().decode([child.token_id for child in tree_node.children])
         return float(symbol)
     symbol = Vocabulary.get_symbol(tree_node.token_type, tree_node.token_id)
     if tree_node.token_type == TokenType.NUM:
@@ -420,8 +424,8 @@ def evaluate_ted(model_name: str, task: DownstreamTask, options_dict: dict):
     all_teds = []
     all_accs = []
     all_val_match = []
-    folds = range(5) if task in (DownstreamTask.FEEDBACK, DownstreamTask.MWP) else [0]
-    for fold in folds:
+    for fold in range(5):
+        print("Fold", fold + 1)
         # Load saved labels and predictions
         postfix = "_formulas" if options.eval_formulas else ""
         pred_filename = f"results/preds_{model_name}{postfix}_{fold}.txt"
@@ -429,7 +433,7 @@ def evaluate_ted(model_name: str, task: DownstreamTask, options_dict: dict):
             preds = [("<m> " if options.eval_formulas else "") + pred.strip() + ("" if pred.strip().endswith("</m>") else " </m>") for pred in pred_file]
 
         # Convert sample strings to OPTs via pre-processing pipeline
-        batch_size = 100
+        batch_size = 30
         err_data = {}
         processed_preds: List[Article] = []
         for batch_start_idx in tqdm(list(range(0, len(preds), batch_size))):
@@ -463,23 +467,31 @@ def evaluate_ted(model_name: str, task: DownstreamTask, options_dict: dict):
                 continue
             if len(pred["formulas"]) > 1:
                 print("More than 1 formula in sample:", sample_idx)
-            pred_seq = tokenize_formula(pred["formulas"][0]["opt"], options)
+            try:
+                pred_seq = tokenize_formula(pred["formulas"][0]["opt"], options)
+            except ExceedMaxDepth:
+                print("Exceeded max depth")
+                failed_conversions.append(sample_idx)
+                continue
             label_seq = label.split_at(label.meta["prompt_length"])[1]
             label_trees.append(get_tree(label_seq.token_ids, label_seq.token_types))
             pred_trees.append(get_tree(pred_seq.token_ids, pred_seq.token_types))
         ted = calculate_ted(label_trees, pred_trees)
         acc = sum([trees_equal(label_tree, pred_tree) for label_tree, pred_tree in zip(label_trees, pred_trees)]) / len(label_trees)
-        pred_vals = []
-        for pred_tree in pred_trees:
-            try:
-                pred_vals.append(eval_tree_value(pred_tree, options))
-            except Exception as exc:
-                print(exc)
-                pred_vals.append(None)
-        val_match = sum([
-            eval_tree_value(label_tree, options) == pred_val
-            for label_tree, pred_val in zip(label_trees, pred_vals)
-        ]) / len(label_trees)
+        if task == DownstreamTask.MWP:
+            pred_vals = []
+            for pred_tree in pred_trees:
+                try:
+                    pred_vals.append(eval_tree_value(pred_tree, options))
+                except Exception as exc:
+                    print(exc)
+                    pred_vals.append(None)
+            val_match = sum([
+                eval_tree_value(label_tree, options) == pred_val
+                for label_tree, pred_val in zip(label_trees, pred_vals)
+            ]) / len(label_trees)
+        else:
+            val_match = 0
         all_teds.append(ted)
         all_accs.append(acc)
         all_val_match.append(val_match)

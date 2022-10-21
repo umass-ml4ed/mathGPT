@@ -127,3 +127,68 @@ SYMBOL_MAP = {
     "emptyset": "\\emptyset",
     "hbar": "\\hbar"
 }
+
+# Extends symbol map to include rough mappings for analyzing token embeddings
+SYMBOL_MAP_ANALYSIS = {
+    **SYMBOL_MAP,
+    "differential-d": "\\,d",
+    "percent": "%",
+    "factorial": "!",
+    "double-factorial": "!!",
+    "root": "\\sqrt",
+    "binomial": "\\binom",
+    "continued-fraction": "\\cfrac",
+    "SUB": "_",
+    "SUP": "^"
+}
+
+# Mapping of some LaTeX symbols to unicode for display in visualizations
+SYMBOL_MAP_DISPLAY = {
+    "\\times": "×",
+    "\\partial": "∂",
+    "\\sum": "∑",
+    "\\sqrt": "√",
+    "\\in": "∈",
+    "\\int": "∫",
+    "\\leq": "≤",
+    "\\sin": "sin",
+    "\\cos": "cos",
+    "\\log": "log",
+    "\\geq": "≥",
+    "\\ln": "ln",
+    "\\approx": "≈",
+    "\\otimes": "⊗",
+    "\\binom": "()",
+    "\\equiv": "≡",
+    "\\exp": "exp",
+    "\\circ": "◦",
+    "\\cfrac": "/",
+    "\\pm": "±",
+    "\\subset": "⊂",
+    "\\lim": "lim",
+    "\\forall": "∀",
+    "\\neq": "≠",
+    "\\prod": "∏",
+    "\\bigcup": "⋃",
+    "\\sim": "∼",
+    "\\oplus": "⊕",
+    "\\neg": "¬",
+    "\\tan": "tan",
+    "\\bigcap": "⋂",
+    "\\det": "det",
+    "\\mapsto": "→",
+    "\\max": "max",
+    "\\vee": "∨",
+    "\\exists": "∃",
+    "\\min": "min",
+    "\\pmod": "(mod )",
+    "\\sup": "sup",
+    "\\vdash": "⊢",
+    "\\cosh": "cosh",
+    "\\propto": "∝",
+    "\\sinh": "sinh",
+    "\\perp": "⊥",
+    "\\cot": "cot",
+    "\\arctan": "arctan",
+    "\\oint": "∮"
+}
