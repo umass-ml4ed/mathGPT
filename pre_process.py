@@ -6,8 +6,6 @@ import json
 from tqdm import tqdm
 import pandas
 
-from TangentCFT.TangentS.math_tan.math_document import MathDocument
-
 from pre_process_utils import (
     process_articles, process_raw_text, html_to_latex, wrap_formulas, remove_calculator_annotations, get_boxed_answer,
     all_latexml_errs, all_tangent_cft_errs
@@ -17,6 +15,9 @@ from data_types import Article, GenTaskSample, AnswerScoringSample, FeedbackTask
 from constants import (
     FORMULA_IDENTIFIER, DATA, WIKI_DATA, AS_PROBLEMS, AS_ANSWERS, FEEDBACK_PROBLEMS, FEEDBACK_SAMPLES, GSM8K_DATA, MATH_DATA, MWP_DATA, KHAN_DATA, CT_DATA
 )
+
+# Import after pre_process_utils since module overloading done there
+from TangentCFT.TangentS.math_tan.math_document import MathDocument
 
 def dump_errs(err_filename: str, err_data: dict):
     os.makedirs("results", exist_ok=True)
@@ -236,6 +237,13 @@ def process_feedback_data():
     print("All escs:", found_escs)
     print("All tags:", found_tags)
     print("Unique problems:", df["problem_code"].unique().size, "; with sub-parts:", df["problem_id"].unique().size)
+
+    # Create a copy of the csv with post-processed fields
+    # df_proc = df.copy()
+    # for field in ["body", "cwa_1_feedback", "cwa_2_feedback", "cwa_3_feedback"]:
+    #     df_proc[field] = df_proc[field].apply(lambda val: html_to_latex(val) if isinstance(val, str) else val)
+    # df_proc.to_csv("../feedback_proc.csv")
+    # return
 
     # Extract all problems, answers and feedback, and do HTML to LaTeX and formula wrapping
     df.sort_values(["problem_code", "problem_part"]) # Ensure that question parts are adjacent and in order

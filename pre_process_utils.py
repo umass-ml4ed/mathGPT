@@ -1,9 +1,13 @@
+import sys
 from functools import lru_cache
 from typing import Dict, Optional, List
 import re
 from subprocess import Popen, PIPE
 from copy import copy
 from bs4 import BeautifulSoup
+
+# Overload to include fixes
+sys.modules["TangentCFT.TangentS.math_tan.semantic_symbol"] = __import__("semantic_symbol")
 
 from TangentCFT.TangentS.math_tan.math_document import MathDocument
 from TangentCFT.TangentS.math_tan.math_extractor import MathExtractor

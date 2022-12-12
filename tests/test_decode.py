@@ -21,6 +21,3 @@ def test_get_tree():
             DecodeTreeNode(TokenType.VAR, 5, [])
         ])
     )
-
-def test_decode_batch():
-    pass # TODO

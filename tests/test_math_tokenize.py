@@ -1,6 +1,7 @@
 from math_tokenize import encode_pos, tokenize_formula, POS_ENCODING_REGION_NUM_BITS
 from vocabulary import Vocabulary
 from constants import MAX_FORMULA_DEPTH, TPE, TokenType, SpecialOpToken, SpecialVarToken
+from utils import TrainOptions
 
 def test_encode_pos_forte():
     pos_vec = [0, 1, 5] + ([0] * (MAX_FORMULA_DEPTH - 3))
@@ -38,7 +39,7 @@ def test_tokenize_formula():
                                 "V", "N", None
                             ],
                             [
-                                "F", "normal-\u2192", None
+                                "F", "→", None
                             ],
                             [
                                 "C", "infinity", None
@@ -63,6 +64,7 @@ def test_tokenize_formula():
         ]
     ]
 
+    Vocabulary.load()
     expected_tokens = [
         SpecialOpToken.ANON_OP.value,
             Vocabulary.get_token("O", "SUB")[1],
@@ -70,7 +72,7 @@ def test_tokenize_formula():
                     0,
                 SpecialOpToken.CERR_OP.value,
                     Vocabulary.get_token("V", "N")[1],
-                    Vocabulary.get_token("F", "normal-\u2192")[1],
+                    Vocabulary.get_token("F", "→")[1],
                         0,
                     Vocabulary.get_token("C", "infinity")[1],
                     0,
@@ -123,10 +125,9 @@ def test_tokenize_formula():
     ]
     expected_pos_levels = [0, 1, 2, 3, 2, 3, 3, 4, 3, 3, 2, 1, 2, 2, 2, 2, 1]
 
-    tokenized = tokenize_formula(formula, TPE.FORTE.value)
+    tokenized = tokenize_formula(formula, TrainOptions({"tpe": TPE.FORTE.value, "shared_emb": False}))
 
     assert tokenized.token_ids == expected_tokens
     assert tokenized.token_types == expected_types
     assert tokenized.pos_vecs == expected_pos_vecs
     assert tokenized.pos_levels == expected_pos_levels
-    assert tokenized.pos_encodings == [encode_pos(pos_vec, pos_level, TPE.FORTE.value) for pos_vec, pos_level in zip(expected_pos_vecs, expected_pos_levels)]

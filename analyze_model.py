@@ -118,8 +118,8 @@ def visualize_tokens(model_name: str):
     print(ops)
     # print(" ".join([f"${SYMBOL_MAP_ANALYSIS.get(op[1], op[1])}$" for op in ops]))
     # tokens = ops + Vocabulary.most_frequent(TokenType.VAR, 50) + Vocabulary.most_frequent(TokenType.NUM) # Ops, vars and nums
-    # tokens = ops # Just ops
-    tokens = Vocabulary.most_frequent(TokenType.VAR, 50) # Just vars
+    tokens = ops # Just ops
+    # tokens = Vocabulary.most_frequent(TokenType.VAR, 50) # Just vars
 
     # Create single formula sequence with all those tokens
     formula = ["O", "eq", [ # Arbitrary head node, will get removed
@@ -127,11 +127,15 @@ def visualize_tokens(model_name: str):
         for type_str, symbol in tokens
     ]]
 
+    if model_name == "baseline":
+        options = TrainOptions({"baseline": True})
+        model = GPTLMBaseline(options)
+    else:
+        model, _, options = load_model(model_name, False, None)
+
     # Get token representations from model
     with torch.no_grad():
-        if model_name == "baseline":
-            options = TrainOptions({"baseline": True})
-            model = GPTLMBaseline(options)
+        if options.baseline:
             # Take average of token embeddings for each symbol (post mapping)
             embeddings = torch.stack([
                 model.gpt2_lm.transformer.wte(
@@ -140,7 +144,6 @@ def visualize_tokens(model_name: str):
                 for (_, symbol, _) in formula[2]
             ]).detach().numpy()
         else:
-            model, _, options = load_model(model_name, False, None)
             options.tpe = TPE.NONE.value # Not visualizing tree positions
             formula_seq = tokenize_formula(formula, options)
             formula_seq = formula_seq.split_at(1)[1] # Remove head node
@@ -151,9 +154,9 @@ def visualize_tokens(model_name: str):
 
     # Transform with TSNE
     # Chosen seeds show visually pleasing representations and represent a variety of patterns
-    rseed = 100 if model_name == "baseline" else 0
-    # rseed = 67 if model_name == "baseline" else 115
-    # rseed = 391 if model_name == "baseline" else 50
+    # rseed = 100 if model_name == "baseline" else 0 if options.baseline else 0
+    # rseed = 67 if model_name == "baseline" else 150 if options.baseline else 115
+    rseed = 391 if model_name == "baseline" else 250 if options.baseline else 50
     transformer = manifold.TSNE(2, perplexity=10, learning_rate="auto", n_iter=1000, init="pca", random_state=rseed)
     reduced_states = transformer.fit_transform(embeddings)
 
@@ -201,16 +204,17 @@ def visualize_tpe(model_name: str):
     print(idx)
 
     if model_name == "baseline":
-        # TODO: explain method and assumptions
         options = TrainOptions({"baseline": True})
         model = GPTLMBaseline(options)
+    else:
+        model, _, options = load_model(model_name, False, None)
+
+    if options.baseline:
         tree_data = traverse_tree(sample["label"]["formulas"]["0"]["opt"], None, [], 0)
         with torch.no_grad():
             tpe = model.gpt2_lm.transformer.wpe(torch.arange(len(tree_data)))
             tpe = tpe.detach().numpy()
     else:
-        model, _, options = load_model(model_name, False, None)
-        # options.tpe = TPE.SIN_PART.value
         formula_seq = tokenize_formula(sample["label"]["formulas"]["0"]["opt"], options)
         batch = Collator(None, options)([formula_seq])
         with torch.no_grad():
@@ -220,7 +224,7 @@ def visualize_tpe(model_name: str):
 
     # Transform with TSNE
     # rseed = 50 if model_name == "baseline" else 300 # Seeds chosen to put root node roughly in upper left
-    rseed = 127 if model_name == "baseline" else 671 # Vertical orientation
+    rseed = 127 if model_name == "baseline" else 235 if options.baseline else 671 # Vertical orientation
     transformer = manifold.TSNE(2, perplexity=10, learning_rate="auto", n_iter=1000, init="pca", random_state=rseed)
     reduced_states = transformer.fit_transform(tpe)
 
@@ -229,7 +233,7 @@ def visualize_tpe(model_name: str):
     y_vals = reduced_states[:,1]
     plt.scatter(x_vals, y_vals)
 
-    if model_name == "baseline":
+    if options.baseline:
         # Assign token idx to each node
         for idx in range(len(tree_data)):
             tree_data[idx]["token_idx"] = idx

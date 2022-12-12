@@ -1,9 +1,10 @@
 from unittest.mock import patch, MagicMock
 
 from loading import PreTrainDataset
-from math_tokenize import encode_pos, EMPTY_POS_VECTOR, get_empty_pos_encoding
+from math_tokenize import EMPTY_POS_VECTOR, get_empty_pos_encoding
 from vocabulary import Vocabulary
 from constants import TokenType, TPE, EOS_TOKEN_ID, FORMULA_IDENTIFIER
+from utils import TrainOptions
 
 SAMPLE_ARTICLE_1 = {
     "text": f"The derivative of {FORMULA_IDENTIFIER} is {FORMULA_IDENTIFIER}.",
@@ -51,7 +52,7 @@ def test_new_dataset():
     Vocabulary.load() # Pre-load vocab so unaffected by mock
     load_article_mock = MagicMock(side_effect=[SAMPLE_ARTICLE_1])
     with patch("json.load", load_article_mock):
-        dataset = PreTrainDataset(["data/wikipedia/GCD.json"], TPE.FORTE.value, 11)
+        dataset = PreTrainDataset(["data/wikipedia/GCD.json"], TrainOptions({"tpe": TPE.FORTE.value, "use_shared_emb": False}), 11)
 
     assert dataset.data[0].token_ids == [
         464, 27255, 286, 220,
@@ -65,20 +66,15 @@ def test_new_dataset():
     ]
     assert dataset.data[0].pos_vecs[5][:1] == [0]
     assert dataset.data[0].pos_levels[5] == 0
-    assert dataset.data[0].pos_encodings[5] == encode_pos([0], 0, TPE.FORTE.value)
     assert dataset.data[0].pos_vecs[6][:2] == [0, 0]
     assert dataset.data[0].pos_levels[6] == 1
-    assert dataset.data[0].pos_encodings[6] == encode_pos([0, 0], 1, TPE.FORTE.value)
     assert dataset.data[0].pos_vecs[7][:2] == [0, 1]
     assert dataset.data[0].pos_levels[7] == 1
-    assert dataset.data[0].pos_encodings[7] == encode_pos([0, 1], 1, TPE.FORTE.value)
     assert dataset.data[0].pos_vecs[8][:2] == [0, 2]
     assert dataset.data[0].pos_levels[8] == 1
-    assert dataset.data[0].pos_encodings[8] == encode_pos([0, 2], 1, TPE.FORTE.value)
     for non_form_idx in list(range(5)) + list(range(9, len(dataset.data[0].token_ids))):
         assert dataset.data[0].pos_vecs[non_form_idx] == EMPTY_POS_VECTOR
         assert dataset.data[0].pos_levels[non_form_idx] == 0
-        assert dataset.data[0].pos_encodings[non_form_idx] == get_empty_pos_encoding(TPE.FORTE.value)
 
     assert dataset.data[1].token_ids == [
         220,
@@ -92,23 +88,12 @@ def test_new_dataset():
     ]
     assert dataset.data[1].pos_vecs[2][:1] == [0]
     assert dataset.data[1].pos_levels[2] == 0
-    assert dataset.data[1].pos_encodings[2] == encode_pos([0], 0, TPE.FORTE.value)
     assert dataset.data[1].pos_vecs[3][:2] == [0, 0]
     assert dataset.data[1].pos_levels[3] == 1
-    assert dataset.data[1].pos_encodings[3] == encode_pos([0, 0], 1, TPE.FORTE.value)
     assert dataset.data[1].pos_vecs[4][:2] == [0, 1]
     assert dataset.data[1].pos_levels[4] == 1
-    assert dataset.data[1].pos_encodings[4] == encode_pos([0, 1], 1, TPE.FORTE.value)
     assert dataset.data[1].pos_vecs[5][:2] == [0, 2]
     assert dataset.data[1].pos_levels[5] == 1
-    assert dataset.data[1].pos_encodings[5] == encode_pos([0, 2], 1, TPE.FORTE.value)
     for non_form_idx in list(range(2)) + list(range(6, len(dataset.data[1].token_ids))):
         assert dataset.data[1].pos_vecs[non_form_idx] == EMPTY_POS_VECTOR
         assert dataset.data[1].pos_levels[non_form_idx] == 0
-        assert dataset.data[1].pos_encodings[non_form_idx] == get_empty_pos_encoding(TPE.FORTE.value)
-
-def test_split_sequence():
-    pass # TODO
-
-def test_collator():
-    pass # TODO

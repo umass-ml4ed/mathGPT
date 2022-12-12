@@ -38,7 +38,7 @@ def test_get_input_embeddings():
             ]),
         }
 
-        model = MathGPTLM(TrainOptions({}))
+        model = MathGPTLM(TrainOptions({"shared_emb": False, "joint": True}))
         input_embeddings = model.get_input_embeddings(batch)
 
         assert input_embeddings.shape == (1, 8, EMB_SIZE)
@@ -100,7 +100,7 @@ def test_masks():
             ])
         }
 
-        model = MathGPTLM(TrainOptions({}))
+        model = MathGPTLM(TrainOptions({"shared_emb": False, "joint": True}))
         type_idxs, final_formula_token_idx = model.get_prediction_masks(batch)
 
         expected_type_idxs = {
@@ -130,6 +130,10 @@ def test_masks():
             ]),
             TokenType.END: torch.tensor([
                 [False, False, False, False, False, True, False],
+                [False, False, False, False, False, False, False],
+            ]),
+            TokenType.MATH_TEXT: torch.tensor([
+                [False, False, False, False, False, False, False],
                 [False, False, False, False, False, False, False],
             ]),
         }
@@ -165,9 +169,10 @@ def test_type_probs():
         }
         gpt_output_mock = GPTOutputMock(torch.Tensor([[[1] * EMB_SIZE] * 8] * 2))
 
-        model = MathGPTLM(TrainOptions({}))
+        model = MathGPTLM(TrainOptions({"shared_emb": False, "joint": True}))
         type_idxs, final_formula_token_idx = model.get_prediction_masks(batch)
-        type_probs = model.get_type_probs(gpt_output_mock, type_idxs, final_formula_token_idx, batch)
+        type_mask = model.get_type_mask(type_idxs, final_formula_token_idx, batch)
+        type_probs = model.get_type_probs(gpt_output_mock, type_mask)
 
         def assert_probs(batch_idx, idx, allowed_types):
             assert_tensor_sums_to(type_probs[batch_idx][idx], 1)
@@ -176,7 +181,7 @@ def test_type_probs():
                 for token_type in TokenType
             ])
 
-        assert type_probs.shape == (2, 8, 7)
+        assert type_probs.shape == (2, 8, 8)
         assert_probs(0, 0, (TokenType.TEXT, TokenType.START_FORMULA))
         assert_probs(0, 1, (TokenType.OP, TokenType.VAR, TokenType.NUM))
         assert_probs(0, 2, (TokenType.OP, TokenType.VAR, TokenType.NUM, TokenType.END))
@@ -213,9 +218,10 @@ def test_token_probs():
             [[1] * EMB_SIZE, [1] * EMB_SIZE, [1] * EMB_SIZE, [1] * EMB_SIZE, [1] * EMB_SIZE, [1] * EMB_SIZE, [1] * EMB_SIZE]
         ]))
 
-        model = MathGPTLM(TrainOptions({}))
+        model = MathGPTLM(TrainOptions({"shared_emb": False, "joint": True}))
         type_idxs, final_formula_token_idx = model.get_prediction_masks(batch)
-        type_probs = model.get_type_probs(gpt_output_mock, type_idxs, final_formula_token_idx, batch)
+        type_mask = model.get_type_mask(type_idxs, final_formula_token_idx, batch)
+        type_probs = model.get_type_probs(gpt_output_mock, type_mask)
         type_to_token_probs = model.get_token_probs(gpt_output_mock, type_probs)
 
         def assert_probs(idx):
@@ -324,9 +330,9 @@ def test_loss():
         ]),
     }
 
-    model = MathGPTLM(TrainOptions({}))
+    model = MathGPTLM(TrainOptions({"shared_emb": False, "joint": True}))
     type_idxs, _ = model.get_prediction_masks(batch)
-    loss = model.get_prediction_loss(type_to_token_probs, type_idxs, batch, None)
+    loss = model.get_prediction_loss(type_to_token_probs, type_idxs, batch["token_ids"])
 
     # Loss is the average negative log prob of the following token at each timestamp
     expected_loss = -torch.log(torch.tensor([
@@ -334,9 +340,3 @@ def test_loss():
         0.05, 1.0
     ])).mean()
     assert loss == expected_loss
-
-def test_text_only_decode():
-    # TODO: compare our model's decoding to pre-trained gpt2 with LM head and ensure same results.
-    # only use text data for this (obviously).
-    # test out greedy, tree, and top-p.
-    pass
