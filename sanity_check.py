@@ -8,11 +8,12 @@ from scipy import stats
 from utils import text_tokenizer
 
 def replace_formulas(sequence: str):
+    replacement = " ".join(["<math>"] * 4)
     final_sequence = ""
     start_form_idx = sequence.find(" <m> ")
     end_form_idx = 0
     while start_form_idx >= 0:
-        final_sequence += sequence[end_form_idx : start_form_idx] + " <math> "
+        final_sequence += sequence[end_form_idx : start_form_idx] + f" {replacement} "
         end_form_idx = sequence.find(" </m> ", start_form_idx)
         if end_form_idx != -1:
             end_form_idx += 6
@@ -23,13 +24,14 @@ def replace_formulas(sequence: str):
     return final_sequence
 
 def replace_text(sequence: str):
+    replacement = " ".join(["<text>"] * 4)
     final_sequence = ""
     start_form_idx = sequence.find(" <m> ")
     end_form_idx = 0
     if start_form_idx > 0:
-        final_sequence += "<text>"
+        final_sequence += replacement
     if start_form_idx == -1:
-        final_sequence += "<text>"
+        final_sequence += replacement
     while start_form_idx >= 0:
         end_form_idx = sequence.find(" </m> ", start_form_idx)
         if end_form_idx != -1:
@@ -38,7 +40,7 @@ def replace_text(sequence: str):
             end_form_idx = len(sequence)
         final_sequence += sequence[start_form_idx : end_form_idx]
         if end_form_idx != len(sequence):
-            final_sequence += "<text>"
+            final_sequence += replacement
         start_form_idx = sequence.find(" <m> ", end_form_idx)
     return final_sequence
 
@@ -60,9 +62,9 @@ def sanitize(sequence: str):
 
 def eval_with_substitution(model_name: str, fold: int, eval: str):
     fn = replace_formulas if eval == "text" else replace_text if eval == "math" else sanitize
-    with open(f"labels_{model_name}_{fold}.txt", encoding="utf-8") as label_file:
+    with open(f"results/labels_{model_name}_{fold}.txt", encoding="utf-8") as label_file:
         labels = [fn(label.strip()) for label in label_file.readlines()]
-    with open(f"preds_{model_name}_{fold}.txt", encoding="utf-8") as pred_file:
+    with open(f"results/preds_{model_name}_{fold}.txt", encoding="utf-8") as pred_file:
         preds = [fn(pred.strip()) for pred in pred_file.readlines()]
     print("Avg pred len:", np.array([len(pred.split()) for pred in preds]).mean(), "Avg label len:", np.array([len(label.split()) for label in labels]).mean())
     temp_label_file = "labels_temp.txt"
@@ -173,6 +175,6 @@ def evaluate_welchs(mean_1: str, std_1: str, mean_2: str, std_2: str):
 if __name__ == "__main__":
     # evaluate_welchs(*sys.argv[1:])
     # evaluate_stat_sig(sys.argv[1], sys.argv[2])
-    # eval_folds_with_substitution(sys.argv[1], "none")
-    # eval_with_substitution(sys.argv[1], sys.argv[2], sys.argv[3])
-    error_analysis(sys.argv[1], sys.argv[2])
+    # eval_folds_with_substitution(sys.argv[1], "text")
+    eval_with_substitution(sys.argv[1], sys.argv[2], sys.argv[3])
+    # error_analysis(sys.argv[1], sys.argv[2])
