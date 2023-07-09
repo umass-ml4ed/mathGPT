@@ -1,8 +1,24 @@
 # MathGPT
 
+Code for the paper [Tree-Based Representation and Generation of Natural and Mathematical Language
+](https://arxiv.org/abs/2302.07974)
+
+If you end up using this code in your research, please cite us like:
+
+```
+@misc{scarlatos2023treebased,
+      title={Tree-Based Representation and Generation of Natural and Mathematical Language},
+      author={Alexander Scarlatos and Andrew Lan},
+      year={2023},
+      eprint={2302.07974},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL}
+}
+```
+
 ## Setup
 
-### Python Environemnt
+### Python Environment
 Ensure Python3 is installed (this code was tested on v3.9.1).
 
 Create virtual environment
@@ -55,3 +71,21 @@ Here are links to the datasets required for the following tasks. For each, ensur
 The datasets for the following tasks cannot be released publicly:
 - Answer Scoring
 - Feedback Generation
+
+## Run
+
+The starting point for all code is `__main__.py`, and you can see a list of command line options by running:
+
+```
+python3 __main__.py --help
+```
+
+Default values can be found in the `TrainOptions` constructor in `utils.py`.
+
+Here is the typical workflow to replicate our experiments:
+- Pre-process the Wikipedia dataset (this step also constructs the vocabulary, which is needed for all following steps)
+- Pre-train a MathGPT model
+- Pre-process the downstream dataset
+- Run cross-validation on the downstream dataset, which for each fold:
+    - Fine-tunes the pre-trained MathGPT model on the downstream dataset
+    - Runs evaluation on the downstream dataset's test set
