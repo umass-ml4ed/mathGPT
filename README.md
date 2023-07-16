@@ -1,18 +1,21 @@
 # MathGPT
 
 Code for the paper [Tree-Based Representation and Generation of Natural and Mathematical Language
-](https://arxiv.org/abs/2302.07974)
+](https://aclanthology.org/2023.acl-long.205/)
 
 If you end up using this code in your research, please cite us like:
 
 ```
-@misc{scarlatos2023treebased,
-      title={Tree-Based Representation and Generation of Natural and Mathematical Language},
-      author={Alexander Scarlatos and Andrew Lan},
-      year={2023},
-      eprint={2302.07974},
-      archivePrefix={arXiv},
-      primaryClass={cs.CL}
+@inproceedings{scarlatos-lan-2023-tree,
+    title = "Tree-Based Representation and Generation of Natural and Mathematical Language",
+    author = "Scarlatos, Alexander and Lan, Andrew",
+    booktitle = "Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)",
+    month = jul,
+    year = "2023",
+    address = "Toronto, Canada",
+    publisher = "Association for Computational Linguistics",
+    url = "https://aclanthology.org/2023.acl-long.205",
+    pages = "3714--3730",
 }
 ```
 
